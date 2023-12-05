@@ -1,0 +1,93 @@
+<html>
+
+<head>
+    <!-- Page styling here -->
+    <link rel='stylesheet' type='text/css' href='./style/style.css'>
+
+    <!--Countly script-->
+    <script type='module'>
+        import Countly from '../Countly.js';
+
+        //initializing countly with params
+        Countly.init({
+            app_key: "YOUR_APP_KEY",
+            url: "https://your.domain.count.ly", //your server goes here
+            debug: true
+        });
+
+        //track sessions automatically
+        Countly.track_sessions();
+
+        //track pageviews automatically
+        Countly.track_pageview();
+
+        //track any clicks to webpages automatically
+        Countly.track_clicks();
+
+        //track link clicks automatically
+        Countly.track_links();
+
+        //track form submissions automatically
+        Countly.track_forms();
+
+        //track javascript errors
+        Countly.track_errors({ jquery: "1.10", jqueryui: "1.10" });
+    </script>
+</head>
+
+<body>
+    <!-- Header, banner etc. Top part of your site  -->
+    <div id="header">
+        <h1>Error Helpers</h1>
+        <img id="logo" src="./images/logo.png">
+    </div>
+
+    <center>
+        <img src="./images/team_countly.jpg" id="wallpaper" />
+        <form method='post' name='comments'>
+            <p><input type="text" name="message" value="Message Name"></p>
+            <p><textarea>Message</textarea></p>
+            <p><select>
+                    <option value='option1'>Option1</option>
+                    <option value='option2'>Option2</option>
+                    <option value='option3'>Option3</option>
+                </select></p>
+            <p><input id="submit-form" type="submit" value="Submit"></p>
+        </form>
+        <p><button id="unhandled_errorT">Unhandled Error</button></p>
+        <p><button id="handled_errorT">Handled Error</button></p>
+        <p><a id="track_link" href='#link'>Dummy link</a></p>
+        <p><a href='https://countly.com/'>Countly</a></p>
+    </center>
+    <script type="module">
+        import Countly from '../Countly.js';
+
+        //let's cause some errors
+        function cause_error() {
+            undefined_function();
+        }
+
+        function unhandled_error() {
+            Countly.add_log('Pressed unhandled button');
+            cause_error();
+        }
+
+        function handled_error() {
+            Countly.add_log('Pressed handled button');
+            try {
+                cause_error();
+            } catch (err) {
+                Countly.log_error(err)
+            }
+        }
+
+        document.querySelector("#unhandled_errorT").addEventListener("click", function () {
+                unhandled_error();
+            });
+        document.querySelector("#handled_errorT").addEventListener("click", function () {
+            handled_error();
+        });
+    </script>
+</body>
+
+</html>
