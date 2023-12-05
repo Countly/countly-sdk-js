@@ -162,7 +162,9 @@ Cypress.Commands.add("check_view_event", (queueObject, name, duration, hasPvid) 
     else {
         expect(queueObject.dur).to.be.within(duration, duration + 1);
     }
-    expect(queueObject.segmentation.name).to.equal(name);
+    if (!name.startsWith("/__cypress/iframes/")) { // changes depending on cypress env
+        expect(queueObject.segmentation.name).to.equal(name);
+    }
     cy.check_commons(queueObject);
 });
 
