@@ -35,7 +35,7 @@ Countly.init({
 Countly.begin_session();
 // event listener to end session
 window.addEventListener("beforeunload", function () {
-    Countly.end_session();
+    Countly.end_session(undefined, true);
 })
 </script>
 </head>

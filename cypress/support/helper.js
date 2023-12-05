@@ -80,10 +80,15 @@ function interceptAndCheckRequests(requestType, requestUrl, endPoint, requestPar
     requestType = requestType || "GET";
     requestUrl = requestUrl || "https://your.domain.count.ly"; // TODO: might be needed in the future but not yet
     endPoint = endPoint || "/i";
-    requestParams = requestParams || "?**";
+    requestParams = requestParams || "?*";
     alias = alias || "getXhr";
 
-    cy.intercept(requestType, endPoint + requestParams).as(alias);
+    cy.intercept(requestUrl + endPoint + requestParams, (req) => {
+        const { url } = req;
+        req.reply(200, {result: "Success"}, {
+            "x-countly-rr": "2"
+        });
+    }).as(alias);
     cy.wait("@" + alias).then((xhr) => {
         const url = new URL(xhr.request.url);
         const searchParams = url.searchParams;

@@ -48,7 +48,7 @@ function start(){
 	Countly.begin_session();
 }
 function end(){
-	Countly.end_session();
+	Countly.end_session(undefined, true);
 }
 </script>
 <button type="button" onclick="clickEvent()">Event</button>

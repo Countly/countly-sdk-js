@@ -19,7 +19,7 @@ describe("Remaining requests tests ", () => {
 
             // We will expect 4 requests: health check, begin_session, end_session, orientation
             hp.interceptAndCheckRequests(undefined, undefined, undefined, "?hc=*", "hc", (requestParams) => {
-                expect(requestParams.get("hc")).to.equal(JSON.stringify({ el: 0, wl: 0, sc: -1, em: "\"\"" }));
+                expect(JSON.parse(requestParams.get("hc"))).to.eql({ el: 0, wl: 1, sc: -1, em: "\"\"" });
                 expect(requestParams.get("rr")).to.equal(null);
             });
             cy.wait(1000).then(() => {
@@ -32,7 +32,7 @@ describe("Remaining requests tests ", () => {
                 });
                 // End the session
                 Countly.end_session(undefined, true);
-                hp.interceptAndCheckRequests(undefined, undefined, undefined, undefined, "end_session", (requestParams) => {
+                    hp.interceptAndCheckRequests(undefined, undefined, undefined, "?end_session=*", "end", (requestParams) => {
                     expect(requestParams.get("end_session")).to.equal("1");
                     expect(requestParams.get("rr")).to.equal("2");
                     expect(requestParams.get("av")).to.equal(av);
