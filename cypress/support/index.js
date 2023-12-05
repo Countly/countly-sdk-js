@@ -1,2 +1,2 @@
 import "./commands";
-import "../../Main.js";
+import "../../Countly.js";
