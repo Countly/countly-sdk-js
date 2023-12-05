@@ -1,0 +1,71 @@
+<html>
+
+<head>
+    <!-- Page styling here -->
+    <link rel='stylesheet' type='text/css' href='./style/style.css'>
+
+    <!--Countly script-->
+    <script type='module'>
+        import Countly from '../Countly.js';
+
+        //initializing countly with params and remote config
+        Countly.init({
+            app_key: "YOUR_APP_KEY",
+            url: "https://your.domain.count.ly", //your server goes here
+            debug: true,
+            rc_automatic_optin_for_ab: false, // set it to false for not opting in users for AB testing while fetching the remote config (only with latest API)
+            use_explicit_rc_api: true, // set it to true to use the latest API
+            remote_config: function (err, configs) {
+                //handle initial remote configs here
+                console.log(err, configs);
+            }
+        })
+    </script>
+</head>
+
+<body>
+    <!-- Header, banner etc. Top part of your site  -->
+    <div id="header">
+        <h1>Remote Config</h1>
+        <img id="logo" src="./images/logo.png">
+    </div>
+
+    <center>
+        <img src="./images/team_countly.jpg" id="wallpaper" />
+        <br />
+        <input type="button" id="fetch" value="Fetch Config">
+        <input type="button" id="getAll" value="Get Config">
+        <input type="button" id="getSome" value="Get config for key Test">
+        <input type="button" id="enroll" value="Enroll user to AB test">
+        <p><a href='https://countly.com/'>Countly</a></p>
+    </center>
+    <script type='module'>
+        import Countly from '../Countly.js';
+
+        //get stored params
+        function getConfig(key) {
+            alert(JSON.stringify(Countly.get_remote_config(key)));
+        }
+
+        document.querySelector('#fetch').addEventListener('click', () => {
+            Countly.fetch_remote_config(function (err, config) {
+                alert(JSON.stringify(config));
+            });
+        });
+
+        document.querySelector('#getAll').addEventListener('click', () => {
+            getConfig();
+        });
+
+        document.querySelector('#getSome').addEventListener('click', () => {
+            getConfig('Test');
+        });
+
+        document.querySelector('#enroll').addEventListener('click', () => {
+            // enroll user to AB test
+            Countly.enrollUserToAb(['Test']);
+        });
+    </script>
+</body>
+
+</html>

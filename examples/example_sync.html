@@ -1,0 +1,49 @@
+<html>
+
+<head>
+    <!-- Page styling here -->
+    <link rel='stylesheet' type='text/css' href='./style/style.css'>
+
+    <!--Countly script-->
+    <script type='module'>
+    import Countly from '../Countly.js';
+
+        //initializing countly with params
+        Countly.init({
+            app_key: "YOUR_APP_KEY",
+            url: "https://your.domain.count.ly", //your server goes here
+            debug: true
+        })
+        //track sessions automatically
+        Countly.track_sessions();
+        //track pageviews automatically
+        Countly.track_pageview();
+        Countly.track_errors();
+
+        document.getElementById("testButton").addEventListener("click", function() {
+            Countly.add_event({
+                key: "buttonClick",
+                "segmentation": {
+                    "id": "id"
+                }
+            });
+        });
+    </script>
+</head>
+
+<body>
+    <!-- Header, banner etc. Top part of your site  -->
+    <div id="header">
+        <h1>Sync Countly Implementation</h1>
+        <img id="logo" src="./images/logo.png">
+    </div>
+
+    <center>
+        <img src="./images/team_countly.jpg" id="wallpaper" />
+        <br />
+        <input type="button" id="testButton" onclick="clickEvent()" value="Test Button">
+        <p><a href='https://countly.com/'>Countly</a></p>
+    </center>
+</body>
+
+</html>

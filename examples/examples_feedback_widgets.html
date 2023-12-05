@@ -1,0 +1,131 @@
+<html>
+
+<head>
+  <!-- Page styling here -->
+  <link rel='stylesheet' type='text/css' href='./style/style.css'>
+
+  <!--Countly script-->
+  <script type='module'>
+    import Countly from '../Countly.js';
+
+    Countly.init({
+      app_key: 'YOUR_APP_KEY', //your app key
+      url: 'https://your.domain.count.ly', //your server goes here
+      debug: true
+    });
+
+    //=================================================
+    // Fetching and displaying feedback widgets
+    //=================================================
+    function fetchAndDisplayWidget() {
+      Countly.get_available_feedback_widgets(feedbackWidgetsCallback);
+    }
+
+    // Callback function to execute after fetching the feedback widgets
+    function feedbackWidgetsCallback(countlyPresentableFeedback, err) {
+      if (err) { // error handling
+        console.log(err);
+        return;
+      }
+
+      // Decide which which widget to show. Here the first rating widget is selected. 
+      const widgetType = "survey";
+      const countlyFeedbackWidget = countlyPresentableFeedback.find(widget => widget.type === widgetType);
+      if (!countlyFeedbackWidget) {
+        console.error(`[Countly] No ${widgetType} widget found`);
+        return;
+      }
+
+      // Define the element ID and the class name (optional)
+      const selectorId = "";
+      const selectorClass = "";
+
+      // Define the segmentation (optional)
+      const segmentation = { page: "home_page" };
+
+      // Display the feedback widget to the end user 
+      Countly.present_feedback_widget(countlyFeedbackWidget, selectorId, selectorClass, segmentation);
+    }
+
+    //=================================================
+    // Fetching and reporting feedback widgets manually
+    //=================================================
+    // an example of getting the widget list, using it to get widget data and then recording data for it manually. widgetType can be 'nps', 'survey' or 'rating'    
+    function getFeedbackWidgetListAndDoThings(widgetType) {
+      // get the widget list
+      Countly.get_available_feedback_widgets(
+        // callback function, 1st param is the feedback widget list
+        function (feedbackList, err) {
+          if (err) { // error handling
+            console.log(err);
+            return;
+          }
+
+          // find the widget object with the given widget type. This or a similar implementation can be used while using fetchAndDisplayWidget() as well
+          const countlyFeedbackWidget = feedbackList.find(widget => widget.type === widgetType);
+          if (!countlyFeedbackWidget) {
+            console.error(`[Countly] No ${widgetType} widget found`);
+            return;
+          }
+
+          // Get data with the widget object
+          Countly.getFeedbackWidgetData(CountlyFeedbackWidget,
+            // callback function, 1st param is the feedback widget data
+            function (feedbackData, err) {
+              if (err) { // error handling
+                console.error(err);
+                return;
+              }
+
+              const CountlyWidgetData = feedbackData;
+              // record data according to the widget type
+              if (CountlyWidgetData.type === 'nps') {
+                Countly.reportFeedbackWidgetManually(CountlyFeedbackWidget, CountlyWidgetData, { rating: 3, comment: "comment" });
+              } else if (CountlyWidgetData.type === 'survey') {
+                var widgetResponse = {};
+                // form the key/value pairs according to data
+                widgetResponse["answ-" + CountlyWidgetData.questions[0].id] = CountlyWidgetData.questions[0].type === "rating" ? 3 : "answer";
+                Countly.reportFeedbackWidgetManually(CountlyFeedbackWidget, CountlyWidgetData, widgetResponse);
+              } else if (CountlyWidgetData.type === 'rating') {
+                Countly.reportFeedbackWidgetManually(CountlyFeedbackWidget, CountlyWidgetData, { rating: 3, comment: "comment", email: "email", contactMe: true });
+              }
+            }
+
+          );
+        })
+    }
+
+    document.querySelector("#one").addEventListener("click", function() {
+      fetchAndDisplayWidget();
+    });
+    document.querySelector("#two").addEventListener("click", function() {
+      getFeedbackWidgetListAndDoThings('nps');
+    });
+    document.querySelector("#three").addEventListener("click", function() {
+      getFeedbackWidgetListAndDoThings('survey');
+    });
+    document.querySelector("#four").addEventListener("click", function() {
+      getFeedbackWidgetListAndDoThings('rating');
+    });
+
+  </script>
+</head>
+
+<body>
+  <!-- Header, banner etc. Top part of your site  -->
+  <div id="header">
+    <h1>Feedback Widgets</h1>
+    <img id="logo" src="./images/logo.png">
+  </div>
+
+  <center>
+    <img src="./images/team_countly.jpg" id="wallpaper" />
+    <p><a href='https://countly.com/'>Countly</a></p>
+    <p><button id="one">Enable Feedback Widget</button></p>
+    <p><button id="two">Manually Record NPS Data</button></p>
+    <p><button id="three">Manually Record Survey Data</button></p>
+    <p><button id="four">Manually Record Rating Data</button></p>
+  </center>
+</body>
+
+</html>

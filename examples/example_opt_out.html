@@ -1,0 +1,77 @@
+<html>
+
+<head>
+    <!-- Page styling here -->
+    <link rel='stylesheet' type='text/css' href='./style/style.css'>
+
+    <!--Countly script-->
+    <script type='module'>
+        import Countly from '../Countly.js';
+
+        //initializing countly with params
+        Countly.init({
+            app_key: "YOUR_APP_KEY",
+            url: "https://your.domain.count.ly", //your server goes here
+            debug: true
+        })
+        //track sessions automatically
+        Countly.track_sessions();
+
+        //track pageviews automatically
+        Countly.track_pageview();
+
+        //track any clicks to webpages automatically
+        Countly.track_clicks();
+
+        //track link clicks automatically
+        Countly.track_links();
+
+        //track form submissions automatically
+        Countly.track_forms();
+
+        //track javascript errors
+        Countly.track_errors({ jquery: "1.10", jqueryui: "1.10" });
+
+        //send event on button click
+            function testOpt() {
+                if (Countly.ignore_visitor) {
+                    Countly.opt_in();
+                }
+                else {
+                    Countly.opt_out();
+                }
+                setOpt();
+            }
+            function setOpt() {
+                if (Countly.ignore_visitor) {
+                    //opted out, allow opt in
+                    document.getElementById("top").innerHTML = "You are Opted Out";
+                    document.getElementById("optButton").value = "Opt in";
+                }
+                else {
+                    document.getElementById("top").innerHTML = "You are Opted In";
+                    document.getElementById("optButton").value = "Opt out";
+                }
+            }
+            document.getElementById("optButton").addEventListener("click", function() {
+                testOpt();
+            });
+            setOpt();
+    </script>
+</head>
+
+<body>
+    <!-- Header, banner etc. Top part of your site  -->
+    <div id="header">
+        <h1>Opting Out</h1>
+        <img id="logo" src="./images/logo.png">
+    </div>
+
+    <center>
+        <img src="./images/team_countly.jpg" id="wallpaper" />
+        <h3 id='top'></h3>
+        <p><input type="button" id="optButton" value=""></p>
+    </center>
+</body>
+
+</html>

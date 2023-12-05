@@ -1,0 +1,39 @@
+{
+  "name": "countly-sdk-js",
+  "version": "23.10.0",
+  "description": "Countly JavaScript SDK",
+  "type": "module",
+  "main": "Countly.js",
+  "scripts": {
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Countly/countly-sdk-js.git"
+  },
+  "keywords": [
+    "sdk",
+    "countly",
+    "js",
+    "analytics"
+  ],
+  "author": "Countly (https://countly.com/)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Countly/countly-sdk-js/issues"
+  },
+  "homepage": "https://github.com/Countly/countly-sdk-js#readme",
+  "devDependencies": {
+    "@babel/core": "^7.22.9",
+    "@babel/preset-env": "^7.22.9",
+    "@rollup/plugin-babel": "^6.0.4",
+    "@rollup/plugin-commonjs": "^25.0.7",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "@rollup/plugin-terser": "^0.4.4",
+    "babel-loader": "^9.1.3",
+    "babel-preset-env": "^1.7.0",
+    "cypress-localstorage-commands": "^2.2.5",
+    "rollup": "^4.6.0",
+    "cypress": "^13.6.0"
+  }
+}
