@@ -259,6 +259,11 @@ class CountlyClass {
 
             // init configuration is printed out here:
             // key values should be printed out as is
+            if (sdkName === SDK_NAME && sdkVersion === SDK_VERSION) {
+                log(logLevelEnums.DEBUG, "initialize, SDK name:[" + sdkName + "], version:[" + sdkVersion + "]");
+            } else {
+                log(logLevelEnums.WARNING, "initialize, SDK name:[" + sdkName + "], version:[" + sdkVersion + "], default name:[" + SDK_NAME + "] and default version:[" + SDK_VERSION + "]");
+            }
             log(logLevelEnums.DEBUG, "initialize, app_key:[" + this.app_key + "], url:[" + this.url + "]");
             log(logLevelEnums.DEBUG, "initialize, device_id:[" + getConfig("device_id", ob, undefined) + "]");
             log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.require_consent + "]");
