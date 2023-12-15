@@ -80,6 +80,8 @@ class CountlyClass {
         var currentViewId = null; // this is the global variable for tracking the current view's ID. Used in view tracking. Becomes previous view ID at the end.
         var previousViewId = null; // this is the global variable for tracking the previous view's ID. Used in view tracking. First view has no previous view ID.
         var freshUTMTags = null;
+        var sdkName = getConfig("sdk_name", ob, SDK_NAME);
+        var sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -2902,8 +2904,8 @@ class CountlyClass {
             var data = {
                 widget_id: CountlyFeedbackWidget._id,
                 shown: 1,
-                sdk_version: SDK_VERSION,
-                sdk_name: SDK_NAME,
+                sdk_version: sdkVersion,
+                sdk_name: sdkName,
                 platform: this.platform,
                 app_version: this.app_version
             };
@@ -3028,10 +3030,10 @@ class CountlyClass {
                 url += "?widget_id=" + presentableFeedback._id;
                 url += "&app_key=" + this.app_key;
                 url += "&device_id=" + this.device_id;
-                url += "&sdk_name=" + SDK_NAME;
+                url += "&sdk_name=" + sdkName;
                 url += "&platform=" + this.platform;
                 url += "&app_version=" + this.app_version;
-                url += "&sdk_version=" + SDK_VERSION;
+                url += "&sdk_version=" + sdkVersion;
                 if (feedbackWidgetSegmentation) {
                     var customObjectToSendWithTheWidget = {};
                     customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
@@ -3469,7 +3471,7 @@ class CountlyClass {
                 var iframe = document.createElement("iframe");
                 iframe.name = "countly-feedback-iframe";
                 iframe.id = "countly-feedback-iframe";
-                iframe.src = self.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + self.app_key + "&device_id=" + self.device_id + "&sdk_version=" + SDK_VERSION;
+                iframe.src = self.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + self.app_key + "&device_id=" + self.device_id + "&sdk_version=" + sdkVersion;
                 // inject them to dom
                 document.body.appendChild(wrapper);
                 wrapper.appendChild(closeIcon);
@@ -3595,8 +3597,8 @@ class CountlyClass {
         function prepareRequest(request) {
             request.app_key = self.app_key;
             request.device_id = self.device_id;
-            request.sdk_name = SDK_NAME;
-            request.sdk_version = SDK_VERSION;
+            request.sdk_name = sdkName;
+            request.sdk_version = sdkVersion;
             request.t = deviceIdType;
             request.av = self.app_version;
 
