@@ -5,6 +5,7 @@ Countly.init({
     app_key: "YOUR_APP_KEY",
     url: "https://your.domain.count.ly",
     debug: true,
+    clear_stored_id: true, // Resets the stored device ID on init
     storage: {
         getItem: (key) => {
             return STORAGE[key];
