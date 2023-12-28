@@ -1,3 +1,8 @@
+## 23.12.3
+
+* Added bot detection for workers
+* Added the ability to clear stored device IDs in the workers
+
 ## 23.12.2
 
 * Added Google Lighthouse to bot detection

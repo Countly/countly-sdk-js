@@ -107,7 +107,7 @@ class CountlyClass {
             this.getSearchQuery = getConfig("getSearchQuery", ob, Countly.getSearchQuery);
             this.DeviceIdType = Countly.DeviceIdType; // it is Countly device Id type Enums for clients to use
             this.namespace = getConfig("namespace", ob, "");
-            this.clearStoredId = !isBrowser ? undefined : getConfig("clear_stored_id", ob, false);
+            this.clearStoredId = getConfig("clear_stored_id", ob, false);
             this.app_key = getConfig("app_key", ob, null);
             this.onload = getConfig("onload", ob, []);
             this.utm = getConfig("utm", ob, { source: true, medium: true, campaign: true, term: true, content: true });
@@ -124,7 +124,7 @@ class CountlyClass {
             this.country_code = getConfig("country_code", ob, null);
             this.city = getConfig("city", ob, null);
             this.ip_address = getConfig("ip_address", ob, null);
-            this.ignore_bots = !isBrowser ? undefined : getConfig("ignore_bots", ob, true);
+            this.ignore_bots = getConfig("ignore_bots", ob, true);
             this.force_post = getConfig("force_post", ob, false);
             this.remote_config = getConfig("remote_config", ob, false);
             this.ignore_visitor = getConfig("ignore_visitor", ob, false);
@@ -197,9 +197,9 @@ class CountlyClass {
                 }
                 // then clear the storage so that a new device ID is set again later
                 log(logLevelEnums.INFO, "initialize, Clearing the device ID storage");
-                localStorage.removeItem(this.app_key + "/cly_id");
-                localStorage.removeItem(this.app_key + "/cly_id_type");
-                localStorage.removeItem(this.app_key + "/cly_session");
+                removeValueFromStorage("cly_id");
+                removeValueFromStorage("cly_id_type");
+                removeValueFromStorage("cly_session");
             }
 
             checkIgnore();
@@ -3425,11 +3425,14 @@ class CountlyClass {
          *  Check if user or visit should be ignored
          */
         function checkIgnore() {
+            log(logLevelEnums.INFO, "checkIgnore, Checking if user or visit should be ignored");
             if (self.ignore_prefetch && isBrowser && typeof document.visibilityState !== "undefined" && document.visibilityState === "prerender") {
                 self.ignore_visitor = true;
+                log(logLevelEnums.DEBUG, "checkIgnore, Ignoring visit due to prerendering");
             }
             if (self.ignore_bots && userAgentSearchBotDetection()) {
                 self.ignore_visitor = true;
+                log(logLevelEnums.DEBUG, "checkIgnore, Ignoring visit due to bot");
             }
         }
 
