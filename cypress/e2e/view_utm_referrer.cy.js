@@ -42,7 +42,7 @@ describe("View with utm and referrer tests ", () => {
     // we record 2 views and check if both have the same utm tag
     it("Checks if a single default utm tag is at view segmentation of both views", () => {
         hp.haltAndClearStorage(() => {
-            init("YOUR_APP_KEY", "?utm_source=hehe", undefined);
+            init("YOUR_APP_KEY", "utm_source=hehe", undefined);
             Countly.track_view(pageNameOne); // first view
             Countly.track_view(pageNameTwo); // second view
             // View event should have the utm tag
@@ -113,7 +113,7 @@ describe("View with utm and referrer tests ", () => {
     // we check if multiple custom utm tags are recorded in the view event if they are in the utm object
     it("Checks if multiple custom utm tags appears in view", () => {
         hp.haltAndClearStorage(() => {
-            init("YOUR_APP_KEY", "?utm_aa=hehe&utm_bb=hoho", { aa: true, bb: true });
+            init("YOUR_APP_KEY", "utm_aa=hehe&utm_bb=hoho", { aa: true, bb: true });
             Countly.track_view(pageNameOne);
             cy.fetch_local_event_queue().then((eq) => {
                 cy.check_view_event(eq[0], pageNameOne, undefined, false);
@@ -184,7 +184,7 @@ describe("View with utm and referrer tests ", () => {
                 test_mode_eq: true,
                 utm: { ss: true }, // utm object provided in init
                 getSearchQuery: function() { // override default search query
-                    return "?utm_ss=hehe2";
+                    return "utm_ss=hehe2";
                 }
             });
             C2.track_view(pageNameOne);

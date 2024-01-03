@@ -397,7 +397,11 @@ class CountlyClass {
             var hasUTM = false;
             var utms = {};
             if (searchQuery) {
-                var parts = searchQuery.substring(1).split("&");
+                // remove the '?' character from the beginning if it exists
+                if (searchQuery.indexOf('?') === 0) {
+                    searchQuery = searchQuery.substring(1);
+                };
+                var parts = searchQuery.split("&");
                 for (var i = 0; i < parts.length; i++) {
                     var nv = parts[i].split("=");
                     if (nv[0] === "cly_id") {
