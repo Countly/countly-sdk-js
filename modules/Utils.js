@@ -319,21 +319,37 @@ function currentUserAgentString(uaOverride) {
     }
 
     var ua_raw = navigator.userAgent;
-    // check if userAgentData is supported and userAgent is not available, use it
+    // check if userAgentData is supported and userAgent is not available, then use it
     if (!ua_raw) {
-        if (navigator.userAgentData) {
-            // turn brands array into string
-            ua_raw = navigator.userAgentData.brands.map(function (e) {
-                return e.brand + ":" + e.version;
-            }).join();
-            // add mobile info
-            ua_raw += (navigator.userAgentData.mobile ? " mobi " : " ");
-            // add platform info
-            ua_raw += navigator.userAgentData.platform;
-        }
+        ua_raw = currentUserAgentDataString();
     }
     // RAW USER AGENT STRING
     return ua_raw;
+}
+
+/**
+ *  Forms user agent string from userAgentData by concatenating brand, version, mobile and platform
+ *  @memberof Countly._internals
+ *  @param {string} uaOverride - a string value to pass instead of ua value
+ *  @returns {string} currentUserAgentString - user agent string from userAgentData
+ */
+function currentUserAgentDataString(uaOverride) {
+    if (uaOverride) {
+        return uaOverride;
+    }
+
+    var ua = "";
+    if (navigator.userAgentData) {
+        // turn brands array into string
+        ua = navigator.userAgentData.brands.map(function (e) {
+            return e.brand + ":" + e.version;
+        }).join();
+        // add mobile info
+        ua += (navigator.userAgentData.mobile ? " mobi " : " ");
+        // add platform info
+        ua += navigator.userAgentData.platform;
+    }
+    return ua;
 }
 
 /**
@@ -348,7 +364,7 @@ function userAgentDeviceDetection(uaOverride) {
     if (uaOverride) {
         userAgent = uaOverride;
     }
-    else if (navigator.userAgentData.mobile) {
+    else if (navigator.userAgentData && navigator.userAgentData.mobile) {
         return "phone";
     }
     else {
@@ -384,9 +400,18 @@ function userAgentDeviceDetection(uaOverride) {
  */
 function userAgentSearchBotDetection(uaOverride) {
     // search bot regexp
-    var searchBotRE = /(CountlySiteBot|nuhk|Googlebot|GoogleSecurityScanner|Yammybot|Openbot|Slurp|MSNBot|Ask Jeeves\/Teoma|ia_archiver|bingbot|Google Web Preview|Mediapartners-Google|AdsBot-Google|Baiduspider|Ezooms|YahooSeeker|AltaVista|AVSearch|Mercator|Scooter|InfoSeek|Ultraseek|Lycos|Wget|YandexBot|Yandex|YaDirectFetcher|SiteBot|Exabot|AhrefsBot|MJ12bot|TurnitinBot|magpie-crawler|Nutch Crawler|CMS Crawler|rogerbot|Domnutch|ssearch_bot|XoviBot|netseer|digincore|fr-crawler|wesee|AliasIO|contxbot|PingdomBot|BingPreview|HeadlessChrome|Chrome-Lighthouse)/;
-    // true if the user agent string contains a search bot string pattern
-    return searchBotRE.test(uaOverride || currentUserAgentString());
+    const searchBotRE = /(CountlySiteBot|nuhk|Googlebot|GoogleSecurityScanner|Yammybot|Openbot|Slurp|MSNBot|Ask Jeeves\/Teoma|ia_archiver|bingbot|Google Web Preview|Mediapartners-Google|AdsBot-Google|Baiduspider|Ezooms|YahooSeeker|AltaVista|AVSearch|Mercator|Scooter|InfoSeek|Ultraseek|Lycos|Wget|YandexBot|Yandex|YaDirectFetcher|SiteBot|Exabot|AhrefsBot|MJ12bot|TurnitinBot|magpie-crawler|Nutch Crawler|CMS Crawler|rogerbot|Domnutch|ssearch_bot|XoviBot|netseer|digincore|fr-crawler|wesee|AliasIO|contxbot|PingdomBot|BingPreview|HeadlessChrome|Lighthouse)/;
+
+    // check override first
+    if (uaOverride) {
+        return searchBotRE.test(uaOverride);
+    }
+
+    // check both userAgent and userAgentData, as one of them might be containing the information we are looking for
+    const ua_bot = searchBotRE.test(currentUserAgentString());
+    const uaData_bot = searchBotRE.test(currentUserAgentDataString());
+
+    return ua_bot || uaData_bot;
 }
 
 /**
@@ -614,5 +639,6 @@ export {
     loadCSS,
     showLoader,
     checkIfLoggingIsOn,
-    hideLoader
+    hideLoader,
+    currentUserAgentDataString
 }; 

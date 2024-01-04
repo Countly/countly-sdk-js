@@ -1,3 +1,7 @@
+## 23.12.4
+
+* Enhanced userAgentData detection for bot filtering
+
 ## 23.12.3
 
 * Added bot detection for workers
