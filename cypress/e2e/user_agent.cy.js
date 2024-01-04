@@ -1,6 +1,7 @@
 /* eslint-disable cypress/no-unnecessary-waiting */
 /* eslint-disable require-jsdoc */
 var Countly = require("../../Countly.js");
+var Utils = require("../../modules/Utils.js");
 var hp = require("../support/helper");
 
 function initMain() {
@@ -60,6 +61,13 @@ describe("User Agent tests ", () => {
             expect(Countly._internals.userAgentSearchBotDetection("Google")).to.equal(false);
             expect(Countly._internals.userAgentSearchBotDetection("HeadlessChrome")).to.equal(true);
             expect(Countly._internals.userAgentSearchBotDetection("Chrome-Lighthouse")).to.equal(true);
+            expect(Countly._internals.userAgentSearchBotDetection("Lighthouse")).to.equal(true);
+        });
+    });
+    // userAgentData is not supported by all browsers yet so it is hard to test with consistency
+    it("Check if currentUserAgentDataString override works", () => {
+        hp.haltAndClearStorage(() => {
+            expect(Utils.currentUserAgentDataString('123')).to.equal("123");
         });
     });
 });
