@@ -56,6 +56,7 @@ describe("User Agent tests ", () => {
         hp.haltAndClearStorage(() => {
             initMain();
             // setting ua value to strings that can pass the regex test
+            expect(Countly._internals.userAgentSearchBotDetection("")).to.equal(false);
             expect(Countly._internals.userAgentSearchBotDetection("123")).to.equal(false);
             expect(Countly._internals.userAgentSearchBotDetection("Googlebot")).to.equal(true);
             expect(Countly._internals.userAgentSearchBotDetection("Google")).to.equal(false);
