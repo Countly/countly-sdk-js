@@ -511,7 +511,12 @@ class CountlyClass {
             notifyLoaders();
 
             setTimeout(function () {
-                heartBeat();
+                if (!Countly.noHeartBeat) {
+                    heartBeat();
+                } else {
+                    log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
+                }
+            
                 if (self.remote_config) {
                     self.fetch_remote_config(self.remote_config);
                 }
@@ -533,6 +538,8 @@ class CountlyClass {
         this.halt = function () {
             log(logLevelEnums.WARNING, "halt, Resetting Countly");
             Countly.i = undefined;
+            Countly.q = [];
+            Countly.noHeartBeat = undefined;
             global = !Countly.i;
             sessionStarted = false;
             apiPath = "/i";
@@ -3445,6 +3452,7 @@ class CountlyClass {
          * Check and send the events to request queue if there are any, empty the event queue
          */
         function sendEventsForced() {
+            processAsyncQueue(); // process async queue before sending events
             if (eventQueue.length > 0) {
                 log(logLevelEnums.DEBUG, "Flushing events");
                 toRequestQueue({ events: JSON.stringify(eventQueue) });
@@ -3693,40 +3701,9 @@ class CountlyClass {
             }
 
             hasPulse = true;
-            var i = 0;
             // process queue
             if (global && typeof Countly.q !== "undefined" && Countly.q.length > 0) {
-                var req;
-                var q = Countly.q;
-                Countly.q = [];
-                for (i = 0; i < q.length; i++) {
-                    req = q[i];
-                    log(logLevelEnums.DEBUG, "Processing queued call", req);
-                    if (typeof req === "function") {
-                        req();
-                    }
-                    else if (Array.isArray(req) && req.length > 0) {
-                        var inst = self;
-                        var arg = 0;
-                        // check if it is meant for other tracker
-                        if (Countly.i[req[arg]]) {
-                            inst = Countly.i[req[arg]];
-                            arg++;
-                        }
-                        if (typeof inst[req[arg]] === "function") {
-                            inst[req[arg]].apply(inst, req.slice(arg + 1));
-                        }
-                        else if (req[arg].indexOf("userData.") === 0) {
-                            var userdata = req[arg].replace("userData.", "");
-                            if (typeof inst.userData[userdata] === "function") {
-                                inst.userData[userdata].apply(inst, req.slice(arg + 1));
-                            }
-                        }
-                        else if (typeof Countly[req[arg]] === "function") {
-                            Countly[req[arg]].apply(Countly, req.slice(arg + 1));
-                        }
-                    }
-                }
+                processAsyncQueue();
             }
 
             // extend session if needed
@@ -3783,6 +3760,48 @@ class CountlyClass {
             }
 
             setTimeout(heartBeat, beatInterval);
+        }
+
+        /**
+         * Process queued calls
+         * @memberof Countly._internals
+         */
+        function processAsyncQueue() {
+            const q = Countly.q;
+            Countly.q = [];
+            for (let i = 0; i < q.length; i++) {
+                let req = q[i];
+                log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
+                if (typeof req === "function") {
+                    req();
+                }
+                else if (Array.isArray(req) && req.length > 0) {
+                    var inst = self;
+                    var arg = 0;
+                    // check if it is meant for other tracker
+                    try {
+                        if (Countly.i[req[arg]]) {
+                            inst = Countly.i[req[arg]];
+                            arg++;
+                        }
+                    } catch (error) {
+                        // possibly first init and no other instance
+                        log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
+                    }
+                    if (typeof inst[req[arg]] === "function") {
+                        inst[req[arg]].apply(inst, req.slice(arg + 1));
+                    }
+                    else if (req[arg].indexOf("userData.") === 0) {
+                        var userdata = req[arg].replace("userData.", "");
+                        if (typeof inst.userData[userdata] === "function") {
+                            inst.userData[userdata].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (typeof Countly[req[arg]] === "function") {
+                        Countly[req[arg]].apply(Countly, req.slice(arg + 1));
+                    }
+                }
+            }
         }
 
         /**
@@ -4631,6 +4650,7 @@ class CountlyClass {
             getRequestQueue: getRequestQueue,
             getEventQueue: getEventQueue,
             sendFetchRequest: sendFetchRequest,
+            processAsyncQueue: processAsyncQueue,
             makeNetworkRequest: makeNetworkRequest,
             /**
              *  Clear queued data
