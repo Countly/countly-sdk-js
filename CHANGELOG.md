@@ -1,3 +1,7 @@
+## 23.12.5
+
+* Mitigated an issue where the SDK was not emptying the async queue explicity when closing a browser
+
 ## 23.12.4
 
 * Enhanced userAgentData detection for bot filtering

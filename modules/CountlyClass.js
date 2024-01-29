@@ -191,6 +191,8 @@ class CountlyClass {
                         log(logLevelEnums.DEBUG, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED, for event flushing");
                         deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                     }
+                    // process async queue before sending events
+                    processAsyncQueue(); 
                     sendEventsForced();
                     // set them back to their initial values
                     this.device_id = undefined;
@@ -511,7 +513,12 @@ class CountlyClass {
             notifyLoaders();
 
             setTimeout(function () {
-                heartBeat();
+                if (!Countly.noHeartBeat) {
+                    heartBeat();
+                } else {
+                    log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
+                }
+            
                 if (self.remote_config) {
                     self.fetch_remote_config(self.remote_config);
                 }
@@ -533,6 +540,8 @@ class CountlyClass {
         this.halt = function () {
             log(logLevelEnums.WARNING, "halt, Resetting Countly");
             Countly.i = undefined;
+            Countly.q = [];
+            Countly.noHeartBeat = undefined;
             global = !Countly.i;
             sessionStarted = false;
             apiPath = "/i";
@@ -995,6 +1004,8 @@ class CountlyClass {
             // eslint-disable-next-line eqeqeq
             if (this.device_id != newId) {
                 if (!merge) {
+                    // process async queue before sending events
+                    processAsyncQueue(); 
                     // empty event queue
                     sendEventsForced();
                     // end current session
@@ -1247,7 +1258,10 @@ class CountlyClass {
         this.user_details = function (user) {
             log(logLevelEnums.INFO, "user_details, Trying to add user details: ", user);
             if (this.check_consent(featureEnums.USERS)) {
-                sendEventsForced(); // flush events to event queue to prevent a drill issue
+                // process async queue before sending events
+                processAsyncQueue(); 
+                // flush events to event queue to prevent a drill issue
+                sendEventsForced();
                 log(logLevelEnums.INFO, "user_details, flushed the event queue");
                 // truncating user values and custom object key value pairs
                 user.name = truncateSingleValue(user.name, self.maxValueSize, "user_details", log);
@@ -1450,7 +1464,10 @@ class CountlyClass {
             save: function () {
                 log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property");
                 if (self.check_consent(featureEnums.USERS)) {
-                    sendEventsForced(); // flush events to event queue to prevent a drill issue
+                    // process async queue before sending events
+                    processAsyncQueue(); 
+                    // flush events to event queue to prevent a drill issue
+                    sendEventsForced(); 
                     log(logLevelEnums.INFO, "user_details, flushed the event queue");
                     toRequestQueue({ user_details: JSON.stringify({ custom: customData }) });
                 }
@@ -1801,6 +1818,8 @@ class CountlyClass {
             this.start_time();
             // end session on unload
             add_event_listener(window, "beforeunload", function () {
+                // process async queue before sending events
+                processAsyncQueue(); 
                 // empty the event queue
                 sendEventsForced();
                 self.end_session();
@@ -3693,40 +3712,9 @@ class CountlyClass {
             }
 
             hasPulse = true;
-            var i = 0;
             // process queue
             if (global && typeof Countly.q !== "undefined" && Countly.q.length > 0) {
-                var req;
-                var q = Countly.q;
-                Countly.q = [];
-                for (i = 0; i < q.length; i++) {
-                    req = q[i];
-                    log(logLevelEnums.DEBUG, "Processing queued call", req);
-                    if (typeof req === "function") {
-                        req();
-                    }
-                    else if (Array.isArray(req) && req.length > 0) {
-                        var inst = self;
-                        var arg = 0;
-                        // check if it is meant for other tracker
-                        if (Countly.i[req[arg]]) {
-                            inst = Countly.i[req[arg]];
-                            arg++;
-                        }
-                        if (typeof inst[req[arg]] === "function") {
-                            inst[req[arg]].apply(inst, req.slice(arg + 1));
-                        }
-                        else if (req[arg].indexOf("userData.") === 0) {
-                            var userdata = req[arg].replace("userData.", "");
-                            if (typeof inst.userData[userdata] === "function") {
-                                inst.userData[userdata].apply(inst, req.slice(arg + 1));
-                            }
-                        }
-                        else if (typeof Countly[req[arg]] === "function") {
-                            Countly[req[arg]].apply(Countly, req.slice(arg + 1));
-                        }
-                    }
-                }
+                processAsyncQueue();
             }
 
             // extend session if needed
@@ -3783,6 +3771,48 @@ class CountlyClass {
             }
 
             setTimeout(heartBeat, beatInterval);
+        }
+
+        /**
+         * Process queued calls
+         * @memberof Countly._internals
+         */
+        function processAsyncQueue() {
+            const q = Countly.q;
+            Countly.q = [];
+            for (let i = 0; i < q.length; i++) {
+                let req = q[i];
+                log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
+                if (typeof req === "function") {
+                    req();
+                }
+                else if (Array.isArray(req) && req.length > 0) {
+                    var inst = self;
+                    var arg = 0;
+                    // check if it is meant for other tracker
+                    try {
+                        if (Countly.i[req[arg]]) {
+                            inst = Countly.i[req[arg]];
+                            arg++;
+                        }
+                    } catch (error) {
+                        // possibly first init and no other instance
+                        log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
+                    }
+                    if (typeof inst[req[arg]] === "function") {
+                        inst[req[arg]].apply(inst, req.slice(arg + 1));
+                    }
+                    else if (req[arg].indexOf("userData.") === 0) {
+                        var userdata = req[arg].replace("userData.", "");
+                        if (typeof inst.userData[userdata] === "function") {
+                            inst.userData[userdata].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (typeof Countly[req[arg]] === "function") {
+                        Countly[req[arg]].apply(Countly, req.slice(arg + 1));
+                    }
+                }
+            }
         }
 
         /**
@@ -4631,6 +4661,7 @@ class CountlyClass {
             getRequestQueue: getRequestQueue,
             getEventQueue: getEventQueue,
             sendFetchRequest: sendFetchRequest,
+            processAsyncQueue: processAsyncQueue,
             makeNetworkRequest: makeNetworkRequest,
             /**
              *  Clear queued data
