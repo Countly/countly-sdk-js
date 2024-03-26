@@ -191,8 +191,7 @@ class CountlyClass {
                         log(logLevelEnums.DEBUG, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED, for event flushing");
                         deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                     }
-                    // process async queue before sending events
-                    processAsyncQueue(); 
+                    // don't process async queue here, just send the events (most likely async data is for the new user)
                     sendEventsForced();
                     // set them back to their initial values
                     this.device_id = undefined;
@@ -393,8 +392,6 @@ class CountlyClass {
                 log(logLevelEnums.DEBUG, "initialize, session_cookie_timeout set to:[" + sessionCookieTimeout + "] minutes to expire a cookies session");
             }
 
-            log(logLevelEnums.INFO, "initialize, Countly initialized");
-
             var deviceIdParamValue = null;
             var searchQuery = self.getSearchQuery();
             var hasUTM = false;
@@ -528,6 +525,7 @@ class CountlyClass {
             }
             // send instant health check request
             HealthCheck.sendInstantHCRequest();
+            log(logLevelEnums.INFO, "initialize, Countly initialized");
         };
 
         /**
@@ -3778,6 +3776,11 @@ class CountlyClass {
          * @memberof Countly._internals
          */
         function processAsyncQueue() {
+            if (typeof Countly === "undefined" || typeof Countly.i === "undefined") {
+                log(logLevelEnums.DEBUG, "Countly is not finished initialization yet, will process the queue after initialization is done");
+                return;
+            }
+
             const q = Countly.q;
             Countly.q = [];
             for (let i = 0; i < q.length; i++) {
@@ -3798,6 +3801,8 @@ class CountlyClass {
                     } catch (error) {
                         // possibly first init and no other instance
                         log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
+                        Countly.q.push(req); // return it back to queue and continue to the next one
+                        continue;
                     }
                     if (typeof inst[req[arg]] === "function") {
                         inst[req[arg]].apply(inst, req.slice(arg + 1));
