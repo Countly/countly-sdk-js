@@ -1,3 +1,7 @@
+## 23.12.7
+
+* Added support for responsive Feedback Widgets
+
 ## 23.12.6
 
 * Mitigated an issue where error tracking could prevent SDK initialization in async mode
