@@ -3065,7 +3065,6 @@ class CountlyClass {
                     var customObjectToSendWithTheWidget = {};
                     customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
                     customObjectToSendWithTheWidget.tc = 1; // indicates SDK supports opening links from the widget in a new tab
-                    customObjectToSendWithTheWidget.rw = 1; // indicates SDK supports responsive widgets
                     url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
                 }
                 // Origin is passed to the popup so that it passes it back in the postMessage event
