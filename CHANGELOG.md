@@ -1,6 +1,6 @@
 ## 23.12.7
 
-* Added support for Feedback Widgets terms and conditions
+* Added support for Feedback Widgets' terms and conditions
 
 ## 23.12.6
 
