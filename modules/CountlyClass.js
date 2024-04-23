@@ -31,7 +31,8 @@ import {
     loadCSS,
     showLoader,
     checkIfLoggingIsOn,
-    hideLoader
+    hideLoader,
+    calculateChecksum
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
 
@@ -4647,6 +4648,7 @@ class CountlyClass {
             generateUUID: generateUUID,
             sendEventsForced: sendEventsForced,
             isUUID: isUUID,
+            calculateChecksum: calculateChecksum,
             isReferrerUsable: isReferrerUsable,
             getId: getStoredIdOrGenerateId,
             heartBeat: heartBeat,

@@ -2,7 +2,7 @@
 
 ! Minor breaking change ! For implementations using `salt` the browser compatability is tied to SubtleCrypto's `digest` method support
 
-* Added the `salt` init config flag to add checksums to requests (for secure web context only, no worker support yet)
+* Added the `salt` init config flag to add checksums to requests (for secure contexts only)
 
 ## 23.12.6
 

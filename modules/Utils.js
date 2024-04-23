@@ -136,7 +136,7 @@ function prepareParams(params, salt) {
         str.push(i + "=" + encodeURIComponent(params[i]));
     }
     var data = str.join("&");
-    if (salt && isBrowser) { // no web worker support (yet!)
+    if (salt) {
         return calculateChecksum(data, salt).then(checksum => {
             data += "&checksum256=" + checksum;
             return data;
