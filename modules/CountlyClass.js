@@ -140,6 +140,7 @@ class CountlyClass {
             this.maxStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
             this.maxStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
             this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
+            self.salt = getConfig("salt", ob, null);
             self.hcErrorCount = getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
             self.hcWarningCount = getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
             self.hcStatusCode = getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
@@ -280,6 +281,7 @@ class CountlyClass {
                 if (ignoreReferrers) {
                     log(logLevelEnums.DEBUG, "initialize, referrers to ignore :[" + JSON.stringify(ignoreReferrers) + "]");
                 }
+                log(logLevelEnums.DEBUG, "initialize, salt given:[" + !!self.salt + "]");
             }
             catch (e) {
                 log(logLevelEnums.ERROR, "initialize, Could not stringify some config object values");
@@ -626,6 +628,7 @@ class CountlyClass {
             self.track_domains = undefined;
             self.storage = undefined;
             self.enableOrientationTracking = undefined;
+            self.salt = undefined;
             self.maxKeyLength = undefined;
             self.maxValueSize = undefined;
             self.maxSegmentationValues = undefined;
@@ -4048,57 +4051,58 @@ class CountlyClass {
                 log(logLevelEnums.DEBUG, "Sending XML HTTP request");
                 var xhr = new XMLHttpRequest();
                 params = params || {};
-                var data = prepareParams(params);
-                var method = "GET";
-                if (self.force_post || data.length >= 2000) {
-                    method = "POST";
-                }
-                if (method === "GET") {
-                    xhr.open("GET", url + "?" + data, true);
-                }
-                else {
-                    xhr.open("POST", url, true);
-                    xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
-                }
-                for (var header in self.headers) {
-                    xhr.setRequestHeader(header, self.headers[header]);
-                }
-                // fallback on error
-                xhr.onreadystatechange = function () {
-                    if (this.readyState === 4) {
-                        log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + this.status + "] and response: [" + this.responseText + "]");
-                        // response validation function will be selected to also accept JSON arrays if useBroadResponseValidator is true
-                        var isResponseValidated;
-                        if (useBroadResponseValidator) {
-                            // JSON array/object both can pass
-                            isResponseValidated = isResponseValidBroad(this.status, this.responseText);
-                        }
-                        else {
-                            // only JSON object can pass
-                            isResponseValidated = isResponseValid(this.status, this.responseText);
-                        }
-                        if (isResponseValidated) {
-                            if (typeof callback === "function") {
-                                callback(false, params, this.responseText);
-                            }
-                        }
-                        else {
-                            log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                            if (functionName === "send_request_queue") {
-                                HealthCheck.saveRequestCounters(this.status, this.responseText);
-                            }
-                            if (typeof callback === "function") {
-                                callback(true, params, this.status, this.responseText);
-                            }
-                        }
+                prepareParams(params, self.salt).then(saltedData => {
+                    var method = "GET";
+                    if (self.force_post || saltedData.length >= 2000) {
+                        method = "POST";
                     }
-                };
-                if (method === "GET") {
-                    xhr.send();
-                }
-                else {
-                    xhr.send(data);
-                }
+                    if (method === "GET") {
+                        xhr.open("GET", url + "?" + saltedData, true);
+                    }
+                    else {
+                        xhr.open("POST", url, true);
+                        xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+                    }
+                    for (var header in self.headers) {
+                        xhr.setRequestHeader(header, self.headers[header]);
+                    }
+                    // fallback on error
+                    xhr.onreadystatechange = function () {
+                        if (this.readyState === 4) {
+                            log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + this.status + "] and response: [" + this.responseText + "]");
+                            // response validation function will be selected to also accept JSON arrays if useBroadResponseValidator is true
+                            var isResponseValidated;
+                            if (useBroadResponseValidator) {
+                                // JSON array/object both can pass
+                                isResponseValidated = isResponseValidBroad(this.status, this.responseText);
+                            }
+                            else {
+                                // only JSON object can pass
+                                isResponseValidated = isResponseValid(this.status, this.responseText);
+                            }
+                            if (isResponseValidated) {
+                                if (typeof callback === "function") {
+                                    callback(false, params, this.responseText);
+                                }
+                            }
+                            else {
+                                log(logLevelEnums.ERROR, functionName + " Invalid response from server");
+                                if (functionName === "send_request_queue") {
+                                    HealthCheck.saveRequestCounters(this.status, this.responseText);
+                                }
+                                if (typeof callback === "function") {
+                                    callback(true, params, this.status, this.responseText);
+                                }
+                            }
+                        }
+                    };
+                    if (method === "GET") {
+                        xhr.send();
+                    }
+                    else {
+                        xhr.send(saltedData);
+                    }
+                });
             }
             catch (e) {
                 // fallback
@@ -4131,56 +4135,58 @@ class CountlyClass {
                 var body = null;
 
                 params = params || {};
-                if (self.force_post || prepareParams(params).length >= 2000) {
-                    method = "POST";
-                    body = prepareParams(params);
-                }
-                else {
-                    url += "?" + prepareParams(params);
-                }
-
-                // Add custom headers
-                for (var header in self.headers) {
-                    headers[header] = self.headers[header];
-                }
-
-                // Make the fetch request
-                fetch(url, {
-                    method: method,
-                    headers: headers,
-                    body: body,
-                }).then(function (res) {
-                    response = res;
-                    return response.text();
-                }).then(function (data) {
-                    log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
-                    var isResponseValidated;
-                    if (useBroadResponseValidator) {
-                        isResponseValidated = isResponseValidBroad(response.status, data);
+                prepareParams(params, self.salt).then(saltedData => {
+                    if (self.force_post || saltedData.length >= 2000) {
+                        method = "POST";
+                        body = saltedData;
                     }
                     else {
-                        isResponseValidated = isResponseValid(response.status, data);
+                        url += "?" + saltedData;
                     }
 
-                    if (isResponseValidated) {
+                    // Add custom headers
+                    for (var header in self.headers) {
+                        headers[header] = self.headers[header];
+                    }
+
+                    // Make the fetch request
+                    fetch(url, {
+                        method: method,
+                        headers: headers,
+                        body: body,
+                    }).then(function (res) {
+                        response = res;
+                        return response.text();
+                    }).then(function (data) {
+                        log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
+                        var isResponseValidated;
+                        if (useBroadResponseValidator) {
+                            isResponseValidated = isResponseValidBroad(response.status, data);
+                        }
+                        else {
+                            isResponseValidated = isResponseValid(response.status, data);
+                        }
+
+                        if (isResponseValidated) {
+                            if (typeof callback === "function") {
+                                callback(false, params, data);
+                            }
+                        }
+                        else {
+                            log(logLevelEnums.ERROR, functionName + " Invalid response from server");
+                            if (functionName === "send_request_queue") {
+                                HealthCheck.saveRequestCounters(response.status, data);
+                            }
+                            if (typeof callback === "function") {
+                                callback(true, params, response.status, data);
+                            }
+                        }
+                    }).catch(function (error) {
+                        log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
                         if (typeof callback === "function") {
-                            callback(false, params, data);
+                            callback(true, params);
                         }
-                    }
-                    else {
-                        log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                        if (functionName === "send_request_queue") {
-                            HealthCheck.saveRequestCounters(response.status, data);
-                        }
-                        if (typeof callback === "function") {
-                            callback(true, params, response.status, data);
-                        }
-                    }
-                }).catch(function (error) {
-                    log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
-                    if (typeof callback === "function") {
-                        callback(true, params);
-                    }
+                    });
                 });
             }
             catch (e) {
