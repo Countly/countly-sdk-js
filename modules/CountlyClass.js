@@ -3065,11 +3065,12 @@ class CountlyClass {
                 url += "&platform=" + this.platform;
                 url += "&app_version=" + this.app_version;
                 url += "&sdk_version=" + sdkVersion;
+                var customObjectToSendWithTheWidget = {};
+                customObjectToSendWithTheWidget.tc = 1; // indicates SDK supports opening links from the widget in a new tab
                 if (feedbackWidgetSegmentation) {
-                    var customObjectToSendWithTheWidget = {};
                     customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
-                    url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
                 }
+                url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
                 // Origin is passed to the popup so that it passes it back in the postMessage event
                 // Only web SDK passes origin and web
                 url += "&origin=" + passedOrigin;
@@ -4762,12 +4763,16 @@ class CountlyClass {
         function sendInstantHCRequest() {
             // truncate error message to 1000 characters
             var curbedMessage = truncateSingleValue(self.hcErrorMessage, 1000, "healthCheck", log);
+            // due to some server issues we pass empty string as is
+            if (curbedMessage !== "") {
+                curbedMessage = JSON.stringify(curbedMessage);
+            }
             // prepare hc object
             var hc = {
                 el: self.hcErrorCount,
                 wl: self.hcWarningCount,
                 sc: self.hcStatusCode,
-                em: JSON.stringify(curbedMessage)
+                em: curbedMessage
             };
             // prepare request
             var request = {
