@@ -84,6 +84,7 @@ class CountlyClass {
         var freshUTMTags = null;
         var sdkName = getConfig("sdk_name", ob, SDK_NAME);
         var sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
+        var shouldSendHC = false;
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -344,7 +345,7 @@ class CountlyClass {
             if (offlineMode) {
                 log(logLevelEnums.DEBUG, "initialize, offline_mode:[" + offlineMode + "], user info won't be send to the servers");
             }
-            if (offlineMode) {
+            if (remoteConfigs) {
                 log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(remoteConfigs) + "]");
             }
             // functions, if provided, would be printed as true without revealing their content
@@ -897,6 +898,10 @@ class CountlyClass {
             }
             if (needResync) {
                 setValueInStorage("cly_queue", requestQueue, true);
+            }
+            if (shouldSendHC) {
+                HealthCheck.sendInstantHCRequest();
+                shouldSendHC = false;
             }
         };
 
@@ -1971,9 +1976,6 @@ class CountlyClass {
                     }
                 }
             }
-            lastView = page;
-            lastViewTime = getTimestamp();
-            log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + lastView + "], current view ID is:[" + currentViewId + "], previous view ID is:[" + previousViewId + "]");
             var segments = {
                 name: page,
                 visit: 1,
@@ -2044,6 +2046,9 @@ class CountlyClass {
                     key: internalEventKeyEnums.VIEW,
                     segmentation: segments
                 }, currentViewId);
+                lastView = page;
+                lastViewTime = getTimestamp();
+                log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + lastView + "]");
             }
             else {
                 lastParams.track_pageview = arguments;
@@ -4072,7 +4077,7 @@ class CountlyClass {
                 var xhr = new XMLHttpRequest();
                 params = params || {};
                 prepareParams(params, self.salt).then(saltedData => {
-                    var method = "GET";
+                    var method = "POST";
                     if (self.force_post || saltedData.length >= 2000) {
                         method = "POST";
                     }
@@ -4779,6 +4784,11 @@ class CountlyClass {
          * Countly health check request sender
          */
         function sendInstantHCRequest() {
+            if (offlineMode) {
+                log(logLevelEnums.DEBUG, "sendInstantHCRequest, Offline mode is active. Not sending health check request.");
+                shouldSendHC = true;
+                return;
+            }
             // truncate error message to 1000 characters
             var curbedMessage = truncateSingleValue(self.hcErrorMessage, 1000, "healthCheck", log);
             // due to some server issues we pass empty string as is

@@ -1,3 +1,8 @@
+## 24.4.2
+
+* Healtchecks won't be sent in offline mode
+* Improved view tracking logic
+
 ## 24.4.1
 
 * Added a new method `set_id(newDeviceId)` for managing device id changes according to the device ID Type.
