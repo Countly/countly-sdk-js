@@ -37,7 +37,8 @@ import {
 import { isBrowser, Countly } from "./Platform.js";
 
 class CountlyClass {
-    constructor(ob) {
+    #showWidgetInternal;
+constructor(ob) {
         var self = this;
         var global = !Countly.i;
         var sessionStarted = false;
@@ -102,7 +103,7 @@ class CountlyClass {
             consents[Countly.features[it]] = {};
         }
 
-        this.initialize = function () {
+        this.initialize = () => {
             this.serialize = getConfig("serialize", ob, Countly.serialize);
             this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
             this.getViewName = getConfig("getViewName", ob, Countly.getViewName);
@@ -142,11 +143,11 @@ class CountlyClass {
             this.maxStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
             this.maxStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
             this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
-            self.salt = getConfig("salt", ob, null);
-            self.hcErrorCount = getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
-            self.hcWarningCount = getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
-            self.hcStatusCode = getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
-            self.hcErrorMessage = getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
+            this.salt = getConfig("salt", ob, null);
+            this.hcErrorCount = getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
+            this.hcWarningCount = getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
+            this.hcStatusCode = getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
+            this.hcErrorMessage = getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
 
             if (maxCrashLogs && !this.maxBreadcrumbCount) {
                 this.maxBreadcrumbCount = maxCrashLogs;
@@ -183,6 +184,9 @@ class CountlyClass {
             requestQueue = getValueFromStorage("cly_queue") || [];
             eventQueue = getValueFromStorage("cly_event") || [];
             remoteConfigs = getValueFromStorage("cly_remote_configs") || {};
+
+            // flag that indicates that the offline mode was enabled at the end of the previous app session 
+            var tempIdModeWasEnabled = (getValueFromStorage("cly_id") === "[CLY]_temp_id");
 
             if (this.clearStoredId) {
                 // retrieve stored device ID and type from local storage and use it to flush existing events
@@ -283,7 +287,7 @@ class CountlyClass {
                 if (ignoreReferrers) {
                     log(logLevelEnums.DEBUG, "initialize, referrers to ignore :[" + JSON.stringify(ignoreReferrers) + "]");
                 }
-                log(logLevelEnums.DEBUG, "initialize, salt given:[" + !!self.salt + "]");
+                log(logLevelEnums.DEBUG, "initialize, salt given:[" + !!this.salt + "]");
             }
             catch (e) {
                 log(logLevelEnums.ERROR, "initialize, Could not stringify some config object values");
@@ -397,7 +401,7 @@ class CountlyClass {
             }
 
             var deviceIdParamValue = null;
-            var searchQuery = self.getSearchQuery();
+            var searchQuery = this.getSearchQuery();
             var hasUTM = false;
             var utms = {};
             if (searchQuery) {
@@ -424,8 +428,6 @@ class CountlyClass {
                 }
             }
 
-            // flag that indicates that the offline mode was enabled at the end of the previous app session 
-            var tempIdModeWasEnabled = (getValueFromStorage("cly_id") === "[CLY]_temp_id");
             var developerSetDeviceId = getConfig("device_id", ob, undefined);
             if (typeof developerSetDeviceId === "number") { // device ID should always be string
                 developerSetDeviceId = developerSetDeviceId.toString();
@@ -441,12 +443,14 @@ class CountlyClass {
                     // there is a device ID saved but there is no device ID information saved 
                     deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                 }
+                offlineMode = false;
             }
             // if not check if device ID was provided with URL
             else if (deviceIdParamValue !== null) {
                 log(logLevelEnums.INFO, "initialize, Device ID set by URL");
                 this.device_id = deviceIdParamValue;
                 deviceIdType = DeviceIdTypeInternalEnums.URL_PROVIDED;
+                offlineMode = false;
             }
             // if not check if developer provided any ID
             else if (developerSetDeviceId) {
@@ -460,6 +464,7 @@ class CountlyClass {
                 else if (Countly.device_id !== undefined) {
                     deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                 }
+                offlineMode = false;
             }
             // if not check if offline mode is on
             else if (offlineMode || tempIdModeWasEnabled) {
@@ -520,8 +525,8 @@ class CountlyClass {
                     log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
                 }
             
-                if (self.remote_config) {
-                    self.fetch_remote_config(self.remote_config);
+                if (this.remote_config) {
+                    this.fetch_remote_config(this.remote_config);
                 }
             }, 1);
             if (isBrowser) {
@@ -2880,6 +2885,66 @@ class CountlyClass {
         };
 
         /**
+         * Internal method to display a feedback widget of a specific type.
+         * @param {String} widgetType - The type of widget ("nps", "survey", "rating").
+         * @param {String} [nameIDorTag] - The name, id, or tag of the widget to display.
+         */
+        this.#showWidgetInternal = (widgetType, nameIDorTag) => {
+            log(logLevelEnums.INFO, `showWidget, Showing ${widgetType} widget, nameIDorTag:[${nameIDorTag}]`);
+            this.get_available_feedback_widgets((feedbackWidgetArray, error) => {
+                if (error) {
+                    log(logLevelEnums.ERROR, `showWidget, Error while getting feedback widgets list: ${error}`);
+                    return;
+                }
+       
+                // Find the first widget of the specified type, or match by name, id, or tag if provided
+                let widget = feedbackWidgetArray.find(w => w.type === widgetType);
+                if (nameIDorTag && typeof nameIDorTag === 'string') {
+                    const matchedWidget = feedbackWidgetArray.find(w =>
+                        w.type === widgetType &&
+                        (w.name === nameIDorTag || w._id === nameIDorTag || w.tg.includes(nameIDorTag))
+                    );
+                    if (matchedWidget) {
+                        widget = matchedWidget;
+                        log(logLevelEnums.VERBOSE, `showWidget, Found ${widgetType} widget by name, id, or tag: [${JSON.stringify(matchedWidget)}]`);
+                    }
+                }
+       
+                if (!widget) {
+                    log(logLevelEnums.ERROR, `showWidget, No ${widgetType} widget found.`);
+                    return;
+                }
+                this.present_feedback_widget(widget, null, null, null);
+            });
+        },
+    /**
+  * Feedback interface with convenience methods for feedback widgets:
+  * - showNPS([String nameIDorTag]) - shows an NPS widget by name, id or tag, or a random one if not provided
+  * - showSurvey([String nameIDorTag]) - shows a Survey widget by name, id or tag, or a random one if not provided
+  * - showRating([String nameIDorTag]) - shows a Rating widget by name, id or tag, or a random one if not provided
+  */
+    this.feedback = {
+        /**
+         * Displays the first available NPS widget or the one with the provided name, id, or tag.
+         * @param {String} [nameIDorTag] - Name, id, or tag of the NPS widget to display.
+         */
+        showNPS: (nameIDorTag) => this.#showWidgetInternal("nps", nameIDorTag),
+
+        /**
+         * Displays the first available Survey widget or the one with the provided name, id, or tag.
+         * @param {String} [nameIDorTag] - Name, id, or tag of the Survey widget to display.
+         */
+        showSurvey: (nameIDorTag) => this.#showWidgetInternal("survey", nameIDorTag),
+
+        /**
+         * Displays the first available Rating widget or the one with the provided name, id, or tag.
+         * @param {String} [nameIDorTag] - Name, id, or tag of the Rating widget to display.
+         */
+        showRating: (nameIDorTag) => this.#showWidgetInternal("rating", nameIDorTag)
+    };
+
+
+        /**
         * This function retrieves all associated widget information (IDs, type, name etc in an array/list of objects) of your app
         * @param {Function} callback - Callback function with two parameters, 1st for returned list, 2nd for error
         * */
@@ -3334,6 +3399,13 @@ class CountlyClass {
              * @param  {Object} feedback - feedback object
              */
             function showRatingForFeedbackWidget(feedback) {
+                // remove old stickers if exists
+                var stickers = document.getElementsByClassName("countly-feedback-sticker");
+                while (stickers.length > 0) {
+                    log(logLevelEnums.VERBOSE, "present_feedback_widget, Removing old stickers");
+                    stickers[0].remove();
+                }
+
                 // render sticker if hide sticker property isn't set
                 if (!feedback.appearance.hideS) {
                     log(logLevelEnums.DEBUG, "present_feedback_widget, handling the sticker as it was not set to hidden");
@@ -4155,7 +4227,7 @@ class CountlyClass {
                 log(logLevelEnums.DEBUG, "Sending Fetch request");
 
                 // Prepare request options
-                var method = "GET";
+                var method = "POST";
                 var headers = { "Content-type": "application/x-www-form-urlencoded" };
                 var body = null;
 
