@@ -68,31 +68,43 @@ var waitFunction = function(startTime, waitTime, waitIncrement, continueCallback
 };
 
 /**
- * This intercepts the request the SDK makes and returns the request parameters to the callback function
- * @param {String} requestType - GET, POST, PUT, DELETE
- * @param {String} requestUrl - request url (https://your.domain.count.ly)
- * @param {String} endPoint - endpoint (/i)
- * @param {String} requestParams - request parameters (?begin_session=**)
+ * Intercepts SDK requests and returns request parameters to the callback function.
+ * @param {String} requestType - GET or POST
+ * @param {String} requestUrl - base URL (e.g., https://your.domain.count.ly)
+ * @param {String} endPoint - endpoint (e.g., /i)
+ * @param {String} aliasParam - parameter to match in requests (e.g., "hc", "begin_session")
  * @param {String} alias - alias for the request
- * @param {Function} callback - callback function
+ * @param {Function} callback - callback function for parsed parameters
  */
-function interceptAndCheckRequests(requestType, requestUrl, endPoint, requestParams, alias, callback) {
+function interceptAndCheckRequests(requestType, requestUrl, endPoint, aliasParam, alias, callback) {
     requestType = requestType || "GET";
-    requestUrl = requestUrl || "https://your.domain.count.ly"; // TODO: might be needed in the future but not yet
+    requestUrl = requestUrl || "https://your.domain.count.ly";
     endPoint = endPoint || "/i";
-    requestParams = requestParams || "?*";
     alias = alias || "getXhr";
 
-    cy.intercept(requestUrl + endPoint + requestParams, (req) => {
-        const { url } = req;
-        req.reply(200, {result: "Success"}, {
+    // Intercept requests
+    cy.intercept(requestType, requestUrl + endPoint + "*", (req) => {
+        if (requestType === "POST" && req.body) {
+            // Parse URL-encoded body for POST requests
+            const params = new URLSearchParams(req.body);
+            callback(params);
+        } else {
+            // Parse URL parameters for GET requests
+            const url = new URL(req.url);
+            const params = url.searchParams;
+            callback(params);
+        }
+        req.reply(200, { result: "Success" }, {
             "x-countly-rr": "2"
         });
     }).as(alias);
+
+    // Wait for the request alias to be triggered
     cy.wait("@" + alias).then((xhr) => {
-        const url = new URL(xhr.request.url);
-        const searchParams = url.searchParams;
-        callback(searchParams);
+        const params = requestType === "POST" && xhr.request.body
+            ? new URLSearchParams(xhr.request.body)
+            : new URL(xhr.request.url).searchParams;
+        callback(params);
     });
 }
 
@@ -274,6 +286,46 @@ function validateDefaultUtmTags(aq, source, medium, campaign, term, content) {
     }
 }
 
+/**
+ *  Check common params for all requests
+ * @param {Object} paramsObject - object from search string
+ */
+function check_commons(paramsObject) {
+    expect(paramsObject.timestamp).to.be.ok;
+    expect(paramsObject.timestamp.toString().length).to.equal(13);
+    expect(paramsObject.hour).to.be.within(0, 23);
+    expect(paramsObject.dow).to.be.within(0, 7);
+    expect(paramsObject.app_key).to.equal(appKey);
+    expect(paramsObject.device_id).to.be.ok;
+    expect(paramsObject.sdk_name).to.equal("javascript_native_web");
+    expect(paramsObject.sdk_version).to.be.ok;
+    expect(paramsObject.t).to.be.within(0, 3);
+    expect(paramsObject.av).to.equal(0); // av is 0 as we parsed parsable things
+    if (!paramsObject.hc) { // hc is direct request
+        expect(paramsObject.rr).to.be.above(-1);
+    }
+    expect(paramsObject.metrics._ua).to.be.ok;
+}
+
+/**
+ *  Turn search string into object with values parsed
+ * @param {String} searchString - search string
+ * @returns {object} - object from search string
+ */
+function turnSearchStringToObject(searchString) {
+    const searchParams = new URLSearchParams(searchString);
+    const paramsObject = {};
+    for (const [key, value] of searchParams.entries()) {
+        try {
+            paramsObject[key] = JSON.parse(decodeURIComponent(value)); // try to parse value
+        }
+        catch (e) {
+            paramsObject[key] = decodeURIComponent(value);
+        }
+    }
+    return paramsObject;
+}
+
 module.exports = {
     haltAndClearStorage,
     sWait,
@@ -287,5 +339,7 @@ module.exports = {
     testNormalFlow,
     interceptAndCheckRequests,
     validateDefaultUtmTags,
-    userDetailObj
+    userDetailObj,
+    check_commons,
+    turnSearchStringToObject
 };

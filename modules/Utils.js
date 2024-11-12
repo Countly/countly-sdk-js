@@ -127,14 +127,22 @@ function dispatchErrors(error, fatality, segments) {
  *  Convert JSON object to URL encoded query parameter string
  *  @memberof Countly._internals
  *  @param {Object} params - object with query parameters
+ *  @param {String} salt - salt to be used for checksum calculation
  *  @returns {String} URL encode query string
  */
-function prepareParams(params) {
+function prepareParams(params, salt) {
     var str = [];
     for (var i in params) {
         str.push(i + "=" + encodeURIComponent(params[i]));
     }
-    return str.join("&");
+    var data = str.join("&");
+    if (salt) {
+        return calculateChecksum(data, salt).then(checksum => {
+            data += "&checksum256=" + checksum;
+            return data;
+        });
+    }
+    return Promise.resolve(data);
 }
 
 /**
@@ -246,6 +254,26 @@ function truncateSingleValue(str, limit, errorLog, logCall) {
         }
     }
     return newStr;
+}
+
+/**
+ * Calculates the checksum of the data with the given salt
+ * Uses SHA-256 algorithm with web crypto API
+ * Implementation based on https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest
+ * TODO: Turn to async function when we drop support for older browsers
+ * @param {string} data - data to be used for checksum calculation (concatenated query parameters)
+ * @param {string} salt - salt to be used for checksum calculation
+ * @returns {string} checksum in hex format
+ */
+function calculateChecksum(data, salt) {
+    const msgUint8 = new TextEncoder().encode(data + salt); // encode as (utf-8) Uint8Array
+    return crypto.subtle.digest("SHA-256", msgUint8).then((hashBuffer) => { // hash the message
+        const hashArray = Array.from(new Uint8Array(hashBuffer)); // convert buffer to byte array
+        const hashHex = hashArray
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join(""); // convert bytes to hex string
+        return hashHex;
+    }); 
 }
 
 /**
@@ -640,5 +668,6 @@ export {
     showLoader,
     checkIfLoggingIsOn,
     hideLoader,
-    currentUserAgentDataString
+    currentUserAgentDataString,
+    calculateChecksum
 }; 

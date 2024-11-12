@@ -31,12 +31,14 @@ import {
     loadCSS,
     showLoader,
     checkIfLoggingIsOn,
-    hideLoader
+    hideLoader,
+    calculateChecksum
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
 
 class CountlyClass {
-    constructor(ob) {
+    #showWidgetInternal;
+constructor(ob) {
         var self = this;
         var global = !Countly.i;
         var sessionStarted = false;
@@ -83,6 +85,7 @@ class CountlyClass {
         var freshUTMTags = null;
         var sdkName = getConfig("sdk_name", ob, SDK_NAME);
         var sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
+        var shouldSendHC = false;
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -100,7 +103,7 @@ class CountlyClass {
             consents[Countly.features[it]] = {};
         }
 
-        this.initialize = function () {
+        this.initialize = () => {
             this.serialize = getConfig("serialize", ob, Countly.serialize);
             this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
             this.getViewName = getConfig("getViewName", ob, Countly.getViewName);
@@ -140,10 +143,11 @@ class CountlyClass {
             this.maxStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
             this.maxStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
             this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
-            self.hcErrorCount = getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
-            self.hcWarningCount = getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
-            self.hcStatusCode = getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
-            self.hcErrorMessage = getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
+            this.salt = getConfig("salt", ob, null);
+            this.hcErrorCount = getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
+            this.hcWarningCount = getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
+            this.hcStatusCode = getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
+            this.hcErrorMessage = getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
 
             if (maxCrashLogs && !this.maxBreadcrumbCount) {
                 this.maxBreadcrumbCount = maxCrashLogs;
@@ -181,6 +185,9 @@ class CountlyClass {
             eventQueue = getValueFromStorage("cly_event") || [];
             remoteConfigs = getValueFromStorage("cly_remote_configs") || {};
 
+            // flag that indicates that the offline mode was enabled at the end of the previous app session 
+            var tempIdModeWasEnabled = (getValueFromStorage("cly_id") === "[CLY]_temp_id");
+
             if (this.clearStoredId) {
                 // retrieve stored device ID and type from local storage and use it to flush existing events
                 if (getValueFromStorage("cly_id") && !tempIdModeWasEnabled) {
@@ -191,6 +198,7 @@ class CountlyClass {
                         log(logLevelEnums.DEBUG, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED, for event flushing");
                         deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                     }
+                    // don't process async queue here, just send the events (most likely async data is for the new user)
                     sendEventsForced();
                     // set them back to their initial values
                     this.device_id = undefined;
@@ -279,6 +287,7 @@ class CountlyClass {
                 if (ignoreReferrers) {
                     log(logLevelEnums.DEBUG, "initialize, referrers to ignore :[" + JSON.stringify(ignoreReferrers) + "]");
                 }
+                log(logLevelEnums.DEBUG, "initialize, salt given:[" + !!this.salt + "]");
             }
             catch (e) {
                 log(logLevelEnums.ERROR, "initialize, Could not stringify some config object values");
@@ -340,7 +349,7 @@ class CountlyClass {
             if (offlineMode) {
                 log(logLevelEnums.DEBUG, "initialize, offline_mode:[" + offlineMode + "], user info won't be send to the servers");
             }
-            if (offlineMode) {
+            if (remoteConfigs) {
                 log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(remoteConfigs) + "]");
             }
             // functions, if provided, would be printed as true without revealing their content
@@ -391,10 +400,8 @@ class CountlyClass {
                 log(logLevelEnums.DEBUG, "initialize, session_cookie_timeout set to:[" + sessionCookieTimeout + "] minutes to expire a cookies session");
             }
 
-            log(logLevelEnums.INFO, "initialize, Countly initialized");
-
             var deviceIdParamValue = null;
-            var searchQuery = self.getSearchQuery();
+            var searchQuery = this.getSearchQuery();
             var hasUTM = false;
             var utms = {};
             if (searchQuery) {
@@ -421,8 +428,6 @@ class CountlyClass {
                 }
             }
 
-            // flag that indicates that the offline mode was enabled at the end of the previous app session 
-            var tempIdModeWasEnabled = (getValueFromStorage("cly_id") === "[CLY]_temp_id");
             var developerSetDeviceId = getConfig("device_id", ob, undefined);
             if (typeof developerSetDeviceId === "number") { // device ID should always be string
                 developerSetDeviceId = developerSetDeviceId.toString();
@@ -438,12 +443,14 @@ class CountlyClass {
                     // there is a device ID saved but there is no device ID information saved 
                     deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                 }
+                offlineMode = false;
             }
             // if not check if device ID was provided with URL
             else if (deviceIdParamValue !== null) {
                 log(logLevelEnums.INFO, "initialize, Device ID set by URL");
                 this.device_id = deviceIdParamValue;
                 deviceIdType = DeviceIdTypeInternalEnums.URL_PROVIDED;
+                offlineMode = false;
             }
             // if not check if developer provided any ID
             else if (developerSetDeviceId) {
@@ -457,6 +464,7 @@ class CountlyClass {
                 else if (Countly.device_id !== undefined) {
                     deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                 }
+                offlineMode = false;
             }
             // if not check if offline mode is on
             else if (offlineMode || tempIdModeWasEnabled) {
@@ -511,9 +519,14 @@ class CountlyClass {
             notifyLoaders();
 
             setTimeout(function () {
-                heartBeat();
-                if (self.remote_config) {
-                    self.fetch_remote_config(self.remote_config);
+                if (!Countly.noHeartBeat) {
+                    heartBeat();
+                } else {
+                    log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
+                }
+            
+                if (this.remote_config) {
+                    this.fetch_remote_config(this.remote_config);
                 }
             }, 1);
             if (isBrowser) {
@@ -521,6 +534,7 @@ class CountlyClass {
             }
             // send instant health check request
             HealthCheck.sendInstantHCRequest();
+            log(logLevelEnums.INFO, "initialize, Countly initialized");
         };
 
         /**
@@ -533,6 +547,8 @@ class CountlyClass {
         this.halt = function () {
             log(logLevelEnums.WARNING, "halt, Resetting Countly");
             Countly.i = undefined;
+            Countly.q = [];
+            Countly.noHeartBeat = undefined;
             global = !Countly.i;
             sessionStarted = false;
             apiPath = "/i";
@@ -619,6 +635,7 @@ class CountlyClass {
             self.track_domains = undefined;
             self.storage = undefined;
             self.enableOrientationTracking = undefined;
+            self.salt = undefined;
             self.maxKeyLength = undefined;
             self.maxValueSize = undefined;
             self.maxSegmentationValues = undefined;
@@ -887,6 +904,10 @@ class CountlyClass {
             if (needResync) {
                 setValueInStorage("cly_queue", requestQueue, true);
             }
+            if (shouldSendHC) {
+                HealthCheck.sendInstantHCRequest();
+                shouldSendHC = false;
+            }
         };
 
         /**
@@ -973,17 +994,33 @@ class CountlyClass {
         };
 
         /**
-        * Change current user/device id
+        * Changes the current device ID according to the device ID type (the preffered method)
+        * @param {string} newId - new user/device ID to use. Must be a non-empty string value. Invalid values (like null, empty string or undefined) will be rejected
+        * */
+        this.set_id =  function (newId) {
+            log(logLevelEnums.INFO, "set_id, Changing the device ID to:[" + newId + "]");
+            if (newId == null || newId === "") {
+                log(logLevelEnums.WARNING, "set_id, The provided device is not a valid ID");
+                return;
+            }
+            if (deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED) {
+                /*change ID without merge as current ID is Dev supplied, so not first login*/
+                this.change_id(newId, false);
+            } else {
+                /*change ID with merge as current ID is not Dev supplied*/
+                this.change_id(newId, true);
+            }
+        }
+
+        /**
+        * Change current user/device id (use set_id instead if you are not sure about the merge operation)
         * @param {string} newId - new user/device ID to use. Must be a non-empty string value. Invalid values (like null, empty string or undefined) will be rejected
         * @param {boolean} merge - move data from old ID to new ID on server
         * */
         this.change_id = function (newId, merge) {
-            log(logLevelEnums.INFO, "change_id, Changing the ID");
-            if (merge) {
-                log(logLevelEnums.INFO, "change_id, Will merge the IDs");
-            }
+            log(logLevelEnums.INFO, "change_id, Changing the device ID to: [" + newId + "] with merge:[" + merge + "]");
             if (!newId || typeof newId !== "string" || newId.length === 0) {
-                log(logLevelEnums.ERROR, "change_id, The provided ID: [" + newId + "] is not a valid ID");
+                log(logLevelEnums.WARNING, "change_id, The provided device ID is not a valid ID");
                 return;
             }
             if (offlineMode) {
@@ -993,38 +1030,42 @@ class CountlyClass {
             }
             // eqeq is used here since we want to catch number to string checks too. type conversion might happen at a new init
             // eslint-disable-next-line eqeqeq
-            if (this.device_id != newId) {
-                if (!merge) {
-                    // empty event queue
-                    sendEventsForced();
-                    // end current session
-                    this.end_session(null, true);
-                    // clear timed events
-                    timedEvents = {};
-                    // clear all consents
-                    this.remove_consent_internal(Countly.features, false);
-                }
-                var oldId = this.device_id;
-                this.device_id = newId;
-                self.device_id = this.device_id;
-                deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                setValueInStorage("cly_id", this.device_id);
-                setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
-                log(logLevelEnums.INFO, "change_id, Changing ID from:[" + oldId + "] to [" + newId + "]");
-                if (merge) {
-                    // no consent check here since 21.11.0
-                    toRequestQueue({ old_device_id: oldId });
-                }
-                else {
-                    // start new session for new ID                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-                    this.begin_session(!autoExtend, true);
-                }
-                // if init time remote config was enabled with a callback function, remove currently stored remote configs and fetch remote config again
-                if (this.remote_config) {
-                    remoteConfigs = {};
-                    setValueInStorage("cly_remote_configs", remoteConfigs);
-                    this.fetch_remote_config(this.remote_config);
-                }
+            if (this.device_id == newId) {
+                log(logLevelEnums.DEBUG, "change_id, Provided device ID is equal to the current device ID. Aborting.");
+                return;
+            }
+            if (!merge) {
+                // process async queue before sending events
+                processAsyncQueue(); 
+                // empty event queue
+                sendEventsForced();
+                // end current session
+                this.end_session(null, true);
+                // clear timed events
+                timedEvents = {};
+                // clear all consents
+                this.remove_consent_internal(Countly.features, false);
+            }
+            var oldId = this.device_id;
+            this.device_id = newId;
+            self.device_id = this.device_id;
+            deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+            setValueInStorage("cly_id", this.device_id);
+            setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
+            log(logLevelEnums.INFO, "change_id, Changing ID from:[" + oldId + "] to [" + newId + "]");
+            if (merge) {
+                // no consent check here since 21.11.0
+                toRequestQueue({ old_device_id: oldId });
+            }
+            else {
+                // start new session for new ID TODO: check this when no session tracking is enabled
+                this.begin_session(!autoExtend, true);
+            }
+            // if init time remote config was enabled with a callback function, remove currently stored remote configs and fetch remote config again
+            if (this.remote_config) {
+                remoteConfigs = {};
+                setValueInStorage("cly_remote_configs", remoteConfigs);
+                this.fetch_remote_config(this.remote_config);
             }
         };
 
@@ -1247,7 +1288,10 @@ class CountlyClass {
         this.user_details = function (user) {
             log(logLevelEnums.INFO, "user_details, Trying to add user details: ", user);
             if (this.check_consent(featureEnums.USERS)) {
-                sendEventsForced(); // flush events to event queue to prevent a drill issue
+                // process async queue before sending events
+                processAsyncQueue(); 
+                // flush events to event queue to prevent a drill issue
+                sendEventsForced();
                 log(logLevelEnums.INFO, "user_details, flushed the event queue");
                 // truncating user values and custom object key value pairs
                 user.name = truncateSingleValue(user.name, self.maxValueSize, "user_details", log);
@@ -1450,7 +1494,10 @@ class CountlyClass {
             save: function () {
                 log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property");
                 if (self.check_consent(featureEnums.USERS)) {
-                    sendEventsForced(); // flush events to event queue to prevent a drill issue
+                    // process async queue before sending events
+                    processAsyncQueue(); 
+                    // flush events to event queue to prevent a drill issue
+                    sendEventsForced(); 
                     log(logLevelEnums.INFO, "user_details, flushed the event queue");
                     toRequestQueue({ user_details: JSON.stringify({ custom: customData }) });
                 }
@@ -1801,6 +1848,8 @@ class CountlyClass {
             this.start_time();
             // end session on unload
             add_event_listener(window, "beforeunload", function () {
+                // process async queue before sending events
+                processAsyncQueue(); 
                 // empty the event queue
                 sendEventsForced();
                 self.end_session();
@@ -1932,9 +1981,6 @@ class CountlyClass {
                     }
                 }
             }
-            lastView = page;
-            lastViewTime = getTimestamp();
-            log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + lastView + "], current view ID is:[" + currentViewId + "], previous view ID is:[" + previousViewId + "]");
             var segments = {
                 name: page,
                 visit: 1,
@@ -2005,6 +2051,9 @@ class CountlyClass {
                     key: internalEventKeyEnums.VIEW,
                     segmentation: segments
                 }, currentViewId);
+                lastView = page;
+                lastViewTime = getTimestamp();
+                log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + lastView + "]");
             }
             else {
                 lastParams.track_pageview = arguments;
@@ -2836,6 +2885,66 @@ class CountlyClass {
         };
 
         /**
+         * Internal method to display a feedback widget of a specific type.
+         * @param {String} widgetType - The type of widget ("nps", "survey", "rating").
+         * @param {String} [nameIDorTag] - The name, id, or tag of the widget to display.
+         */
+        this.#showWidgetInternal = (widgetType, nameIDorTag) => {
+            log(logLevelEnums.INFO, `showWidget, Showing ${widgetType} widget, nameIDorTag:[${nameIDorTag}]`);
+            this.get_available_feedback_widgets((feedbackWidgetArray, error) => {
+                if (error) {
+                    log(logLevelEnums.ERROR, `showWidget, Error while getting feedback widgets list: ${error}`);
+                    return;
+                }
+       
+                // Find the first widget of the specified type, or match by name, id, or tag if provided
+                let widget = feedbackWidgetArray.find(w => w.type === widgetType);
+                if (nameIDorTag && typeof nameIDorTag === 'string') {
+                    const matchedWidget = feedbackWidgetArray.find(w =>
+                        w.type === widgetType &&
+                        (w.name === nameIDorTag || w._id === nameIDorTag || w.tg.includes(nameIDorTag))
+                    );
+                    if (matchedWidget) {
+                        widget = matchedWidget;
+                        log(logLevelEnums.VERBOSE, `showWidget, Found ${widgetType} widget by name, id, or tag: [${JSON.stringify(matchedWidget)}]`);
+                    }
+                }
+       
+                if (!widget) {
+                    log(logLevelEnums.ERROR, `showWidget, No ${widgetType} widget found.`);
+                    return;
+                }
+                this.present_feedback_widget(widget, null, null, null);
+            });
+        },
+    /**
+  * Feedback interface with convenience methods for feedback widgets:
+  * - showNPS([String nameIDorTag]) - shows an NPS widget by name, id or tag, or a random one if not provided
+  * - showSurvey([String nameIDorTag]) - shows a Survey widget by name, id or tag, or a random one if not provided
+  * - showRating([String nameIDorTag]) - shows a Rating widget by name, id or tag, or a random one if not provided
+  */
+    this.feedback = {
+        /**
+         * Displays the first available NPS widget or the one with the provided name, id, or tag.
+         * @param {String} [nameIDorTag] - Name, id, or tag of the NPS widget to display.
+         */
+        showNPS: (nameIDorTag) => this.#showWidgetInternal("nps", nameIDorTag),
+
+        /**
+         * Displays the first available Survey widget or the one with the provided name, id, or tag.
+         * @param {String} [nameIDorTag] - Name, id, or tag of the Survey widget to display.
+         */
+        showSurvey: (nameIDorTag) => this.#showWidgetInternal("survey", nameIDorTag),
+
+        /**
+         * Displays the first available Rating widget or the one with the provided name, id, or tag.
+         * @param {String} [nameIDorTag] - Name, id, or tag of the Rating widget to display.
+         */
+        showRating: (nameIDorTag) => this.#showWidgetInternal("rating", nameIDorTag)
+    };
+
+
+        /**
         * This function retrieves all associated widget information (IDs, type, name etc in an array/list of objects) of your app
         * @param {Function} callback - Callback function with two parameters, 1st for returned list, 2nd for error
         * */
@@ -3044,11 +3153,12 @@ class CountlyClass {
                 url += "&platform=" + this.platform;
                 url += "&app_version=" + this.app_version;
                 url += "&sdk_version=" + sdkVersion;
+                var customObjectToSendWithTheWidget = {};
+                customObjectToSendWithTheWidget.tc = 1; // indicates SDK supports opening links from the widget in a new tab
                 if (feedbackWidgetSegmentation) {
-                    var customObjectToSendWithTheWidget = {};
                     customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
-                    url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
                 }
+                url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
                 // Origin is passed to the popup so that it passes it back in the postMessage event
                 // Only web SDK passes origin and web
                 url += "&origin=" + passedOrigin;
@@ -3289,6 +3399,13 @@ class CountlyClass {
              * @param  {Object} feedback - feedback object
              */
             function showRatingForFeedbackWidget(feedback) {
+                // remove old stickers if exists
+                var stickers = document.getElementsByClassName("countly-feedback-sticker");
+                while (stickers.length > 0) {
+                    log(logLevelEnums.VERBOSE, "present_feedback_widget, Removing old stickers");
+                    stickers[0].remove();
+                }
+
                 // render sticker if hide sticker property isn't set
                 if (!feedback.appearance.hideS) {
                     log(logLevelEnums.DEBUG, "present_feedback_widget, handling the sticker as it was not set to hidden");
@@ -3693,40 +3810,9 @@ class CountlyClass {
             }
 
             hasPulse = true;
-            var i = 0;
             // process queue
             if (global && typeof Countly.q !== "undefined" && Countly.q.length > 0) {
-                var req;
-                var q = Countly.q;
-                Countly.q = [];
-                for (i = 0; i < q.length; i++) {
-                    req = q[i];
-                    log(logLevelEnums.DEBUG, "Processing queued call", req);
-                    if (typeof req === "function") {
-                        req();
-                    }
-                    else if (Array.isArray(req) && req.length > 0) {
-                        var inst = self;
-                        var arg = 0;
-                        // check if it is meant for other tracker
-                        if (Countly.i[req[arg]]) {
-                            inst = Countly.i[req[arg]];
-                            arg++;
-                        }
-                        if (typeof inst[req[arg]] === "function") {
-                            inst[req[arg]].apply(inst, req.slice(arg + 1));
-                        }
-                        else if (req[arg].indexOf("userData.") === 0) {
-                            var userdata = req[arg].replace("userData.", "");
-                            if (typeof inst.userData[userdata] === "function") {
-                                inst.userData[userdata].apply(inst, req.slice(arg + 1));
-                            }
-                        }
-                        else if (typeof Countly[req[arg]] === "function") {
-                            Countly[req[arg]].apply(Countly, req.slice(arg + 1));
-                        }
-                    }
-                }
+                processAsyncQueue();
             }
 
             // extend session if needed
@@ -3783,6 +3869,55 @@ class CountlyClass {
             }
 
             setTimeout(heartBeat, beatInterval);
+        }
+
+        /**
+         * Process queued calls
+         * @memberof Countly._internals
+         */
+        function processAsyncQueue() {
+            if (typeof Countly === "undefined" || typeof Countly.i === "undefined") {
+                log(logLevelEnums.DEBUG, "Countly is not finished initialization yet, will process the queue after initialization is done");
+                return;
+            }
+
+            const q = Countly.q;
+            Countly.q = [];
+            for (let i = 0; i < q.length; i++) {
+                let req = q[i];
+                log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
+                if (typeof req === "function") {
+                    req();
+                }
+                else if (Array.isArray(req) && req.length > 0) {
+                    var inst = self;
+                    var arg = 0;
+                    // check if it is meant for other tracker
+                    try {
+                        if (Countly.i[req[arg]]) {
+                            inst = Countly.i[req[arg]];
+                            arg++;
+                        }
+                    } catch (error) {
+                        // possibly first init and no other instance
+                        log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
+                        Countly.q.push(req); // return it back to queue and continue to the next one
+                        continue;
+                    }
+                    if (typeof inst[req[arg]] === "function") {
+                        inst[req[arg]].apply(inst, req.slice(arg + 1));
+                    }
+                    else if (req[arg].indexOf("userData.") === 0) {
+                        var userdata = req[arg].replace("userData.", "");
+                        if (typeof inst.userData[userdata] === "function") {
+                            inst.userData[userdata].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (typeof Countly[req[arg]] === "function") {
+                        Countly[req[arg]].apply(Countly, req.slice(arg + 1));
+                    }
+                }
+            }
         }
 
         /**
@@ -4013,57 +4148,58 @@ class CountlyClass {
                 log(logLevelEnums.DEBUG, "Sending XML HTTP request");
                 var xhr = new XMLHttpRequest();
                 params = params || {};
-                var data = prepareParams(params);
-                var method = "GET";
-                if (self.force_post || data.length >= 2000) {
-                    method = "POST";
-                }
-                if (method === "GET") {
-                    xhr.open("GET", url + "?" + data, true);
-                }
-                else {
-                    xhr.open("POST", url, true);
-                    xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
-                }
-                for (var header in self.headers) {
-                    xhr.setRequestHeader(header, self.headers[header]);
-                }
-                // fallback on error
-                xhr.onreadystatechange = function () {
-                    if (this.readyState === 4) {
-                        log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + this.status + "] and response: [" + this.responseText + "]");
-                        // response validation function will be selected to also accept JSON arrays if useBroadResponseValidator is true
-                        var isResponseValidated;
-                        if (useBroadResponseValidator) {
-                            // JSON array/object both can pass
-                            isResponseValidated = isResponseValidBroad(this.status, this.responseText);
-                        }
-                        else {
-                            // only JSON object can pass
-                            isResponseValidated = isResponseValid(this.status, this.responseText);
-                        }
-                        if (isResponseValidated) {
-                            if (typeof callback === "function") {
-                                callback(false, params, this.responseText);
-                            }
-                        }
-                        else {
-                            log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                            if (functionName === "send_request_queue") {
-                                HealthCheck.saveRequestCounters(this.status, this.responseText);
-                            }
-                            if (typeof callback === "function") {
-                                callback(true, params, this.status, this.responseText);
-                            }
-                        }
+                prepareParams(params, self.salt).then(saltedData => {
+                    var method = "POST";
+                    if (self.force_post || saltedData.length >= 2000) {
+                        method = "POST";
                     }
-                };
-                if (method === "GET") {
-                    xhr.send();
-                }
-                else {
-                    xhr.send(data);
-                }
+                    if (method === "GET") {
+                        xhr.open("GET", url + "?" + saltedData, true);
+                    }
+                    else {
+                        xhr.open("POST", url, true);
+                        xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+                    }
+                    for (var header in self.headers) {
+                        xhr.setRequestHeader(header, self.headers[header]);
+                    }
+                    // fallback on error
+                    xhr.onreadystatechange = function () {
+                        if (this.readyState === 4) {
+                            log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + this.status + "] and response: [" + this.responseText + "]");
+                            // response validation function will be selected to also accept JSON arrays if useBroadResponseValidator is true
+                            var isResponseValidated;
+                            if (useBroadResponseValidator) {
+                                // JSON array/object both can pass
+                                isResponseValidated = isResponseValidBroad(this.status, this.responseText);
+                            }
+                            else {
+                                // only JSON object can pass
+                                isResponseValidated = isResponseValid(this.status, this.responseText);
+                            }
+                            if (isResponseValidated) {
+                                if (typeof callback === "function") {
+                                    callback(false, params, this.responseText);
+                                }
+                            }
+                            else {
+                                log(logLevelEnums.ERROR, functionName + " Invalid response from server");
+                                if (functionName === "send_request_queue") {
+                                    HealthCheck.saveRequestCounters(this.status, this.responseText);
+                                }
+                                if (typeof callback === "function") {
+                                    callback(true, params, this.status, this.responseText);
+                                }
+                            }
+                        }
+                    };
+                    if (method === "GET") {
+                        xhr.send();
+                    }
+                    else {
+                        xhr.send(saltedData);
+                    }
+                });
             }
             catch (e) {
                 // fallback
@@ -4091,61 +4227,63 @@ class CountlyClass {
                 log(logLevelEnums.DEBUG, "Sending Fetch request");
 
                 // Prepare request options
-                var method = "GET";
+                var method = "POST";
                 var headers = { "Content-type": "application/x-www-form-urlencoded" };
                 var body = null;
 
                 params = params || {};
-                if (self.force_post || prepareParams(params).length >= 2000) {
-                    method = "POST";
-                    body = prepareParams(params);
-                }
-                else {
-                    url += "?" + prepareParams(params);
-                }
-
-                // Add custom headers
-                for (var header in self.headers) {
-                    headers[header] = self.headers[header];
-                }
-
-                // Make the fetch request
-                fetch(url, {
-                    method: method,
-                    headers: headers,
-                    body: body,
-                }).then(function (res) {
-                    response = res;
-                    return response.text();
-                }).then(function (data) {
-                    log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
-                    var isResponseValidated;
-                    if (useBroadResponseValidator) {
-                        isResponseValidated = isResponseValidBroad(response.status, data);
+                prepareParams(params, self.salt).then(saltedData => {
+                    if (self.force_post || saltedData.length >= 2000) {
+                        method = "POST";
+                        body = saltedData;
                     }
                     else {
-                        isResponseValidated = isResponseValid(response.status, data);
+                        url += "?" + saltedData;
                     }
 
-                    if (isResponseValidated) {
+                    // Add custom headers
+                    for (var header in self.headers) {
+                        headers[header] = self.headers[header];
+                    }
+
+                    // Make the fetch request
+                    fetch(url, {
+                        method: method,
+                        headers: headers,
+                        body: body,
+                    }).then(function (res) {
+                        response = res;
+                        return response.text();
+                    }).then(function (data) {
+                        log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
+                        var isResponseValidated;
+                        if (useBroadResponseValidator) {
+                            isResponseValidated = isResponseValidBroad(response.status, data);
+                        }
+                        else {
+                            isResponseValidated = isResponseValid(response.status, data);
+                        }
+
+                        if (isResponseValidated) {
+                            if (typeof callback === "function") {
+                                callback(false, params, data);
+                            }
+                        }
+                        else {
+                            log(logLevelEnums.ERROR, functionName + " Invalid response from server");
+                            if (functionName === "send_request_queue") {
+                                HealthCheck.saveRequestCounters(response.status, data);
+                            }
+                            if (typeof callback === "function") {
+                                callback(true, params, response.status, data);
+                            }
+                        }
+                    }).catch(function (error) {
+                        log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
                         if (typeof callback === "function") {
-                            callback(false, params, data);
+                            callback(true, params);
                         }
-                    }
-                    else {
-                        log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                        if (functionName === "send_request_queue") {
-                            HealthCheck.saveRequestCounters(response.status, data);
-                        }
-                        if (typeof callback === "function") {
-                            callback(true, params, response.status, data);
-                        }
-                    }
-                }).catch(function (error) {
-                    log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
-                    if (typeof callback === "function") {
-                        callback(true, params);
-                    }
+                    });
                 });
             }
             catch (e) {
@@ -4606,6 +4744,7 @@ class CountlyClass {
             generateUUID: generateUUID,
             sendEventsForced: sendEventsForced,
             isUUID: isUUID,
+            calculateChecksum: calculateChecksum,
             isReferrerUsable: isReferrerUsable,
             getId: getStoredIdOrGenerateId,
             heartBeat: heartBeat,
@@ -4631,6 +4770,7 @@ class CountlyClass {
             getRequestQueue: getRequestQueue,
             getEventQueue: getEventQueue,
             sendFetchRequest: sendFetchRequest,
+            processAsyncQueue: processAsyncQueue,
             makeNetworkRequest: makeNetworkRequest,
             /**
              *  Clear queued data
@@ -4716,14 +4856,23 @@ class CountlyClass {
          * Countly health check request sender
          */
         function sendInstantHCRequest() {
+            if (offlineMode) {
+                log(logLevelEnums.DEBUG, "sendInstantHCRequest, Offline mode is active. Not sending health check request.");
+                shouldSendHC = true;
+                return;
+            }
             // truncate error message to 1000 characters
             var curbedMessage = truncateSingleValue(self.hcErrorMessage, 1000, "healthCheck", log);
+            // due to some server issues we pass empty string as is
+            if (curbedMessage !== "") {
+                curbedMessage = JSON.stringify(curbedMessage);
+            }
             // prepare hc object
             var hc = {
                 el: self.hcErrorCount,
                 wl: self.hcWarningCount,
                 sc: self.hcStatusCode,
-                em: JSON.stringify(curbedMessage)
+                em: curbedMessage
             };
             // prepare request
             var request = {
