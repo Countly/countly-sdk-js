@@ -11,7 +11,7 @@
     const COUNTLY_SERVER_KEY = "https://your.server.ly";
     const COUNTLY_APP_KEY = "YOUR_APP_KEY";
 
-    if(COUNTLY_APP_KEY === "YOUR_APP_KEY" || COUNTLY_SERVER_KEY === "https://your.server.ly"){
+    if (COUNTLY_APP_KEY === "YOUR_APP_KEY" || COUNTLY_SERVER_KEY === "https://your.server.ly") {
       console.warn("Please do not use default set of app key and server url")
     }
     // initializing countly with params
@@ -22,7 +22,21 @@
     });
 
     //=================================================
-    // Fetching and displaying feedback widgets
+    // Displaying feedback widgets
+    //=================================================
+    Countly.feedback.showNPS();
+    
+    // OR with a specific ID, name or tag
+    // const id = 'ID_from_server';
+    // Countly.feedback.showNPS(id);
+    
+    // Other feedback widgets
+    // Countly.feedback.showSurvey();
+    // Countly.feedback.showRating();
+
+
+    //=================================================
+    // ADVANCED: Fetching and displaying feedback widgets
     //=================================================
     function fetchAndDisplayWidget() {
       Countly.get_available_feedback_widgets(feedbackWidgetsCallback);
@@ -102,16 +116,16 @@
         })
     }
 
-    document.querySelector("#one").addEventListener("click", function() {
+    document.querySelector("#one").addEventListener("click", function () {
       fetchAndDisplayWidget();
     });
-    document.querySelector("#two").addEventListener("click", function() {
+    document.querySelector("#two").addEventListener("click", function () {
       getFeedbackWidgetListAndDoThings('nps');
     });
-    document.querySelector("#three").addEventListener("click", function() {
+    document.querySelector("#three").addEventListener("click", function () {
       getFeedbackWidgetListAndDoThings('survey');
     });
-    document.querySelector("#four").addEventListener("click", function() {
+    document.querySelector("#four").addEventListener("click", function () {
       getFeedbackWidgetListAndDoThings('rating');
     });
 
