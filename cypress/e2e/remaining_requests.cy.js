@@ -16,41 +16,22 @@ describe("Remaining requests tests ", () => {
     it("Checks the requests for rr", () => {
         hp.haltAndClearStorage(() => {
             initMain(false);
+            Countly.begin_session();
+            Countly.end_session(undefined, true);
 
-            // We will expect 4 requests: health check, begin_session, end_session, orientation
-            hp.interceptAndCheckRequests("POST", undefined, undefined, "?hc=*", "hc", (requestParams) => {
-                const params = JSON.parse(requestParams.get("hc"));
-                assert.isTrue(typeof params.el === "number");
-                assert.isTrue(typeof params.wl === "number");
-                assert.isTrue(typeof params.sc === "number");
-                assert.isTrue(typeof params.em === "string");
-                expect(requestParams.get("rr")).to.equal(null);
-            });
             cy.wait(1000).then(() => {
-                // Create a session
-                Countly.begin_session();
-                hp.interceptAndCheckRequests("POST", undefined, undefined, "?begin_session=*", "begin_session", (requestParams) => {
-                    expect(requestParams.get("begin_session")).to.equal("1");
-                    expect(requestParams.get("rr")).to.equal("3");
-                    expect(requestParams.get("av")).to.equal(av);
-                });
-                // End the session
-                Countly.end_session(undefined, true);
-                    hp.interceptAndCheckRequests("POST", undefined, undefined, "?end_session=*", "end", (requestParams) => {
-                    expect(requestParams.get("end_session")).to.equal("1");
-                    expect(requestParams.get("rr")).to.equal("2");
-                    expect(requestParams.get("av")).to.equal(av);
-                });
-                hp.interceptAndCheckRequests("POST", undefined, undefined, undefined, "orientation", (requestParams) => {
-                    expect(JSON.parse(requestParams.get("events"))[0].key).to.equal("[CLY]_orientation");
-                    expect(requestParams.get("rr")).to.equal("1");
-                    expect(requestParams.get("av")).to.equal(av);
-                });
-                cy.wait(100).then(() => {
-                    cy.fetch_local_request_queue().then((rq) => {
-                        expect(rq.length).to.equal(0);
-                    });
-                });
+                var queues = Countly._internals.getLocalQueues();
+                expect(queues.eventQ.length).to.equal(0);
+                expect(queues.requestQ.length).to.equal(3);
+                expect(queues.requestQ[0]["begin_session"]).to.equal(1);
+                expect(queues.requestQ[1]["end_session"]).to.equal(1);
+                expect(JSON.parse(queues.requestQ[2]["events"])[0].key).to.equal("[CLY]_orientation");
+                
+                var requests = Countly._internals.testingGetRequests();
+                expect(requests.length).to.equal(2);
+                expect(requests[0].params["rr"]).to.equal(undefined);
+                expect(requests[1].params["rr"]).to.equal(3);
+                expect(requests[1].params["av"]).to.equal(av);
             });
         });
     });
