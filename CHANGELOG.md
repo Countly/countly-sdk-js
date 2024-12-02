@@ -1,3 +1,11 @@
+## 24.11.1
+
+* Deprecated `initializeRatingWidgets` method, use `feedback.showRating` instead.
+* Deprecated `enableRatingWidgets` method, use `feedback.showRating` instead.
+* Added an interface `content` for Content feature methods:
+  * `enterContentZone`, to start Content checks (Experimental!)
+  * `exitContentZone`, to stop Content checks (Experimental!)
+
 ## 24.11.0
 
 * Mitigated an issue where SDK could try to send old stored offline mode data during init if `clear_stored_id` was true

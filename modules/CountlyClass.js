@@ -37,55 +37,115 @@ import {
 import { isBrowser, Countly } from "./Platform.js";
 
 class CountlyClass {
-    #showWidgetInternal;
+    #consentTimer;
+    #self;
+    #global;
+    #sessionStarted;
+    #apiPath;
+    #readPath;
+    #beatInterval;
+    #queueSize;
+    #requestQueue;
+    #eventQueue;
+    #remoteConfigs;
+    #crashLogs;
+    #timedEvents;
+    #ignoreReferrers;
+    #crashSegments;
+    #autoExtend;
+    #lastBeat;
+    #storedDuration;
+    #lastView;
+    #lastViewTime;
+    #lastViewStoredDuration;
+    #failTimeout;
+    #failTimeoutAmount;
+    #inactivityTime;
+    #inactivityCounter;
+    #sessionUpdate;
+    #maxEventBatch;
+    #maxCrashLogs;
+    #useSessionCookie;
+    #sessionCookieTimeout;
+    #readyToProcess;
+    #hasPulse;
+    #offlineMode;
+    #lastParams;
+    #trackTime;
+    #startTime;
+    #lsSupport;
+    #firstView;
+    #deviceIdType;
+    #isScrollRegistryOpen;
+    #scrollRegistryTopPosition;
+    #trackingScrolls;
+    #currentViewId;
+    #previousViewId;
+    #freshUTMTags;
+    #sdkName;
+    #sdkVersion;
+    #shouldSendHC;
+    #consents;
+    #generatedRequests;
+    #contentTimeInterval;
+    #contentEndPoint;
+    #inContentZone;
+    #contentZoneTimer;
+    #contentIframeID;
 constructor(ob) {
-        var self = this;
-        var global = !Countly.i;
-        var sessionStarted = false;
-        var apiPath = "/i";
-        var readPath = "/o/sdk";
-        var beatInterval = getConfig("interval", ob, configurationDefaultValues.BEAT_INTERVAL);
-        var queueSize = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
-        var requestQueue = [];
-        var eventQueue = [];
-        var remoteConfigs = {};
-        var crashLogs = [];
-        var timedEvents = {};
-        var ignoreReferrers = getConfig("ignore_referrers", ob, []);
-        var crashSegments = null;
-        var autoExtend = true;
-        var lastBeat;
-        var storedDuration = 0;
-        var lastView = null;
-        var lastViewTime = 0;
-        var lastViewStoredDuration = 0;
-        var failTimeout = 0;
-        var failTimeoutAmount = getConfig("fail_timeout", ob, configurationDefaultValues.FAIL_TIMEOUT_AMOUNT);
-        var inactivityTime = getConfig("inactivity_time", ob, configurationDefaultValues.INACTIVITY_TIME);
-        var inactivityCounter = 0;
-        var sessionUpdate = getConfig("session_update", ob, configurationDefaultValues.SESSION_UPDATE);
-        var maxEventBatch = getConfig("max_events", ob, configurationDefaultValues.MAX_EVENT_BATCH);
-        var maxCrashLogs = getConfig("max_logs", ob, null);
-        var useSessionCookie = getConfig("use_session_cookie", ob, true);
-        var sessionCookieTimeout = getConfig("session_cookie_timeout", ob, configurationDefaultValues.SESSION_COOKIE_TIMEOUT);
-        var readyToProcess = true;
-        var hasPulse = false;
-        var offlineMode = getConfig("offline_mode", ob, false);
-        var lastParams = {};
-        var trackTime = true;
-        var startTime = getTimestamp();
-        var lsSupport = true;
-        var firstView = null;
-        var deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
-        var isScrollRegistryOpen = false;
-        var scrollRegistryTopPosition = 0;
-        var trackingScrolls = false;
-        var currentViewId = null; // this is the global variable for tracking the current view's ID. Used in view tracking. Becomes previous view ID at the end.
-        var previousViewId = null; // this is the global variable for tracking the previous view's ID. Used in view tracking. First view has no previous view ID.
-        var freshUTMTags = null;
-        var sdkName = getConfig("sdk_name", ob, SDK_NAME);
-        var sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
-        var shouldSendHC = false;
+        this.#self = this;
+        this.#global = !Countly.i;
+        this.#sessionStarted = false;
+        this.#apiPath = "/i";
+        this.#readPath = "/o/sdk";
+        this.#beatInterval = getConfig("interval", ob, configurationDefaultValues.BEAT_INTERVAL);
+        this.#queueSize = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
+        this.#requestQueue = [];
+        this.#eventQueue = [];
+        this.#remoteConfigs = {};
+        this.#crashLogs = [];
+        this.#timedEvents = {};
+        this.#ignoreReferrers = getConfig("ignore_referrers", ob, []);
+        this.#crashSegments = null;
+        this.#autoExtend = true;
+        this.#lastBeat;
+        this.#storedDuration = 0;
+        this.#lastView = null;
+        this.#lastViewTime = 0;
+        this.#lastViewStoredDuration = 0;
+        this.#failTimeout = 0;
+        this.#failTimeoutAmount = getConfig("fail_timeout", ob, configurationDefaultValues.FAIL_TIMEOUT_AMOUNT);
+        this.#inactivityTime = getConfig("inactivity_time", ob, configurationDefaultValues.INACTIVITY_TIME);
+        this.#inactivityCounter = 0;
+        this.#sessionUpdate = getConfig("session_update", ob, configurationDefaultValues.SESSION_UPDATE);
+        this.#maxEventBatch = getConfig("max_events", ob, configurationDefaultValues.MAX_EVENT_BATCH);
+        this.#maxCrashLogs = getConfig("max_logs", ob, null);
+        this.#useSessionCookie = getConfig("use_session_cookie", ob, true);
+        this.#sessionCookieTimeout = getConfig("session_cookie_timeout", ob, configurationDefaultValues.SESSION_COOKIE_TIMEOUT);
+        this.#readyToProcess = true;
+        this.#hasPulse = false;
+        this.#offlineMode = getConfig("offline_mode", ob, false);
+        this.#lastParams = {};
+        this.#trackTime = true;
+        this.#startTime = getTimestamp();
+        this.#lsSupport = true;
+        this.#firstView = null;
+        this.#deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
+        this.#isScrollRegistryOpen = false;
+        this.#scrollRegistryTopPosition = 0;
+        this.#trackingScrolls = false;
+        this.#currentViewId = null; // this is the global variable for tracking the current view's ID. Used in view tracking. Becomes previous view ID at the end.
+        this.#previousViewId = null; // this is the global variable for tracking the previous view's ID. Used in view tracking. First view has no previous view ID.
+        this.#freshUTMTags = null;
+        this.#sdkName = getConfig("sdk_name", ob, SDK_NAME);
+        this.#sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
+        this.#shouldSendHC = false;
+        this.#generatedRequests = [];
+        this.#contentTimeInterval = 30000;
+        this.#contentEndPoint = "/o/sdk/content";
+        this.#inContentZone = false;
+        this.#contentZoneTimer = null;
+        this.#contentIframeID = "cly-content-iframe";
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -93,449 +153,477 @@ constructor(ob) {
             localStorage.removeItem("cly_testLocal");
         }
         catch (e) {
-            log(logLevelEnums.ERROR, "Local storage test failed, Halting local storage support: " + e);
-            lsSupport = false;
+            this.#log(logLevelEnums.ERROR, "Local storage test failed, Halting local storage support: " + e);
+            this.#lsSupport = false;
         }
 
         // create object to store consents
-        var consents = {};
+        this.#consents = {};
         for (var it = 0; it < Countly.features.length; it++) {
-            consents[Countly.features[it]] = {};
+            this.#consents[Countly.features[it]] = {};
         }
 
-        this.initialize = () => {
-            this.serialize = getConfig("serialize", ob, Countly.serialize);
-            this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
-            this.getViewName = getConfig("getViewName", ob, Countly.getViewName);
-            this.getViewUrl = getConfig("getViewUrl", ob, Countly.getViewUrl);
-            this.getSearchQuery = getConfig("getSearchQuery", ob, Countly.getSearchQuery);
-            this.DeviceIdType = Countly.DeviceIdType; // it is Countly device Id type Enums for clients to use
-            this.namespace = getConfig("namespace", ob, "");
-            this.clearStoredId = getConfig("clear_stored_id", ob, false);
-            this.app_key = getConfig("app_key", ob, null);
-            this.onload = getConfig("onload", ob, []);
-            this.utm = getConfig("utm", ob, { source: true, medium: true, campaign: true, term: true, content: true });
-            this.ignore_prefetch = getConfig("ignore_prefetch", ob, true);
-            this.rcAutoOptinAb = getConfig("rc_automatic_optin_for_ab", ob, true);
-            this.useExplicitRcApi = getConfig("use_explicit_rc_api", ob, false);
-            this.debug = getConfig("debug", ob, false);
-            this.test_mode = getConfig("test_mode", ob, false);
-            this.test_mode_eq = getConfig("test_mode_eq", ob, false);
-            this.metrics = getConfig("metrics", ob, {});
-            this.headers = getConfig("headers", ob, {});
-            this.url = stripTrailingSlash(getConfig("url", ob, ""));
-            this.app_version = getConfig("app_version", ob, "0.0");
-            this.country_code = getConfig("country_code", ob, null);
-            this.city = getConfig("city", ob, null);
-            this.ip_address = getConfig("ip_address", ob, null);
-            this.ignore_bots = getConfig("ignore_bots", ob, true);
-            this.force_post = getConfig("force_post", ob, false);
-            this.remote_config = getConfig("remote_config", ob, false);
-            this.ignore_visitor = getConfig("ignore_visitor", ob, false);
-            this.require_consent = getConfig("require_consent", ob, false);
-            this.track_domains = !isBrowser ? undefined : getConfig("track_domains", ob, true);
-            this.storage = getConfig("storage", ob, "default");
-            this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
-            this.maxKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
-            this.maxValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
-            this.maxSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
-            this.maxBreadcrumbCount = getConfig("max_breadcrumb_count", ob, null);
-            this.maxStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
-            this.maxStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
-            this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
-            this.salt = getConfig("salt", ob, null);
-            this.hcErrorCount = getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
-            this.hcWarningCount = getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
-            this.hcStatusCode = getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
-            this.hcErrorMessage = getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
+        this.#initialize(ob);
+    };
 
-            if (maxCrashLogs && !this.maxBreadcrumbCount) {
-                this.maxBreadcrumbCount = maxCrashLogs;
-                log(logLevelEnums.WARNING, "initialize, 'maxCrashLogs' is deprecated. Use 'maxBreadcrumbCount' instead!");
-            }
-            else if (!maxCrashLogs && !this.maxBreadcrumbCount) {
-                this.maxBreadcrumbCount = 100;
-            }
+    /**
+     * Initialize the Countly
+     * @param {Object} ob - config object
+     * @returns 
+     */
+    #initialize = (ob) => {
+        this.serialize = getConfig("serialize", ob, Countly.serialize);
+        this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
+        this.getViewName = getConfig("getViewName", ob, Countly.getViewName);
+        this.getViewUrl = getConfig("getViewUrl", ob, Countly.getViewUrl);
+        this.getSearchQuery = getConfig("getSearchQuery", ob, Countly.getSearchQuery);
+        this.DeviceIdType = Countly.DeviceIdType; // it is Countly device Id type Enums for clients to use
+        this.namespace = getConfig("namespace", ob, "");
+        this.clearStoredId = getConfig("clear_stored_id", ob, false);
+        this.app_key = getConfig("app_key", ob, null);
+        this.onload = getConfig("onload", ob, []);
+        this.utm = getConfig("utm", ob, { source: true, medium: true, campaign: true, term: true, content: true });
+        this.ignore_prefetch = getConfig("ignore_prefetch", ob, true);
+        this.rcAutoOptinAb = getConfig("rc_automatic_optin_for_ab", ob, true);
+        this.useExplicitRcApi = getConfig("use_explicit_rc_api", ob, false);
+        this.debug = getConfig("debug", ob, false);
+        this.test_mode = getConfig("test_mode", ob, false);
+        this.test_mode_eq = getConfig("test_mode_eq", ob, false);
+        this.metrics = getConfig("metrics", ob, {});
+        this.headers = getConfig("headers", ob, {});
+        this.url = stripTrailingSlash(getConfig("url", ob, ""));
+        this.app_version = getConfig("app_version", ob, "0.0");
+        this.country_code = getConfig("country_code", ob, null);
+        this.city = getConfig("city", ob, null);
+        this.ip_address = getConfig("ip_address", ob, null);
+        this.ignore_bots = getConfig("ignore_bots", ob, true);
+        this.force_post = getConfig("force_post", ob, false);
+        this.remote_config = getConfig("remote_config", ob, false);
+        this.ignore_visitor = getConfig("ignore_visitor", ob, false);
+        this.require_consent = getConfig("require_consent", ob, false);
+        this.track_domains = !isBrowser ? undefined : getConfig("track_domains", ob, true);
+        this.storage = getConfig("storage", ob, "default");
+        this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
+        this.maxKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
+        this.maxValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
+        this.maxSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
+        this.maxBreadcrumbCount = getConfig("max_breadcrumb_count", ob, null);
+        this.maxStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
+        this.maxStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
+        this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
+        this.salt = getConfig("salt", ob, null);
+        this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
+        this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
+        this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
+        this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
 
-            if (this.storage === "cookie") {
-                lsSupport = false;
-            }
+        if (this.#maxCrashLogs && !this.maxBreadcrumbCount) {
+            this.maxBreadcrumbCount = this.#maxCrashLogs;
+            this.#log(logLevelEnums.WARNING, "initialize, 'maxCrashLogs' is deprecated. Use 'maxBreadcrumbCount' instead!");
+        }
+        else if (!this.#maxCrashLogs && !this.maxBreadcrumbCount) {
+            this.maxBreadcrumbCount = 100;
+        }
 
-            if (!this.rcAutoOptinAb && !this.useExplicitRcApi) {
-                log(logLevelEnums.WARNING, "initialize, Auto opting is disabled, switching to explicit RC API");
-                this.useExplicitRcApi = true;
-            }
+        if (this.storage === "cookie") {
+            this.#lsSupport = false;
+        }
 
-            if (!Array.isArray(ignoreReferrers)) {
-                ignoreReferrers = [];
-            }
+        if (!this.rcAutoOptinAb && !this.useExplicitRcApi) {
+            this.#log(logLevelEnums.WARNING, "initialize, Auto opting is disabled, switching to explicit RC API");
+            this.useExplicitRcApi = true;
+        }
 
-            if (this.url === "") {
-                log(logLevelEnums.ERROR, "initialize, Please provide server URL");
-                this.ignore_visitor = true;
-            }
-            if (getValueFromStorage("cly_ignore")) {
-                // opted out user
-                this.ignore_visitor = true;
-            }
+        if (!Array.isArray(this.#ignoreReferrers)) {
+            this.#ignoreReferrers = [];
+        }
 
-            migrate();
+        if (this.url === "") {
+            this.#log(logLevelEnums.ERROR, "initialize, Please provide server URL");
+            this.ignore_visitor = true;
+        }
+        if (this.#getValueFromStorage("cly_ignore")) {
+            // opted out user
+            this.ignore_visitor = true;
+        }
+        this.#checkIgnore();
 
-            requestQueue = getValueFromStorage("cly_queue") || [];
-            eventQueue = getValueFromStorage("cly_event") || [];
-            remoteConfigs = getValueFromStorage("cly_remote_configs") || {};
-
-            // flag that indicates that the offline mode was enabled at the end of the previous app session 
-            var tempIdModeWasEnabled = (getValueFromStorage("cly_id") === "[CLY]_temp_id");
-
-            if (this.clearStoredId) {
-                // retrieve stored device ID and type from local storage and use it to flush existing events
-                if (getValueFromStorage("cly_id") && !tempIdModeWasEnabled) {
-                    this.device_id = getValueFromStorage("cly_id");
-                    log(logLevelEnums.DEBUG, "initialize, temporarily using the previous device ID to flush existing events");
-                    deviceIdType = getValueFromStorage("cly_id_type");
-                    if (!deviceIdType) {
-                        log(logLevelEnums.DEBUG, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED, for event flushing");
-                        deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                    }
-                    // don't process async queue here, just send the events (most likely async data is for the new user)
-                    sendEventsForced();
-                    // set them back to their initial values
-                    this.device_id = undefined;
-                    deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
+        if (isBrowser) {
+            if (window.name && window.name.indexOf("cly:") === 0) {
+                try {
+                    this.passed_data = JSON.parse(window.name.replace("cly:", ""));
                 }
-                // then clear the storage so that a new device ID is set again later
-                log(logLevelEnums.INFO, "initialize, Clearing the device ID storage");
-                removeValueFromStorage("cly_id");
-                removeValueFromStorage("cly_id_type");
-                removeValueFromStorage("cly_session");
-            }
-
-            checkIgnore();
-
-            if (isBrowser) {
-                if (window.name && window.name.indexOf("cly:") === 0) {
-                    try {
-                        this.passed_data = JSON.parse(window.name.replace("cly:", ""));
-                    }
-                    catch (ex) {
-                        log(logLevelEnums.ERROR, "initialize, Could not parse name: " + window.name + ", error: " + ex);
-                    }
-                }
-                else if (location.hash && location.hash.indexOf("#cly:") === 0) {
-                    try {
-                        this.passed_data = JSON.parse(location.hash.replace("#cly:", ""));
-                    }
-                    catch (ex) {
-                        log(logLevelEnums.ERROR, "initialize, Could not parse hash: " + location.hash + ", error: " + ex);
-                    }
+                catch (ex) {
+                    this.#log(logLevelEnums.ERROR, "initialize, Could not parse name: " + window.name + ", error: " + ex);
                 }
             }
-
-            if ((this.passed_data && this.passed_data.app_key && this.passed_data.app_key === this.app_key) || (this.passed_data && !this.passed_data.app_key && global)) {
-                if (this.passed_data.token && this.passed_data.purpose) {
-                    if (this.passed_data.token !== getValueFromStorage("cly_old_token")) {
-                        setToken(this.passed_data.token);
-                        setValueInStorage("cly_old_token", this.passed_data.token);
-                    }
-                    var strippedList = [];
-                    // if whitelist is provided is an array
-                    if (Array.isArray(this.heatmapWhitelist)) {
-                        this.heatmapWhitelist.push(this.url);
-                        strippedList = this.heatmapWhitelist.map(function (e) {
-                            // remove trailing slashes from the entries
-                            return stripTrailingSlash(e);
-                        });
-                    }
-                    else {
-                        strippedList = [this.url];
-                    }
-                    // if the passed url is in the whitelist proceed
-                    if (strippedList.includes(this.passed_data.url)) {
-                        if (this.passed_data.purpose === "heatmap") {
-                            this.ignore_visitor = true;
-                            showLoader();
-                            loadJS(this.passed_data.url + "/views/heatmap.js", hideLoader);
-                        }
-                    }
+            else if (location.hash && location.hash.indexOf("this.#cly:") === 0) {
+                try {
+                    this.passed_data = JSON.parse(location.hash.replace("this.#cly:", ""));
+                }
+                catch (ex) {
+                    this.#log(logLevelEnums.ERROR, "initialize, Could not parse hash: " + location.hash + ", error: " + ex);
                 }
             }
+        }
 
-            if (this.ignore_visitor) {
-                log(logLevelEnums.WARNING, "initialize, ignore_visitor:[" + this.ignore_visitor + "], this user will not be tracked");
-                return;
-            }
-
-            // init configuration is printed out here:
-            // key values should be printed out as is
-            if (sdkName === SDK_NAME && sdkVersion === SDK_VERSION) {
-                log(logLevelEnums.DEBUG, "initialize, SDK name:[" + sdkName + "], version:[" + sdkVersion + "]");
-            } else {
-                log(logLevelEnums.DEBUG, "initialize, SDK name:[" + sdkName + "], version:[" + sdkVersion + "], default name:[" + SDK_NAME + "] and default version:[" + SDK_VERSION + "]");
-            }
-            log(logLevelEnums.DEBUG, "initialize, app_key:[" + this.app_key + "], url:[" + this.url + "]");
-            log(logLevelEnums.DEBUG, "initialize, device_id:[" + getConfig("device_id", ob, undefined) + "]");
-            log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.require_consent + "]");
-            try {
-                log(logLevelEnums.DEBUG, "initialize, metric override:[" + JSON.stringify(this.metrics) + "]");
-                log(logLevelEnums.DEBUG, "initialize, header override:[" + JSON.stringify(this.headers) + "]");
-                // empty array is truthy and so would be printed if provided
-                log(logLevelEnums.DEBUG, "initialize, number of onload callbacks provided:[" + this.onload.length + "]");
-                // if the utm object is different to default utm object print it here
-                log(logLevelEnums.DEBUG, "initialize, utm tags:[" + JSON.stringify(this.utm) + "]");
-                // empty array printed if non provided
-                if (ignoreReferrers) {
-                    log(logLevelEnums.DEBUG, "initialize, referrers to ignore :[" + JSON.stringify(ignoreReferrers) + "]");
+        if ((this.passed_data && this.passed_data.app_key && this.passed_data.app_key === this.app_key) || (this.passed_data && !this.passed_data.app_key && this.#global)) {
+            if (this.passed_data.token && this.passed_data.purpose) {
+                if (this.passed_data.token !== this.#getValueFromStorage("cly_old_token")) {
+                    this.#setToken(this.passed_data.token);
+                    this.#setValueInStorage("cly_old_token", this.passed_data.token);
                 }
-                log(logLevelEnums.DEBUG, "initialize, salt given:[" + !!this.salt + "]");
-            }
-            catch (e) {
-                log(logLevelEnums.ERROR, "initialize, Could not stringify some config object values");
-            }
-            log(logLevelEnums.DEBUG, "initialize, app_version:[" + this.app_version + "]");
-
-            // location info printed here
-            log(logLevelEnums.DEBUG, "initialize, provided location info; country_code:[" + this.country_code + "], city:[" + this.city + "], ip_address:[" + this.ip_address + "]");
-
-            // print non vital values only if provided by the developer or differs from the default value
-            if (this.namespace !== "") {
-                log(logLevelEnums.DEBUG, "initialize, namespace given:[" + this.namespace + "]");
-            }
-            if (this.clearStoredId) {
-                log(logLevelEnums.DEBUG, "initialize, clearStoredId flag set to:[" + this.clearStoredId + "]");
-            }
-            if (this.ignore_prefetch) {
-                log(logLevelEnums.DEBUG, "initialize, ignoring pre-fetching and pre-rendering from counting as real website visits :[" + this.ignore_prefetch + "]");
-            }
-            // if test mode is enabled warn the user
-            if (this.test_mode) {
-                log(logLevelEnums.WARNING, "initialize, test_mode:[" + this.test_mode + "], request queue won't be processed");
-            }
-            if (this.test_mode_eq) {
-                log(logLevelEnums.WARNING, "initialize, test_mode_eq:[" + this.test_mode_eq + "], event queue won't be processed");
-            }
-            // if test mode is enabled warn the user
-            if (this.heatmapWhitelist) {
-                log(logLevelEnums.DEBUG, "initialize, heatmap whitelist:[" + JSON.stringify(this.heatmapWhitelist) + "], these domains will be whitelisted");
-            }
-            // if storage is se to something other than local storage
-            if (this.storage !== "default") {
-                log(logLevelEnums.DEBUG, "initialize, storage is set to:[" + this.storage + "]");
-            }
-            if (this.ignore_bots) {
-                log(logLevelEnums.DEBUG, "initialize, ignore traffic from bots :[" + this.ignore_bots + "]");
-            }
-            if (this.force_post) {
-                log(logLevelEnums.DEBUG, "initialize, forced post method for all requests:[" + this.force_post + "]");
-            }
-            if (this.remote_config) {
-                log(logLevelEnums.DEBUG, "initialize, remote_config callback provided:[" + !!this.remote_config + "]");
-            }
-            if (typeof this.rcAutoOptinAb === "boolean") {
-                log(logLevelEnums.DEBUG, "initialize, automatic RC optin is enabled:[" + this.rcAutoOptinAb + "]");
-            }
-            if (!this.useExplicitRcApi) {
-                log(logLevelEnums.WARNING, "initialize, will use legacy RC API. Consider enabling new API during init with use_explicit_rc_api flag");
-            }
-            if (this.track_domains) {
-                log(logLevelEnums.DEBUG, "initialize, tracking domain info:[" + this.track_domains + "]");
-            }
-            if (this.enableOrientationTracking) {
-                log(logLevelEnums.DEBUG, "initialize, enableOrientationTracking:[" + this.enableOrientationTracking + "]");
-            }
-            if (!useSessionCookie) {
-                log(logLevelEnums.WARNING, "initialize, use_session_cookie is enabled:[" + useSessionCookie + "]");
-            }
-            if (offlineMode) {
-                log(logLevelEnums.DEBUG, "initialize, offline_mode:[" + offlineMode + "], user info won't be send to the servers");
-            }
-            if (remoteConfigs) {
-                log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(remoteConfigs) + "]");
-            }
-            // functions, if provided, would be printed as true without revealing their content
-            log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
-            log(logLevelEnums.DEBUG, "initialize, 'getSearchQuery' callback override provided:[" + (this.getSearchQuery !== Countly.getSearchQuery) + "]");
-
-            // limits are printed here if they were modified 
-            if (this.maxKeyLength !== configurationDefaultValues.MAX_KEY_LENGTH) {
-                log(logLevelEnums.DEBUG, "initialize, maxKeyLength set to:[" + this.maxKeyLength + "] characters");
-            }
-            if (this.maxValueSize !== configurationDefaultValues.MAX_VALUE_SIZE) {
-                log(logLevelEnums.DEBUG, "initialize, maxValueSize set to:[" + this.maxValueSize + "] characters");
-            }
-            if (this.maxSegmentationValues !== configurationDefaultValues.MAX_SEGMENTATION_VALUES) {
-                log(logLevelEnums.DEBUG, "initialize, maxSegmentationValues set to:[" + this.maxSegmentationValues + "] key/value pairs");
-            }
-            if (this.maxBreadcrumbCount !== configurationDefaultValues.MAX_BREADCRUMB_COUNT) {
-                log(logLevelEnums.DEBUG, "initialize, maxBreadcrumbCount for custom logs set to:[" + this.maxBreadcrumbCount + "] entries");
-            }
-            if (this.maxStackTraceLinesPerThread !== configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD) {
-                log(logLevelEnums.DEBUG, "initialize, maxStackTraceLinesPerThread set to:[" + this.maxStackTraceLinesPerThread + "] lines");
-            }
-            if (this.maxStackTraceLineLength !== configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH) {
-                log(logLevelEnums.DEBUG, "initialize, maxStackTraceLineLength set to:[" + this.maxStackTraceLineLength + "] characters");
-            }
-            if (beatInterval !== configurationDefaultValues.BEAT_INTERVAL) {
-                log(logLevelEnums.DEBUG, "initialize, interval for heartbeats set to:[" + beatInterval + "] milliseconds");
-            }
-            if (queueSize !== configurationDefaultValues.QUEUE_SIZE) {
-                log(logLevelEnums.DEBUG, "initialize, queue_size set to:[" + queueSize + "] items max");
-            }
-            if (failTimeoutAmount !== configurationDefaultValues.FAIL_TIMEOUT_AMOUNT) {
-                log(logLevelEnums.DEBUG, "initialize, fail_timeout set to:[" + failTimeoutAmount + "] seconds of wait time after a failed connection to server");
-            }
-            if (inactivityTime !== configurationDefaultValues.INACTIVITY_TIME) {
-                log(logLevelEnums.DEBUG, "initialize, inactivity_time set to:[" + inactivityTime + "] minutes to consider a user as inactive after no observable action");
-            }
-            if (sessionUpdate !== configurationDefaultValues.SESSION_UPDATE) {
-                log(logLevelEnums.DEBUG, "initialize, session_update set to:[" + sessionUpdate + "] seconds to check if extending a session is needed while the user is active");
-            }
-            if (maxEventBatch !== configurationDefaultValues.MAX_EVENT_BATCH) {
-                log(logLevelEnums.DEBUG, "initialize, max_events set to:[" + maxEventBatch + "] events to send in one batch");
-            }
-            if (maxCrashLogs) {
-                log(logLevelEnums.WARNING, "initialize, max_logs set to:[" + maxCrashLogs + "] breadcrumbs to store for crash logs max, deprecated ");
-            }
-            if (sessionCookieTimeout !== configurationDefaultValues.SESSION_COOKIE_TIMEOUT) {
-                log(logLevelEnums.DEBUG, "initialize, session_cookie_timeout set to:[" + sessionCookieTimeout + "] minutes to expire a cookies session");
-            }
-
-            var deviceIdParamValue = null;
-            var searchQuery = this.getSearchQuery();
-            var hasUTM = false;
-            var utms = {};
-            if (searchQuery) {
-                // remove the '?' character from the beginning if it exists
-                if (searchQuery.indexOf('?') === 0) {
-                    searchQuery = searchQuery.substring(1);
-                };
-                var parts = searchQuery.split("&");
-                for (var i = 0; i < parts.length; i++) {
-                    var nv = parts[i].split("=");
-                    if (nv[0] === "cly_id") {
-                        setValueInStorage("cly_cmp_id", nv[1]);
-                    }
-                    else if (nv[0] === "cly_uid") {
-                        setValueInStorage("cly_cmp_uid", nv[1]);
-                    }
-                    else if (nv[0] === "cly_device_id") {
-                        deviceIdParamValue = nv[1];
-                    }
-                    else if ((nv[0] + "").indexOf("utm_") === 0 && this.utm[nv[0].replace("utm_", "")]) {
-                        utms[nv[0].replace("utm_", "")] = nv[1];
-                        hasUTM = true;
-                    }
-                }
-            }
-
-            var developerSetDeviceId = getConfig("device_id", ob, undefined);
-            if (typeof developerSetDeviceId === "number") { // device ID should always be string
-                developerSetDeviceId = developerSetDeviceId.toString();
-            }
-
-            // check if there wqs stored ID
-            if (getValueFromStorage("cly_id") && !tempIdModeWasEnabled) {
-                this.device_id = getValueFromStorage("cly_id");
-                log(logLevelEnums.INFO, "initialize, Set the stored device ID");
-                deviceIdType = getValueFromStorage("cly_id_type");
-                if (!deviceIdType) {
-                    log(logLevelEnums.INFO, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED");
-                    // there is a device ID saved but there is no device ID information saved 
-                    deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                }
-                offlineMode = false;
-            }
-            // if not check if device ID was provided with URL
-            else if (deviceIdParamValue !== null) {
-                log(logLevelEnums.INFO, "initialize, Device ID set by URL");
-                this.device_id = deviceIdParamValue;
-                deviceIdType = DeviceIdTypeInternalEnums.URL_PROVIDED;
-                offlineMode = false;
-            }
-            // if not check if developer provided any ID
-            else if (developerSetDeviceId) {
-                log(logLevelEnums.INFO, "initialize, Device ID set by developer");
-                this.device_id = developerSetDeviceId;
-                if (ob && Object.keys(ob).length) {
-                    if (ob.device_id !== undefined) {
-                        deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                    }
-                }
-                else if (Countly.device_id !== undefined) {
-                    deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                }
-                offlineMode = false;
-            }
-            // if not check if offline mode is on
-            else if (offlineMode || tempIdModeWasEnabled) {
-                this.device_id = "[CLY]_temp_id";
-                deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
-                if (offlineMode && tempIdModeWasEnabled) {
-                    log(logLevelEnums.INFO, "initialize, Temp ID set, continuing offline mode from previous app session");
-                }
-                else if (offlineMode && !tempIdModeWasEnabled) {
-                    // this if we get here then it means either first init we enter offline mode or we cleared the device ID during the init and still user entered the offline mode
-                    log(logLevelEnums.INFO, "initialize, Temp ID set, entering offline mode");
+                var strippedList = [];
+                // if whitelist is provided is an array
+                if (Array.isArray(this.heatmapWhitelist)) {
+                    this.heatmapWhitelist.push(this.url);
+                    strippedList = this.heatmapWhitelist.map((e) => {
+                        // remove trailing slashes from the entries
+                        return stripTrailingSlash(e);
+                    });
                 }
                 else {
-                    // no device ID was provided, no offline mode flag was provided, in the previous app session we entered offline mode and now we carry on
-                    offlineMode = true;
-                    log(logLevelEnums.INFO, "initialize, Temp ID set, enabling offline mode");
+                    strippedList = [this.url];
+                }
+                // if the passed url is in the whitelist proceed
+                if (strippedList.includes(this.passed_data.url)) {
+                    if (this.passed_data.purpose === "heatmap") {
+                        this.ignore_visitor = true;
+                        showLoader();
+                        loadJS(this.passed_data.url + "/views/heatmap.js", hideLoader);
+                    }
                 }
             }
-            // if all fails generate an ID
+        }
+
+        if (this.ignore_visitor) {
+            this.#log(logLevelEnums.WARNING, "initialize, ignore_visitor:[" + this.ignore_visitor + "], this user will not be tracked");
+            return;
+        }
+
+        this.#migrate();
+
+        this.#requestQueue = this.#getValueFromStorage("cly_queue") || [];
+        this.#eventQueue = this.#getValueFromStorage("cly_event") || [];
+        this.#remoteConfigs = this.#getValueFromStorage("cly_remote_configs") || {};
+
+        // flag that indicates that the offline mode was enabled at the end of the previous app session 
+        var tempIdModeWasEnabled = (this.#getValueFromStorage("cly_id") === "[CLY]_temp_id");
+
+        if (this.clearStoredId) {
+            // retrieve stored device ID and type from local storage and use it to flush existing events
+            if (this.#getValueFromStorage("cly_id") && !tempIdModeWasEnabled) {
+                this.device_id = this.#getValueFromStorage("cly_id");
+                this.#log(logLevelEnums.DEBUG, "initialize, temporarily using the previous device ID to flush existing events");
+                this.#deviceIdType = this.#getValueFromStorage("cly_id_type");
+                if (!this.#deviceIdType) {
+                    this.#log(logLevelEnums.DEBUG, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED, for event flushing");
+                    this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+                }
+                // don't process async queue here, just send the events (most likely async data is for the new user)
+                this.#sendEventsForced();
+                // set them back to their initial values
+                this.device_id = undefined;
+                this.#deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
+            }
+            // then clear the storage so that a new device ID is set again later
+            this.#log(logLevelEnums.INFO, "initialize, Clearing the device ID storage");
+            this.#removeValueFromStorage("cly_id");
+            this.#removeValueFromStorage("cly_id_type");
+            this.#removeValueFromStorage("cly_session");
+        }
+
+        // init configuration is printed out here:
+        // key values should be printed out as is
+        if (this.#sdkName === SDK_NAME && this.#sdkVersion === SDK_VERSION) {
+            this.#log(logLevelEnums.DEBUG, "initialize, SDK name:[" + this.#sdkName + "], version:[" + this.#sdkVersion + "]");
+        } else {
+            this.#log(logLevelEnums.DEBUG, "initialize, SDK name:[" + this.#sdkName + "], version:[" + this.#sdkVersion + "], default name:[" + SDK_NAME + "] and default version:[" + SDK_VERSION + "]");
+        }
+        this.#log(logLevelEnums.DEBUG, "initialize, app_key:[" + this.app_key + "], url:[" + this.url + "]");
+        this.#log(logLevelEnums.DEBUG, "initialize, device_id:[" + getConfig("device_id", ob, undefined) + "]");
+        this.#log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.require_consent + "]");
+        try {
+            this.#log(logLevelEnums.DEBUG, "initialize, metric override:[" + JSON.stringify(this.metrics) + "]");
+            this.#log(logLevelEnums.DEBUG, "initialize, header override:[" + JSON.stringify(this.headers) + "]");
+            // empty array is truthy and so would be printed if provided
+            this.#log(logLevelEnums.DEBUG, "initialize, number of onload callbacks provided:[" + this.onload.length + "]");
+            // if the utm object is different to default utm object print it here
+            this.#log(logLevelEnums.DEBUG, "initialize, utm tags:[" + JSON.stringify(this.utm) + "]");
+            // empty array printed if non provided
+            if (this.#ignoreReferrers) {
+                this.#log(logLevelEnums.DEBUG, "initialize, referrers to ignore :[" + JSON.stringify(this.#ignoreReferrers) + "]");
+            }
+            this.#log(logLevelEnums.DEBUG, "initialize, salt given:[" + !!this.salt + "]");
+        }
+        catch (e) {
+            this.#log(logLevelEnums.ERROR, "initialize, Could not stringify some config object values");
+        }
+        this.#log(logLevelEnums.DEBUG, "initialize, app_version:[" + this.app_version + "]");
+
+        // location info printed here
+        this.#log(logLevelEnums.DEBUG, "initialize, provided location info; country_code:[" + this.country_code + "], city:[" + this.city + "], ip_address:[" + this.ip_address + "]");
+
+        // print non vital values only if provided by the developer or differs from the default value
+        if (this.namespace !== "") {
+            this.#log(logLevelEnums.DEBUG, "initialize, namespace given:[" + this.namespace + "]");
+        }
+        if (this.clearStoredId) {
+            this.#log(logLevelEnums.DEBUG, "initialize, clearStoredId flag set to:[" + this.clearStoredId + "]");
+        }
+        if (this.ignore_prefetch) {
+            this.#log(logLevelEnums.DEBUG, "initialize, ignoring pre-fetching and pre-rendering from counting as real website visits :[" + this.ignore_prefetch + "]");
+        }
+        // if test mode is enabled warn the user
+        if (this.test_mode) {
+            this.#log(logLevelEnums.WARNING, "initialize, test_mode:[" + this.test_mode + "], request queue won't be processed");
+        }
+        if (this.test_mode_eq) {
+            this.#log(logLevelEnums.WARNING, "initialize, test_mode_eq:[" + this.test_mode_eq + "], event queue won't be processed");
+        }
+        // if test mode is enabled warn the user
+        if (this.heatmapWhitelist) {
+            this.#log(logLevelEnums.DEBUG, "initialize, heatmap whitelist:[" + JSON.stringify(this.heatmapWhitelist) + "], these domains will be whitelisted");
+        }
+        // if storage is se to something other than local storage
+        if (this.storage !== "default") {
+            this.#log(logLevelEnums.DEBUG, "initialize, storage is set to:[" + this.storage + "]");
+        }
+        if (this.ignore_bots) {
+            this.#log(logLevelEnums.DEBUG, "initialize, ignore traffic from bots :[" + this.ignore_bots + "]");
+        }
+        if (this.force_post) {
+            this.#log(logLevelEnums.DEBUG, "initialize, forced post method for all requests:[" + this.force_post + "]");
+        }
+        if (this.remote_config) {
+            this.#log(logLevelEnums.DEBUG, "initialize, remote_config callback provided:[" + !!this.remote_config + "]");
+        }
+        if (typeof this.rcAutoOptinAb === "boolean") {
+            this.#log(logLevelEnums.DEBUG, "initialize, automatic RC optin is enabled:[" + this.rcAutoOptinAb + "]");
+        }
+        if (!this.useExplicitRcApi) {
+            this.#log(logLevelEnums.WARNING, "initialize, will use legacy RC API. Consider enabling new API during init with use_explicit_rc_api flag");
+        }
+        if (this.track_domains) {
+            this.#log(logLevelEnums.DEBUG, "initialize, tracking domain info:[" + this.track_domains + "]");
+        }
+        if (this.enableOrientationTracking) {
+            this.#log(logLevelEnums.DEBUG, "initialize, enableOrientationTracking:[" + this.enableOrientationTracking + "]");
+        }
+        if (!this.#useSessionCookie) {
+            this.#log(logLevelEnums.WARNING, "initialize, use_session_cookie is enabled:[" + this.#useSessionCookie + "]");
+        }
+        if (this.#offlineMode) {
+            this.#log(logLevelEnums.DEBUG, "initialize, offline_mode:[" + this.#offlineMode + "], user info won't be send to the servers");
+        }
+        if (this.#remoteConfigs) {
+            this.#log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(this.#remoteConfigs) + "]");
+        }
+        // functions, if provided, would be printed as true without revealing their content
+        this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
+        this.#log(logLevelEnums.DEBUG, "initialize, 'getSearchQuery' callback override provided:[" + (this.getSearchQuery !== Countly.getSearchQuery) + "]");
+
+        // limits are printed here if they were modified 
+        if (this.maxKeyLength !== configurationDefaultValues.MAX_KEY_LENGTH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxKeyLength set to:[" + this.maxKeyLength + "] characters");
+        }
+        if (this.maxValueSize !== configurationDefaultValues.MAX_VALUE_SIZE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxValueSize set to:[" + this.maxValueSize + "] characters");
+        }
+        if (this.maxSegmentationValues !== configurationDefaultValues.MAX_SEGMENTATION_VALUES) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxSegmentationValues set to:[" + this.maxSegmentationValues + "] key/value pairs");
+        }
+        if (this.maxBreadcrumbCount !== configurationDefaultValues.MAX_BREADCRUMB_COUNT) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxBreadcrumbCount for custom logs set to:[" + this.maxBreadcrumbCount + "] entries");
+        }
+        if (this.maxStackTraceLinesPerThread !== configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLinesPerThread set to:[" + this.maxStackTraceLinesPerThread + "] lines");
+        }
+        if (this.maxStackTraceLineLength !== configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLineLength set to:[" + this.maxStackTraceLineLength + "] characters");
+        }
+        if (this.#beatInterval !== configurationDefaultValues.BEAT_INTERVAL) {
+            this.#log(logLevelEnums.DEBUG, "initialize, interval for heartbeats set to:[" + this.#beatInterval + "] milliseconds");
+        }
+        if (this.#queueSize !== configurationDefaultValues.QUEUE_SIZE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, queue_size set to:[" + this.#queueSize + "] items max");
+        }
+        if (this.#failTimeoutAmount !== configurationDefaultValues.FAIL_TIMEOUT_AMOUNT) {
+            this.#log(logLevelEnums.DEBUG, "initialize, fail_timeout set to:[" + this.#failTimeoutAmount + "] seconds of wait time after a failed connection to server");
+        }
+        if (this.#inactivityTime !== configurationDefaultValues.INACTIVITY_TIME) {
+            this.#log(logLevelEnums.DEBUG, "initialize, inactivity_time set to:[" + this.#inactivityTime + "] minutes to consider a user as inactive after no observable action");
+        }
+        if (this.#sessionUpdate !== configurationDefaultValues.SESSION_UPDATE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, session_update set to:[" + this.#sessionUpdate + "] seconds to check if extending a session is needed while the user is active");
+        }
+        if (this.#maxEventBatch !== configurationDefaultValues.MAX_EVENT_BATCH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, max_events set to:[" + this.#maxEventBatch + "] events to send in one batch");
+        }
+        if (this.#maxCrashLogs) {
+            this.#log(logLevelEnums.WARNING, "initialize, max_logs set to:[" + this.#maxCrashLogs + "] breadcrumbs to store for crash logs max, deprecated ");
+        }
+        if (this.#sessionCookieTimeout !== configurationDefaultValues.SESSION_COOKIE_TIMEOUT) {
+            this.#log(logLevelEnums.DEBUG, "initialize, session_cookie_timeout set to:[" + this.#sessionCookieTimeout + "] minutes to expire a cookies session");
+        }
+
+        var deviceIdParamValue = null;
+        var searchQuery = this.getSearchQuery();
+        var hasUTM = false;
+        var utms = {};
+        if (searchQuery) {
+            // remove the '?' character from the beginning if it exists
+            if (searchQuery.indexOf('?') === 0) {
+                searchQuery = searchQuery.substring(1);
+            };
+            var parts = searchQuery.split("&");
+            for (var i = 0; i < parts.length; i++) {
+                var nv = parts[i].split("=");
+                if (nv[0] === "cly_id") {
+                    this.#setValueInStorage("cly_cmp_id", nv[1]);
+                }
+                else if (nv[0] === "cly_uid") {
+                    this.#setValueInStorage("cly_cmp_uid", nv[1]);
+                }
+                else if (nv[0] === "cly_device_id") {
+                    deviceIdParamValue = nv[1];
+                }
+                else if ((nv[0] + "").indexOf("utm_") === 0 && this.utm[nv[0].replace("utm_", "")]) {
+                    utms[nv[0].replace("utm_", "")] = nv[1];
+                    hasUTM = true;
+                }
+            }
+        }
+
+        var developerSetDeviceId = getConfig("device_id", ob, undefined);
+        if (typeof developerSetDeviceId === "number") { // device ID should always be string
+            developerSetDeviceId = developerSetDeviceId.toString();
+        }
+
+        // check if there wqs stored ID
+        if (this.#getValueFromStorage("cly_id") && !tempIdModeWasEnabled) {
+            this.device_id = this.#getValueFromStorage("cly_id");
+            this.#log(logLevelEnums.INFO, "initialize, Set the stored device ID");
+            this.#deviceIdType = this.#getValueFromStorage("cly_id_type");
+            if (!this.#deviceIdType) {
+                this.#log(logLevelEnums.INFO, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED");
+                // there is a device ID saved but there is no device ID information saved 
+                this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+            }
+            this.#offlineMode = false;
+        }
+        // if not check if device ID was provided with URL
+        else if (deviceIdParamValue !== null) {
+            this.#log(logLevelEnums.INFO, "initialize, Device ID set by URL");
+            this.device_id = deviceIdParamValue;
+            this.#deviceIdType = DeviceIdTypeInternalEnums.URL_PROVIDED;
+            this.#offlineMode = false;
+        }
+        // if not check if developer provided any ID
+        else if (developerSetDeviceId) {
+            this.#log(logLevelEnums.INFO, "initialize, Device ID set by developer");
+            this.device_id = developerSetDeviceId;
+            if (ob && Object.keys(ob).length) {
+                if (ob.device_id !== undefined) {
+                    this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+                }
+            }
+            else if (Countly.device_id !== undefined) {
+                this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+            }
+            this.#offlineMode = false;
+        }
+        // if not check if offline mode is on
+        else if (this.#offlineMode || tempIdModeWasEnabled) {
+            this.device_id = "[CLY]_temp_id";
+            this.#deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
+            if (this.#offlineMode && tempIdModeWasEnabled) {
+                this.#log(logLevelEnums.INFO, "initialize, Temp ID set, continuing offline mode from previous app session");
+            }
+            else if (this.#offlineMode && !tempIdModeWasEnabled) {
+                // this if we get here then it means either first init we enter offline mode or we cleared the device ID during the init and still user entered the offline mode
+                this.#log(logLevelEnums.INFO, "initialize, Temp ID set, entering offline mode");
+            }
             else {
-                log(logLevelEnums.INFO, "initialize, Generating the device ID");
-                this.device_id = getConfig("device_id", ob, getStoredIdOrGenerateId());
-                if (ob && Object.keys(ob).length) {
-                    if (ob.device_id !== undefined) {
-                        deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                    }
-                }
-                else if (Countly.device_id !== undefined) {
-                    deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+                // no device ID was provided, no offline mode flag was provided, in the previous app session we entered offline mode and now we carry on
+                this.#offlineMode = true;
+                this.#log(logLevelEnums.INFO, "initialize, Temp ID set, enabling offline mode");
+            }
+        }
+        // if all fails generate an ID
+        else {
+            this.#log(logLevelEnums.INFO, "initialize, Generating the device ID");
+            this.device_id = getConfig("device_id", ob, this.#getStoredIdOrGenerateId());
+            if (ob && Object.keys(ob).length) {
+                if (ob.device_id !== undefined) {
+                    this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                 }
             }
-
-            // Store the device ID and device ID type
-            setValueInStorage("cly_id", this.device_id);
-            setValueInStorage("cly_id_type", deviceIdType);
-
-            // as we have assigned the device ID now we can save the tags
-            if (hasUTM) {
-                freshUTMTags = {};
-                for (var tag in this.utm) { // this.utm is a filter for allowed tags
-                    if (utms[tag]) { // utms is the tags that were passed in the URL
-                        this.userData.set("utm_" + tag, utms[tag]);
-                        freshUTMTags[tag] = utms[tag];
-                    }
-                    else {
-                        this.userData.unset("utm_" + tag);
-                    }
-                }
-                this.userData.save();
+            else if (Countly.device_id !== undefined) {
+                this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
             }
+        }
 
-            notifyLoaders();
+        // Store the device ID and device ID type
+        this.#setValueInStorage("cly_id", this.device_id);
+        this.#setValueInStorage("cly_id_type", this.#deviceIdType);
 
-            setTimeout(() => {
-                if (!Countly.noHeartBeat) {
-                    heartBeat();
-                } else {
-                    log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
+        // as we have assigned the device ID now we can save the tags
+        if (hasUTM) {
+            this.#freshUTMTags = {};
+            for (var tag in this.utm) { // this.utm is a filter for allowed tags
+                if (utms[tag]) { // utms is the tags that were passed in the URL
+                    this.userData.set("utm_" + tag, utms[tag]);
+                    this.#freshUTMTags[tag] = utms[tag];
                 }
-            
-                if (this.remote_config) {
-                    this.fetch_remote_config(this.remote_config);
+                else {
+                    this.userData.unset("utm_" + tag);
                 }
-            }, 1);
-            if (isBrowser) {
-                document.documentElement.setAttribute("data-countly-useragent", currentUserAgentString());
             }
-            // send instant health check request
-            HealthCheck.sendInstantHCRequest();
-            log(logLevelEnums.INFO, "initialize, Countly initialized");
-        };
+            this.userData.save();
+        }
+
+        this.#notifyLoaders();
+
+        setTimeout(() => {
+            if (!Countly.noHeartBeat) {
+                this.#heartBeat();
+            } else {
+                this.#log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
+            }
+        
+            if (this.remote_config) {
+                this.fetch_remote_config(this.remote_config);
+            }
+        }, 1);
+        if (isBrowser) {
+            document.documentElement.setAttribute("data-countly-useragent", currentUserAgentString());
+        }
+        // send instant health check request
+        this.#HealthCheck.sendInstantHCRequest();
+        this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
+    };
+
+    #updateConsent = () => {
+        if (this.#consentTimer) {
+            // delay syncing consents
+            clearTimeout(this.#consentTimer);
+            this.#consentTimer = null;
+        }
+        this.#consentTimer = setTimeout(() => {
+            var consentMessage = {};
+            for (var i = 0; i < Countly.features.length; i++) {
+                if (this.#consents[Countly.features[i]].optin === true) {
+                    consentMessage[Countly.features[i]] = true;
+                }
+                else {
+                    consentMessage[Countly.features[i]] = false;
+                }
+            }
+            this.#toRequestQueue({ consent: JSON.stringify(consentMessage) });
+            this.#log(logLevelEnums.DEBUG, "Consent update request has been sent to the queue.");
+        }, 1000);
+    };
 
         /**
          * WARNING!!!
@@ -544,53 +632,54 @@ constructor(ob) {
          * Resets Countly to its initial state (used mainly to wipe the queues in memory).
          * Calling this will result in a loss of data
          */
-        this.halt = function () {
-            log(logLevelEnums.WARNING, "halt, Resetting Countly");
+        halt = () => {
+            this.#log(logLevelEnums.WARNING, "halt, Resetting Countly");
             Countly.i = undefined;
             Countly.q = [];
             Countly.noHeartBeat = undefined;
-            global = !Countly.i;
-            sessionStarted = false;
-            apiPath = "/i";
-            readPath = "/o/sdk";
-            beatInterval = 500;
-            queueSize = 1000;
-            requestQueue = [];
-            eventQueue = [];
-            remoteConfigs = {};
-            crashLogs = [];
-            timedEvents = {};
-            ignoreReferrers = [];
-            crashSegments = null;
-            autoExtend = true;
-            storedDuration = 0;
-            lastView = null;
-            lastViewTime = 0;
-            lastViewStoredDuration = 0;
-            failTimeout = 0;
-            failTimeoutAmount = 60;
-            inactivityTime = 20;
-            inactivityCounter = 0;
-            sessionUpdate = 60;
-            maxEventBatch = 100;
-            maxCrashLogs = null;
-            useSessionCookie = true;
-            sessionCookieTimeout = 30;
-            readyToProcess = true;
-            hasPulse = false;
-            offlineMode = false;
-            lastParams = {};
-            trackTime = true;
-            startTime = getTimestamp();
-            lsSupport = true;
-            firstView = null;
-            deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
-            isScrollRegistryOpen = false;
-            scrollRegistryTopPosition = 0;
-            trackingScrolls = false;
-            currentViewId = null;
-            previousViewId = null;
-            freshUTMTags = null;
+            this.#global = !Countly.i;
+            this.#sessionStarted = false;
+            this.#apiPath = "/i";
+            this.#readPath = "/o/sdk";
+            this.#beatInterval = 500;
+            this.#queueSize = 1000;
+            this.#requestQueue = [];
+            this.#eventQueue = [];
+            this.#remoteConfigs = {};
+            this.#crashLogs = [];
+            this.#timedEvents = {};
+            this.#ignoreReferrers = [];
+            this.#crashSegments = null;
+            this.#autoExtend = true;
+            this.#storedDuration = 0;
+            this.#lastView = null;
+            this.#lastViewTime = 0;
+            this.#lastViewStoredDuration = 0;
+            this.#failTimeout = 0;
+            this.#failTimeoutAmount = 60;
+            this.#inactivityTime = 20;
+            this.#inactivityCounter = 0;
+            this.#sessionUpdate = 60;
+            this.#maxEventBatch = 100;
+            this.#maxCrashLogs = null;
+            this.#useSessionCookie = true;
+            this.#sessionCookieTimeout = 30;
+            this.#readyToProcess = true;
+            this.#hasPulse = false;
+            this.#offlineMode = false;
+            this.#lastParams = {};
+            this.#trackTime = true;
+            this.#startTime = getTimestamp();
+            this.#lsSupport = true;
+            this.#firstView = null;
+            this.#deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
+            this.#isScrollRegistryOpen = false;
+            this.#scrollRegistryTopPosition = 0;
+            this.#trackingScrolls = false;
+            this.#currentViewId = null;
+            this.#previousViewId = null;
+            this.#freshUTMTags = null;
+            this.#generatedRequests = [];
 
             try {
                 localStorage.setItem("cly_testLocal", true);
@@ -598,50 +687,50 @@ constructor(ob) {
                 localStorage.removeItem("cly_testLocal");
             }
             catch (e) {
-                log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
-                lsSupport = false;
+                this.#log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
+                this.#lsSupport = false;
             }
 
             Countly.features = [featureEnums.SESSIONS, featureEnums.EVENTS, featureEnums.VIEWS, featureEnums.SCROLLS, featureEnums.CLICKS, featureEnums.FORMS, featureEnums.CRASHES, featureEnums.ATTRIBUTION, featureEnums.USERS, featureEnums.STAR_RATING, featureEnums.LOCATION, featureEnums.APM, featureEnums.FEEDBACK, featureEnums.REMOTE_CONFIG];
 
             // CONSENTS
-            consents = {};
+            this.#consents = {};
             for (var a = 0; a < Countly.features.length; a++) {
-                consents[Countly.features[a]] = {};
+                this.#consents[Countly.features[a]] = {};
             }
 
-            self.app_key = undefined;
-            self.device_id = undefined;
-            self.onload = undefined;
-            self.utm = undefined;
-            self.ignore_prefetch = undefined;
-            self.debug = undefined;
-            self.test_mode = undefined;
-            self.test_mode_eq = undefined;
-            self.metrics = undefined;
-            self.headers = undefined;
-            self.url = undefined;
-            self.app_version = undefined;
-            self.country_code = undefined;
-            self.city = undefined;
-            self.ip_address = undefined;
-            self.ignore_bots = undefined;
-            self.force_post = undefined;
-            self.rcAutoOptinAb = undefined;
-            self.useExplicitRcApi = undefined;
-            self.remote_config = undefined;
-            self.ignore_visitor = undefined;
-            self.require_consent = undefined;
-            self.track_domains = undefined;
-            self.storage = undefined;
-            self.enableOrientationTracking = undefined;
-            self.salt = undefined;
-            self.maxKeyLength = undefined;
-            self.maxValueSize = undefined;
-            self.maxSegmentationValues = undefined;
-            self.maxBreadcrumbCount = undefined;
-            self.maxStackTraceLinesPerThread = undefined;
-            self.maxStackTraceLineLength = undefined;
+            this.app_key = undefined;
+            this.device_id = undefined;
+            this.onload = undefined;
+            this.utm = undefined;
+            this.ignore_prefetch = undefined;
+            this.debug = undefined;
+            this.test_mode = undefined;
+            this.test_mode_eq = undefined;
+            this.metrics = undefined;
+            this.headers = undefined;
+            this.url = undefined;
+            this.app_version = undefined;
+            this.country_code = undefined;
+            this.city = undefined;
+            this.ip_address = undefined;
+            this.ignore_bots = undefined;
+            this.force_post = undefined;
+            this.rcAutoOptinAb = undefined;
+            this.useExplicitRcApi = undefined;
+            this.remote_config = undefined;
+            this.ignore_visitor = undefined;
+            this.require_consent = undefined;
+            this.track_domains = undefined;
+            this.storage = undefined;
+            this.enableOrientationTracking = undefined;
+            this.salt = undefined;
+            this.maxKeyLength = undefined;
+            this.maxValueSize = undefined;
+            this.maxSegmentationValues = undefined;
+            this.maxBreadcrumbCount = undefined;
+            this.maxStackTraceLinesPerThread = undefined;
+            this.maxStackTraceLineLength = undefined;
         };
 
         /**
@@ -659,28 +748,28 @@ constructor(ob) {
         * //or call Countly.add_consent("interaction") to allow "scrolls","clicks","forms"
         * //or call Countly.add_consent("crashes") to allow some separate feature
         */
-        this.group_features = function (features) {
-            log(logLevelEnums.INFO, "group_features, Grouping features");
+        group_features = (features) => {
+            this.#log(logLevelEnums.INFO, "group_features, Grouping features");
             if (features) {
                 for (var i in features) {
-                    if (!consents[i]) {
+                    if (!this.#consents[i]) {
                         if (typeof features[i] === "string") {
-                            consents[i] = { features: [features[i]] };
+                            this.#consents[i] = { features: [features[i]] };
                         }
                         else if (features[i] && Array.isArray(features[i]) && features[i].length) {
-                            consents[i] = { features: features[i] };
+                            this.#consents[i] = { features: features[i] };
                         }
                         else {
-                            log(logLevelEnums.ERROR, "group_features, Incorrect feature list for [" + i + "] value: [" + features[i] + "]");
+                            this.#log(logLevelEnums.ERROR, "group_features, Incorrect feature list for [" + i + "] value: [" + features[i] + "]");
                         }
                     }
                     else {
-                        log(logLevelEnums.WARNING, "group_features, Feature name [" + i + "] is already reserved");
+                        this.#log(logLevelEnums.WARNING, "group_features, Feature name [" + i + "] is already reserved");
                     }
                 }
             }
             else {
-                log(logLevelEnums.ERROR, "group_features, Incorrect features:[" + features + "]");
+                this.#log(logLevelEnums.ERROR, "group_features, Incorrect features:[" + features + "]");
             }
         };
 
@@ -689,17 +778,17 @@ constructor(ob) {
         * @param {string} feature - name of the feature, possible values, "sessions","events","views","scrolls","clicks","forms","crashes","attribution","users" or custom provided through {@link Countly.group_features}
         * @returns {Boolean} true if consent was given for the feature or false if it was not
         */
-        this.check_consent = function (feature) {
-            log(logLevelEnums.INFO, "check_consent, Checking if consent is given for specific feature:[" + feature + "]");
+        check_consent = (feature) => {
+            this.#log(logLevelEnums.INFO, "check_consent, Checking if consent is given for specific feature:[" + feature + "]");
             if (!this.require_consent) {
                 // we don't need to have specific consents
-                log(logLevelEnums.INFO, "check_consent, require_consent is off, no consent is necessary");
+                this.#log(logLevelEnums.INFO, "check_consent, require_consent is off, no consent is necessary");
                 return true;
             }
-            if (consents[feature]) {
-                return !!(consents[feature] && consents[feature].optin);
+            if (this.#consents[feature]) {
+                return !!(this.#consents[feature] && this.#consents[feature].optin);
             }
-            log(logLevelEnums.ERROR, "check_consent, No feature available for [" + feature + "]");
+            this.#log(logLevelEnums.ERROR, "check_consent, No feature available for [" + feature + "]");
             return false;
         };
 
@@ -707,19 +796,19 @@ constructor(ob) {
         * Check and return the current device id type
         * @returns {number} a number that indicates the device id type
         */
-        this.get_device_id_type = function () {
-            log(logLevelEnums.INFO, "check_device_id_type, Retrieving the current device id type.[" + deviceIdType + "]");
+        get_device_id_type = () => {
+            this.#log(logLevelEnums.INFO, "check_device_id_type, Retrieving the current device id type.[" + this.#deviceIdType + "]");
             var type;
-            switch (deviceIdType) {
+            switch (this.#deviceIdType) {
                 case DeviceIdTypeInternalEnums.SDK_GENERATED:
-                    type = self.DeviceIdType.SDK_GENERATED;
+                    type = this.DeviceIdType.SDK_GENERATED;
                     break;
                 case DeviceIdTypeInternalEnums.URL_PROVIDED:
                 case DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED:
-                    type = self.DeviceIdType.DEVELOPER_SUPPLIED;
+                    type = this.DeviceIdType.DEVELOPER_SUPPLIED;
                     break;
                 case DeviceIdTypeInternalEnums.TEMPORARY_ID:
-                    type = self.DeviceIdType.TEMPORARY_ID;
+                    type = this.DeviceIdType.TEMPORARY_ID;
                     break;
                 default:
                     type = -1;
@@ -732,28 +821,28 @@ constructor(ob) {
         * Gets the current device id (of the CountlyClass instance)
         * @returns {string} device id
         */
-        this.get_device_id = function () {
-            log(logLevelEnums.INFO, "get_device_id, Retrieving the device id: [" + self.device_id + "]");
-            return self.device_id;
+        get_device_id = () => {
+            this.#log(logLevelEnums.INFO, "get_device_id, Retrieving the device id: [" + this.device_id + "]");
+            return this.device_id;
         };
 
         /**
         * Check if any consent is given, for some cases, when crucial parts are like device_id are needed for any request
         * @returns {Boolean} true is has any consent given, false if no consents given
         */
-        this.check_any_consent = function () {
-            log(logLevelEnums.INFO, "check_any_consent, Checking if any consent is given");
+        check_any_consent = () => {
+            this.#log(logLevelEnums.INFO, "check_any_consent, Checking if any consent is given");
             if (!this.require_consent) {
                 // we don't need to have consents
-                log(logLevelEnums.INFO, "check_any_consent, require_consent is off, no consent is necessary");
+                this.#log(logLevelEnums.INFO, "check_any_consent, require_consent is off, no consent is necessary");
                 return true;
             }
-            for (var i in consents) {
-                if (consents[i] && consents[i].optin) {
+            for (var i in this.#consents) {
+                if (this.#consents[i] && this.#consents[i].optin) {
                     return true;
                 }
             }
-            log(logLevelEnums.INFO, "check_any_consent, No consents given");
+            this.#log(logLevelEnums.INFO, "check_any_consent, No consents given");
             return false;
         };
 
@@ -761,40 +850,40 @@ constructor(ob) {
         * Add consent for specific feature, meaning, user allowed to track that data (either core feature of from custom feature group)
         * @param {string|array} feature - name of the feature, possible values, "sessions","events","views","scrolls","clicks","forms","crashes","attribution","users", etc or custom provided through {@link Countly.group_features}
         */
-        this.add_consent = function (feature) {
-            log(logLevelEnums.INFO, "add_consent, Adding consent for [" + feature + "]");
+        add_consent = (feature) => {
+            this.#log(logLevelEnums.INFO, "add_consent, Adding consent for [" + feature + "]");
             if (Array.isArray(feature)) {
                 for (var i = 0; i < feature.length; i++) {
                     this.add_consent(feature[i]);
                 }
             }
-            else if (consents[feature]) {
-                if (consents[feature].features) {
-                    consents[feature].optin = true;
+            else if (this.#consents[feature]) {
+                if (this.#consents[feature].features) {
+                    this.#consents[feature].optin = true;
                     // this is added group, let's iterate through sub features
-                    this.add_consent(consents[feature].features);
+                    this.add_consent(this.#consents[feature].features);
                 }
                 else {
                     // this is core feature
-                    if (consents[feature].optin !== true) {
-                        consents[feature].optin = true;
-                        updateConsent();
-                        setTimeout(function () {
-                            if (feature === featureEnums.SESSIONS && lastParams.begin_session) {
-                                self.begin_session.apply(self, lastParams.begin_session);
-                                lastParams.begin_session = null;
+                    if (this.#consents[feature].optin !== true) {
+                        this.#consents[feature].optin = true;
+                        this.#updateConsent();
+                        setTimeout(() => {
+                            if (feature === featureEnums.SESSIONS && this.#lastParams.begin_session) {
+                                this.begin_session.apply(this, this.#lastParams.begin_session);
+                                this.#lastParams.begin_session = null;
                             }
-                            else if (feature === featureEnums.VIEWS && lastParams.track_pageview) {
-                                lastView = null;
-                                self.track_pageview.apply(self, lastParams.track_pageview);
-                                lastParams.track_pageview = null;
+                            else if (feature === featureEnums.VIEWS && this.#lastParams.track_pageview) {
+                                this.#lastView = null;
+                                this.track_pageview.apply(this, this.#lastParams.track_pageview);
+                                this.#lastParams.track_pageview = null;
                             }
                         }, 1);
                     }
                 }
             }
             else {
-                log(logLevelEnums.ERROR, "add_consent, No feature available for [" + feature + "]");
+                this.#log(logLevelEnums.ERROR, "add_consent, No feature available for [" + feature + "]");
             }
         };
 
@@ -802,8 +891,8 @@ constructor(ob) {
         * Remove consent for specific feature, meaning, user opted out to track that data (either core feature of from custom feature group)
         * @param {string|array} feature - name of the feature, possible values, "sessions","events","views","scrolls","clicks","forms","crashes","attribution","users", etc or custom provided through {@link Countly.group_features}
         */
-        this.remove_consent = function (feature) {
-            log(logLevelEnums.INFO, "remove_consent, Removing consent for [" + feature + "]");
+        remove_consent = (feature) => {
+            this.#log(logLevelEnums.INFO, "remove_consent, Removing consent for [" + feature + "]");
             this.remove_consent_internal(feature, true);
         };
 
@@ -812,7 +901,7 @@ constructor(ob) {
         * @param {string|array} feature - name of the feature, possible values, "sessions","events","views","scrolls","clicks","forms","crashes","attribution","users", etc or custom provided through {@link Countly.group_features}
         * @param {Boolean} enforceConsentUpdate - regulates if a request will be sent to the server or not. If true, removing consents will send a request to the server and if false, consents will be removed without a request 
         */
-        this.remove_consent_internal = function (feature, enforceConsentUpdate) {
+        remove_consent_internal = (feature, enforceConsentUpdate) => {
             // if true updateConsent will execute when possible
             enforceConsentUpdate = enforceConsentUpdate || false;
             if (Array.isArray(feature)) {
@@ -820,97 +909,75 @@ constructor(ob) {
                     this.remove_consent_internal(feature[i], enforceConsentUpdate);
                 }
             }
-            else if (consents[feature]) {
-                if (consents[feature].features) {
+            else if (this.#consents[feature]) {
+                if (this.#consents[feature].features) {
                     // this is added group, let's iterate through sub features
-                    this.remove_consent_internal(consents[feature].features, enforceConsentUpdate);
+                    this.remove_consent_internal(this.#consents[feature].features, enforceConsentUpdate);
                 }
                 else {
-                    consents[feature].optin = false;
+                    this.#consents[feature].optin = false;
                     // this is core feature
-                    if (enforceConsentUpdate && consents[feature].optin !== false) {
-                        updateConsent();
+                    if (enforceConsentUpdate && this.#consents[feature].optin !== false) {
+                        this.#updateConsent();
                     }
                 }
             }
             else {
-                log(logLevelEnums.WARNING, "remove_consent, No feature available for [" + feature + "]");
+                this.#log(logLevelEnums.WARNING, "remove_consent, No feature available for [" + feature + "]");
             }
         };
 
-        var consentTimer;
-        var updateConsent = function () {
-            if (consentTimer) {
-                // delay syncing consents
-                clearTimeout(consentTimer);
-                consentTimer = null;
-            }
-            consentTimer = setTimeout(function () {
-                var consentMessage = {};
-                for (var i = 0; i < Countly.features.length; i++) {
-                    if (consents[Countly.features[i]].optin === true) {
-                        consentMessage[Countly.features[i]] = true;
-                    }
-                    else {
-                        consentMessage[Countly.features[i]] = false;
-                    }
-                }
-                toRequestQueue({ consent: JSON.stringify(consentMessage) });
-                log(logLevelEnums.DEBUG, "Consent update request has been sent to the queue.");
-            }, 1000);
-        };
-
-        this.enable_offline_mode = function () {
-            log(logLevelEnums.INFO, "enable_offline_mode, Enabling offline mode");
+        enable_offline_mode = () => {
+            this.#log(logLevelEnums.INFO, "enable_offline_mode, Enabling offline mode");
             // clear consents
             this.remove_consent_internal(Countly.features, false);
-            offlineMode = true;
+            this.#offlineMode = true;
             this.device_id = "[CLY]_temp_id";
-            self.device_id = this.device_id;
-            deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
+            this.device_id = this.device_id;
+            this.#deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
         };
 
-        this.disable_offline_mode = function (device_id) {
-            if (!offlineMode) {
-                log(logLevelEnums.WARNING, "disable_offline_mode, Countly was not in offline mode.");
+        disable_offline_mode = (device_id) => {
+            if (!this.#offlineMode) {
+                this.#log(logLevelEnums.WARNING, "disable_offline_mode, Countly was not in offline mode.");
                 return;
             }
-            log(logLevelEnums.INFO, "disable_offline_mode, Disabling offline mode");
-            offlineMode = false;
+            this.#log(logLevelEnums.INFO, "disable_offline_mode, Disabling offline mode");
+            this.#offlineMode = false;
             if (device_id && this.device_id !== device_id) {
                 this.device_id = device_id;
-                self.device_id = this.device_id;
-                deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                setValueInStorage("cly_id", this.device_id);
-                setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
-                log(logLevelEnums.INFO, "disable_offline_mode, Changing id to: " + this.device_id);
+                this.device_id = this.device_id;
+                this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+                this.#setValueInStorage("cly_id", this.device_id);
+                this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
+                this.#log(logLevelEnums.INFO, "disable_offline_mode, Changing id to: " + this.device_id);
             }
             else {
-                this.device_id = getStoredIdOrGenerateId();
+                this.device_id = this.#getStoredIdOrGenerateId();
                 if (this.device_id === "[CLY]_temp_id") {
                     this.device_id = generateUUID();
                 }
-                self.device_id = this.device_id;
-                if (this.device_id !== getValueFromStorage("cly_id")) {
-                    setValueInStorage("cly_id", this.device_id);
-                    setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.SDK_GENERATED);
+                this.device_id = this.device_id;
+                if (this.device_id !== this.#getValueFromStorage("cly_id")) {
+                    this.#setValueInStorage("cly_id", this.device_id);
+                    this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.SDK_GENERATED);
                 }
             }
             var needResync = false;
-            if (requestQueue.length > 0) {
-                for (var i = 0; i < requestQueue.length; i++) {
-                    if (requestQueue[i].device_id === "[CLY]_temp_id") {
-                        requestQueue[i].device_id = this.device_id;
+            if (this.#requestQueue.length > 0) {
+                for (var i = 0; i < this.#requestQueue.length; i++) {
+                    if (this.#requestQueue[i].device_id === "[CLY]_temp_id") {
+                        this.#requestQueue[i].device_id = this.device_id;
                         needResync = true;
                     }
                 }
             }
             if (needResync) {
-                setValueInStorage("cly_queue", requestQueue, true);
+                this.#setValueInStorage("cly_queue", this.#requestQueue, true);
             }
-            if (shouldSendHC) {
-                HealthCheck.sendInstantHCRequest();
-                shouldSendHC = false;
+            if (this.#shouldSendHC) {
+                this.#HealthCheck.sendInstantHCRequest();
+                this.#shouldSendHC = false;
             }
         };
 
@@ -919,43 +986,43 @@ constructor(ob) {
         * @param {boolean} noHeartBeat - true if you don't want to use internal heartbeat to manage session
         * @param {bool} force - force begin session request even if session cookie is enabled
         */
-        this.begin_session = function (noHeartBeat, force) {
-            log(logLevelEnums.INFO, "begin_session, Starting the session. There was an ongoing session: [" + sessionStarted + "]");
+        begin_session = (noHeartBeat, force) => {
+            this.#log(logLevelEnums.INFO, "begin_session, Starting the session. There was an ongoing session: [" + this.#sessionStarted + "]");
             if (noHeartBeat) {
-                log(logLevelEnums.INFO, "begin_session, Heartbeats are disabled");
+                this.#log(logLevelEnums.INFO, "begin_session, Heartbeats are disabled");
             }
             if (force) {
-                log(logLevelEnums.INFO, "begin_session, Session starts irrespective of session cookie");
+                this.#log(logLevelEnums.INFO, "begin_session, Session starts irrespective of session cookie");
             }
             if (this.check_consent(featureEnums.SESSIONS)) {
-                if (!sessionStarted) {
+                if (!this.#sessionStarted) {
                     if (this.enableOrientationTracking) {
                         // report orientation
-                        this.report_orientation();
-                        add_event_listener(window, "resize", function () {
-                            self.report_orientation();
+                        this.#report_orientation();
+                        add_event_listener(window, "resize", () => {
+                            this.#report_orientation();
                         });
                     }
-                    lastBeat = getTimestamp();
-                    sessionStarted = true;
-                    autoExtend = !(noHeartBeat);
-                    var expire = getValueFromStorage("cly_session");
-                    log(logLevelEnums.VERBOSE, "begin_session, Session state, forced: [" + force + "], useSessionCookie: [" + useSessionCookie + "], seconds to expire: [" + (expire - lastBeat) + "], expired: [" + (parseInt(expire) <= getTimestamp()) + "] ");
-                    if (force || !useSessionCookie || !expire || parseInt(expire) <= getTimestamp()) {
-                        log(logLevelEnums.INFO, "begin_session, Session started");
-                        if (firstView === null) {
-                            firstView = true;
+                    this.#lastBeat = getTimestamp();
+                    this.#sessionStarted = true;
+                    this.#autoExtend = !(noHeartBeat);
+                    var expire = this.#getValueFromStorage("cly_session");
+                    this.#log(logLevelEnums.VERBOSE, "begin_session, Session state, forced: [" + force + "], useSessionCookie: [" + this.#useSessionCookie + "], seconds to expire: [" + (expire - this.#lastBeat) + "], expired: [" + (parseInt(expire) <= getTimestamp()) + "] ");
+                    if (force || !this.#useSessionCookie || !expire || parseInt(expire) <= getTimestamp()) {
+                        this.#log(logLevelEnums.INFO, "begin_session, Session started");
+                        if (this.#firstView === null) {
+                            this.#firstView = true;
                         }
                         var req = {};
                         req.begin_session = 1;
-                        req.metrics = JSON.stringify(getMetrics());
-                        toRequestQueue(req);
+                        req.metrics = JSON.stringify(this.#getMetrics());
+                        this.#toRequestQueue(req);
                     }
-                    setValueInStorage("cly_session", getTimestamp() + (sessionCookieTimeout * 60));
+                    this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
                 }
             }
             else {
-                lastParams.begin_session = arguments;
+                this.#lastParams.begin_session = [noHeartBeat, force];
             }
         };
 
@@ -963,15 +1030,20 @@ constructor(ob) {
         * Report session duration
         * @param {int} sec - amount of seconds to report for current session
         */
-        this.session_duration = function (sec) {
-            log(logLevelEnums.INFO, "session_duration, Reporting session duration");
-            if (this.check_consent(featureEnums.SESSIONS)) {
-                if (sessionStarted) {
-                    log(logLevelEnums.INFO, "session_duration, Session extended: ", sec);
-                    toRequestQueue({ session_duration: sec });
-                    extendSession();
-                }
+        session_duration = (sec) => {
+            this.#log(logLevelEnums.INFO, "session_duration, Reporting session duration: [" + sec + "]");
+            if (!this.check_consent(featureEnums.SESSIONS)) {
+                return;
             }
+
+            if (!this.#sessionStarted) {
+                this.#log(logLevelEnums.DEBUG, "session_duration, No session was started");
+                return;
+            }
+
+            this.#log(logLevelEnums.INFO, "session_duration, Session extended: [" + sec + "]");
+            this.#toRequestQueue({ session_duration: sec });
+            this.#extendSession();
         };
 
         /**
@@ -979,20 +1051,20 @@ constructor(ob) {
         * @param {int} sec - amount of seconds to report for current session, before ending it
         * @param {bool} force - force end session request even if session cookie is enabled
         */
-        this.end_session = function (sec, force) {
-            log(logLevelEnums.INFO, "end_session, Ending the current session. There was an on going session:[" + sessionStarted + "]");
+        end_session = (sec, force) => {
+            this.#log(logLevelEnums.INFO, "end_session, Ending the current session. There was an on going session:[" + this.#sessionStarted + "]");
             if (this.check_consent(featureEnums.SESSIONS)) {
-                if (sessionStarted) {
-                    sec = sec || getTimestamp() - lastBeat;
-                    reportViewDuration();
-                    if (!useSessionCookie || force) {
-                        log(logLevelEnums.INFO, "end_session, Session ended");
-                        toRequestQueue({ end_session: 1, session_duration: sec });
+                if (this.#sessionStarted) {
+                    sec = sec || getTimestamp() - this.#lastBeat;
+                    this.#reportViewDuration();
+                    if (!this.#useSessionCookie || force) {
+                        this.#log(logLevelEnums.INFO, "end_session, Session ended");
+                        this.#toRequestQueue({ end_session: 1, session_duration: sec });
                     }
                     else {
                         this.session_duration(sec);
                     }
-                    sessionStarted = false;
+                    this.#sessionStarted = false;
                 }
             }
         };
@@ -1001,13 +1073,13 @@ constructor(ob) {
         * Changes the current device ID according to the device ID type (the preffered method)
         * @param {string} newId - new user/device ID to use. Must be a non-empty string value. Invalid values (like null, empty string or undefined) will be rejected
         * */
-        this.set_id =  function (newId) {
-            log(logLevelEnums.INFO, "set_id, Changing the device ID to:[" + newId + "]");
+        set_id = (newId) => {
+            this.#log(logLevelEnums.INFO, "set_id, Changing the device ID to:[" + newId + "]");
             if (newId == null || newId === "") {
-                log(logLevelEnums.WARNING, "set_id, The provided device is not a valid ID");
+                this.#log(logLevelEnums.WARNING, "set_id, The provided device is not a valid ID");
                 return;
             }
-            if (deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED) {
+            if (this.#deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED) {
                 /*change ID without merge as current ID is Dev supplied, so not first login*/
                 this.change_id(newId, false);
             } else {
@@ -1021,54 +1093,54 @@ constructor(ob) {
         * @param {string} newId - new user/device ID to use. Must be a non-empty string value. Invalid values (like null, empty string or undefined) will be rejected
         * @param {boolean} merge - move data from old ID to new ID on server
         * */
-        this.change_id = function (newId, merge) {
-            log(logLevelEnums.INFO, "change_id, Changing the device ID to: [" + newId + "] with merge:[" + merge + "]");
+        change_id = (newId, merge) => {
+            this.#log(logLevelEnums.INFO, "change_id, Changing the device ID to: [" + newId + "] with merge:[" + merge + "]");
             if (!newId || typeof newId !== "string" || newId.length === 0) {
-                log(logLevelEnums.WARNING, "change_id, The provided device ID is not a valid ID");
+                this.#log(logLevelEnums.WARNING, "change_id, The provided device ID is not a valid ID");
                 return;
             }
-            if (offlineMode) {
-                log(logLevelEnums.WARNING, "change_id, Offline mode was on, initiating disabling sequence instead.");
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.WARNING, "change_id, Offline mode was on, initiating disabling sequence instead.");
                 this.disable_offline_mode(newId);
                 return;
             }
             // eqeq is used here since we want to catch number to string checks too. type conversion might happen at a new init
             // eslint-disable-next-line eqeqeq
             if (this.device_id == newId) {
-                log(logLevelEnums.DEBUG, "change_id, Provided device ID is equal to the current device ID. Aborting.");
+                this.#log(logLevelEnums.DEBUG, "change_id, Provided device ID is equal to the current device ID. Aborting.");
                 return;
             }
             if (!merge) {
                 // process async queue before sending events
-                processAsyncQueue(); 
+                this.#processAsyncQueue(); 
                 // empty event queue
-                sendEventsForced();
+                this.#sendEventsForced();
                 // end current session
                 this.end_session(null, true);
                 // clear timed events
-                timedEvents = {};
+                this.#timedEvents = {};
                 // clear all consents
                 this.remove_consent_internal(Countly.features, false);
             }
             var oldId = this.device_id;
             this.device_id = newId;
-            self.device_id = this.device_id;
-            deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-            setValueInStorage("cly_id", this.device_id);
-            setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
-            log(logLevelEnums.INFO, "change_id, Changing ID from:[" + oldId + "] to [" + newId + "]");
+            this.device_id = this.device_id;
+            this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+            this.#setValueInStorage("cly_id", this.device_id);
+            this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
+            this.#log(logLevelEnums.INFO, "change_id, Changing ID from:[" + oldId + "] to [" + newId + "]");
             if (merge) {
                 // no consent check here since 21.11.0
-                toRequestQueue({ old_device_id: oldId });
+                this.#toRequestQueue({ old_device_id: oldId });
             }
             else {
                 // start new session for new ID TODO: check this when no session tracking is enabled
-                this.begin_session(!autoExtend, true);
+                this.begin_session(!this.#autoExtend, true);
             }
             // if init time remote config was enabled with a callback function, remove currently stored remote configs and fetch remote config again
             if (this.remote_config) {
-                remoteConfigs = {};
-                setValueInStorage("cly_remote_configs", remoteConfigs);
+                this.#remoteConfigs = {};
+                this.#setValueInStorage("cly_remote_configs", this.#remoteConfigs);
                 this.fetch_remote_config(this.remote_config);
             }
         };
@@ -1082,8 +1154,8 @@ constructor(ob) {
         * @param {number=} event.dur - duration to report with event (if any)
         * @param {Object=} event.segmentation - object with segments key /values
         * */
-        this.add_event = function (event) {
-            log(logLevelEnums.INFO, "add_event, Adding event: ", event);
+        add_event = (event) => {
+            this.#log(logLevelEnums.INFO, "add_event, Adding event: ", event);
             // initially no consent is given
             var respectiveConsent = false;
             switch (event.key) {
@@ -1110,7 +1182,7 @@ constructor(ob) {
             }
             // if consent is given adds event to the queue
             if (respectiveConsent) {
-                add_cly_events(event);
+                this.#add_cly_events(event);
             }
         };
 
@@ -1120,15 +1192,15 @@ constructor(ob) {
          *  @param {Event} event - countly event
          *  @param {String} eventIdOverride - countly event ID
          */
-        function add_cly_events(event, eventIdOverride) {
+        #add_cly_events = (event, eventIdOverride) => {
             // ignore bots
-            if (self.ignore_visitor) {
-                log(logLevelEnums.ERROR, "Adding event failed. Possible bot or user opt out");
+            if (this.ignore_visitor) {
+                this.#log(logLevelEnums.ERROR, "Adding event failed. Possible bot or user opt out");
                 return;
             }
 
             if (!event.key) {
-                log(logLevelEnums.ERROR, "Adding event failed. Event must have a key property");
+                this.#log(logLevelEnums.ERROR, "Adding event failed. Event must have a key property");
                 return;
             }
 
@@ -1138,9 +1210,9 @@ constructor(ob) {
             // we omit the internal event keys from truncation. TODO: This is not perfect as it would omit a key that includes an internal event key and more too. But that possibility seems negligible. 
             if (!internalEventKeyEnumsArray.includes(event.key)) {
                 // truncate event name and segmentation to internal limits
-                event.key = truncateSingleValue(event.key, self.maxKeyLength, "add_cly_event", log);
+                event.key = truncateSingleValue(event.key, this.maxKeyLength, "add_cly_event", this.#log);
             }
-            event.segmentation = truncateObject(event.segmentation, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "add_cly_event", log);
+            event.segmentation = truncateObject(event.segmentation, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "add_cly_event", this.#log);
             var props = ["key", "count", "sum", "dur", "segmentation"];
             var e = createNewObjectFromProperties(event, props);
             e.timestamp = getMsTimestamp();
@@ -1149,14 +1221,14 @@ constructor(ob) {
             e.dow = date.getDay();
             e.id = eventIdOverride || secureRandom();
             if (e.key === internalEventKeyEnums.VIEW) {
-                e.pvid = previousViewId || "";
+                e.pvid = this.#previousViewId || "";
             }
             else {
-                e.cvid = currentViewId || "";
+                e.cvid = this.#currentViewId || "";
             }
-            eventQueue.push(e);
-            setValueInStorage("cly_event", eventQueue);
-            log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully adding the last event:", e);
+            this.#eventQueue.push(e);
+            this.#setValueInStorage("cly_event", this.#eventQueue);
+            this.#log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully adding the last event:", e);
         }
 
         /**
@@ -1164,19 +1236,19 @@ constructor(ob) {
         * This works basically as a timer and does not create an event till end_event is called
         * @param {string} key - event name that will be used as key property
         * */
-        this.start_event = function (key) {
+        start_event = (key) => {
             if (!key || typeof key !== "string") {
-                log(logLevelEnums.WARNING, "start_event, you have to provide a valid string key instead of: [" + key + "]");
+                this.#log(logLevelEnums.WARNING, "start_event, you have to provide a valid string key instead of: [" + key + "]");
                 return;
             }
-            log(logLevelEnums.INFO, "start_event, Starting timed event with key: [" + key + "]");
+            this.#log(logLevelEnums.INFO, "start_event, Starting timed event with key: [" + key + "]");
             // truncate event name to internal limits
-            key = truncateSingleValue(key, self.maxKeyLength, "start_event", log);
-            if (timedEvents[key]) {
-                log(logLevelEnums.WARNING, "start_event, Timed event with key: [" + key + "] already started");
+            key = truncateSingleValue(key, this.maxKeyLength, "start_event", this.#log);
+            if (this.#timedEvents[key]) {
+                this.#log(logLevelEnums.WARNING, "start_event, Timed event with key: [" + key + "] already started");
                 return;
             }
-            timedEvents[key] = getTimestamp();
+            this.#timedEvents[key] = getTimestamp();
         };
 
         /**
@@ -1184,20 +1256,20 @@ constructor(ob) {
         * @param {string} key - event name that will canceled
         * @returns {boolean} - returns true if the event was canceled and false if no event with that key was found
         * */
-        this.cancel_event = function (key) {
+        cancel_event = (key) => {
             if (!key || typeof key !== "string") {
-                log(logLevelEnums.WARNING, "cancel_event, you have to provide a valid string key instead of: [" + key + "]");
+                this.#log(logLevelEnums.WARNING, "cancel_event, you have to provide a valid string key instead of: [" + key + "]");
                 return false;
             }
-            log(logLevelEnums.INFO, "cancel_event, Canceling timed event with key: [" + key + "]");
+            this.#log(logLevelEnums.INFO, "cancel_event, Canceling timed event with key: [" + key + "]");
             // truncate event name to internal limits. This is done incase start_event key was truncated.
-            key = truncateSingleValue(key, self.maxKeyLength, "cancel_event", log);
-            if (timedEvents[key]) {
-                delete timedEvents[key];
-                log(logLevelEnums.INFO, "cancel_event, Timed event with key: [" + key + "] is canceled");
+            key = truncateSingleValue(key, this.maxKeyLength, "cancel_event", this.#log);
+            if (this.#timedEvents[key]) {
+                delete this.#timedEvents[key];
+                this.#log(logLevelEnums.INFO, "cancel_event, Timed event with key: [" + key + "] is canceled");
                 return true;
             }
-            log(logLevelEnums.WARNING, "cancel_event, Timed event with key: [" + key + "] was not found");
+            this.#log(logLevelEnums.WARNING, "cancel_event, Timed event with key: [" + key + "] was not found");
             return false;
         };
 
@@ -1205,38 +1277,38 @@ constructor(ob) {
         * End timed event
         * @param {string|object} event - event key if string or Countly event same as passed to {@link Countly.add_event}
         * */
-        this.end_event = function (event) {
+        end_event = (event) => {
             if (!event) {
-                log(logLevelEnums.WARNING, "end_event, you have to provide a valid string key or event object instead of: [" + event + "]");
+                this.#log(logLevelEnums.WARNING, "end_event, you have to provide a valid string key or event object instead of: [" + event + "]");
                 return;
             }
-            log(logLevelEnums.INFO, "end_event, Ending timed event");
+            this.#log(logLevelEnums.INFO, "end_event, Ending timed event");
             if (typeof event === "string") {
                 // truncate event name to internal limits. This is done incase start_event key was truncated.
-                event = truncateSingleValue(event, self.maxKeyLength, "end_event", log);
+                event = truncateSingleValue(event, this.maxKeyLength, "end_event", this.#log);
                 event = { key: event };
             }
             if (!event.key) {
-                log(logLevelEnums.ERROR, "end_event, Timed event must have a key property");
+                this.#log(logLevelEnums.ERROR, "end_event, Timed event must have a key property");
                 return;
             }
-            if (!timedEvents[event.key]) {
-                log(logLevelEnums.ERROR, "end_event, Timed event with key: [" + event.key + "] was not started");
+            if (!this.#timedEvents[event.key]) {
+                this.#log(logLevelEnums.ERROR, "end_event, Timed event with key: [" + event.key + "] was not started");
                 return;
             }
-            event.dur = getTimestamp() - timedEvents[event.key];
+            event.dur = getTimestamp() - this.#timedEvents[event.key];
             this.add_event(event);
-            delete timedEvents[event.key];
+            delete this.#timedEvents[event.key];
         };
 
         /**
         * Report device orientation
         * @param {string=} orientation - orientation as landscape or portrait
         * */
-        this.report_orientation = function (orientation) {
-            log(logLevelEnums.INFO, "report_orientation, Reporting orientation");
+        #report_orientation = (orientation) => {
+            this.#log(logLevelEnums.INFO, "report_orientation, Reporting orientation");
             if (this.check_consent(featureEnums.USERS)) {
-                add_cly_events({
+                this.#add_cly_events({
                     key: internalEventKeyEnums.ORIENTATION,
                     segmentation: {
                         mode: orientation || getOrientation(),
@@ -1252,8 +1324,8 @@ constructor(ob) {
         * 
         * @deprecated use 'recordDirectAttribution' in place of this call
         * */
-        this.report_conversion = function (campaign_id, campaign_user_id) {
-            log(logLevelEnums.WARNING, "report_conversion, Deprecated function call! Use 'recordDirectAttribution' in place of this call. Call will be redirected now!");
+        report_conversion = (campaign_id, campaign_user_id) => {
+            this.#log(logLevelEnums.WARNING, "report_conversion, Deprecated function call! Use 'recordDirectAttribution' in place of this call. Call will be redirected now!");
             this.recordDirectAttribution(campaign_id, campaign_user_id);
         };
         /**
@@ -1261,17 +1333,17 @@ constructor(ob) {
         * @param {string=} campaign_id - id of campaign, or will use the one that is stored after campaign link click
         * @param {string=} campaign_user_id - id of user's click on campaign, or will use the one that is stored after campaign link click
         * */
-        this.recordDirectAttribution = function (campaign_id, campaign_user_id) {
-            log(logLevelEnums.INFO, "recordDirectAttribution, Recording the attribution for campaign ID: [" + campaign_id + "] and the user ID: [" + campaign_user_id + "]");
+        recordDirectAttribution = (campaign_id, campaign_user_id) => {
+            this.#log(logLevelEnums.INFO, "recordDirectAttribution, Recording the attribution for campaign ID: [" + campaign_id + "] and the user ID: [" + campaign_user_id + "]");
             if (this.check_consent(featureEnums.ATTRIBUTION)) {
-                campaign_id = campaign_id || getValueFromStorage("cly_cmp_id") || "cly_organic";
-                campaign_user_id = campaign_user_id || getValueFromStorage("cly_cmp_uid");
+                campaign_id = campaign_id || this.#getValueFromStorage("cly_cmp_id") || "cly_organic";
+                campaign_user_id = campaign_user_id || this.#getValueFromStorage("cly_cmp_uid");
 
                 if (campaign_user_id) {
-                    toRequestQueue({ campaign_id: campaign_id, campaign_user: campaign_user_id });
+                    this.#toRequestQueue({ campaign_id: campaign_id, campaign_user: campaign_user_id });
                 }
                 else {
-                    toRequestQueue({ campaign_id: campaign_id });
+                    this.#toRequestQueue({ campaign_id: campaign_id });
                 }
             }
         };
@@ -1289,26 +1361,26 @@ constructor(ob) {
         * @param {number=} user.byear - user's birth year used to calculate current age
         * @param {Object=} user.custom - object with custom key value properties you want to save with user
         * */
-        this.user_details = function (user) {
-            log(logLevelEnums.INFO, "user_details, Trying to add user details: ", user);
+        user_details = (user) => {
+            this.#log(logLevelEnums.INFO, "user_details, Trying to add user details: ", user);
             if (this.check_consent(featureEnums.USERS)) {
                 // process async queue before sending events
-                processAsyncQueue(); 
+                this.#processAsyncQueue(); 
                 // flush events to event queue to prevent a drill issue
-                sendEventsForced();
-                log(logLevelEnums.INFO, "user_details, flushed the event queue");
+                this.#sendEventsForced();
+                this.#log(logLevelEnums.INFO, "user_details, flushed the event queue");
                 // truncating user values and custom object key value pairs
-                user.name = truncateSingleValue(user.name, self.maxValueSize, "user_details", log);
-                user.username = truncateSingleValue(user.username, self.maxValueSize, "user_details", log);
-                user.email = truncateSingleValue(user.email, self.maxValueSize, "user_details", log);
-                user.organization = truncateSingleValue(user.organization, self.maxValueSize, "user_details", log);
-                user.phone = truncateSingleValue(user.phone, self.maxValueSize, "user_details", log);
-                user.picture = truncateSingleValue(user.picture, 4096, "user_details", log);
-                user.gender = truncateSingleValue(user.gender, self.maxValueSize, "user_details", log);
-                user.byear = truncateSingleValue(user.byear, self.maxValueSize, "user_details", log);
-                user.custom = truncateObject(user.custom, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "user_details", log);
+                user.name = truncateSingleValue(user.name, this.maxValueSize, "user_details", this.#log);
+                user.username = truncateSingleValue(user.username, this.maxValueSize, "user_details", this.#log);
+                user.email = truncateSingleValue(user.email, this.maxValueSize, "user_details", this.#log);
+                user.organization = truncateSingleValue(user.organization, this.maxValueSize, "user_details", this.#log);
+                user.phone = truncateSingleValue(user.phone, this.maxValueSize, "user_details", this.#log);
+                user.picture = truncateSingleValue(user.picture, 4096, "user_details", this.#log);
+                user.gender = truncateSingleValue(user.gender, this.maxValueSize, "user_details", this.#log);
+                user.byear = truncateSingleValue(user.byear, this.maxValueSize, "user_details", this.#log);
+                user.custom = truncateObject(user.custom, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "user_details", this.#log);
                 var props = ["name", "username", "email", "organization", "phone", "picture", "gender", "byear", "custom"];
-                toRequestQueue({ user_details: JSON.stringify(createNewObjectFromProperties(user, props)) });
+                this.#toRequestQueue({ user_details: JSON.stringify(createNewObjectFromProperties(user, props)) });
             }
         };
 
@@ -1324,20 +1396,20 @@ constructor(ob) {
         *  - pull, to remove value from array property
         *  - addToSet, creates an array property, if property does not exist, and adds unique value to array, only if it does not yet exist in array
         ************************* */
-        var customData = {};
-        var change_custom_property = function (key, value, mod) {
-            if (self.check_consent(featureEnums.USERS)) {
-                if (!customData[key]) {
-                    customData[key] = {};
+        #customData = {};
+        #change_custom_property = (key, value, mod) => {
+            if (this.check_consent(featureEnums.USERS)) {
+                if (!this.#customData[key]) {
+                    this.#customData[key] = {};
                 }
                 if (mod === "$push" || mod === "$pull" || mod === "$addToSet") {
-                    if (!customData[key][mod]) {
-                        customData[key][mod] = [];
+                    if (!this.#customData[key][mod]) {
+                        this.#customData[key][mod] = [];
                     }
-                    customData[key][mod].push(value);
+                    this.#customData[key][mod].push(value);
                 }
                 else {
-                    customData[key][mod] = value;
+                    this.#customData[key][mod] = value;
                 }
             }
         };
@@ -1356,28 +1428,28 @@ constructor(ob) {
         * //send all custom property modified data to server
         * Countly.userData.save();
         */
-        this.userData = {
+        userData = {
             /**
             * Sets user's custom property value
             * @memberof Countly.userData
             * @param {string} key - name of the property to attach to user
             * @param {string|number} value - value to store under provided property
             * */
-            set: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] set, Setting user's custom property value: [" + value + "] under the key: [" + key + "]");
+            set: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] set, Setting user's custom property value: [" + value + "] under the key: [" + key + "]");
                 // truncate user's custom property value to internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData set", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData set", log);
-                customData[key] = value;
+                key = truncateSingleValue(key, this.maxKeyLength, "userData set", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData set", this.#log);
+                this.#customData[key] = value;
             },
             /**
             * Unset/deletes user's custom property
             * @memberof Countly.userData
             * @param {string} key - name of the property to delete
             * */
-            unset: function (key) {
-                log(logLevelEnums.INFO, "[userData] unset, Resetting user's custom property with key: [" + key + "] ");
-                customData[key] = "";
+            unset: (key) => {
+                this.#log(logLevelEnums.INFO, "[userData] unset, Resetting user's custom property with key: [" + key + "] ");
+                this.#customData[key] = "";
             },
             /**
             * Sets user's custom property value only if it was not set before
@@ -1385,23 +1457,23 @@ constructor(ob) {
             * @param {string} key - name of the property to attach to user
             * @param {string|number} value - value to store under provided property
             * */
-            set_once: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] set_once, Setting user's unique custom property value: [" + value + "] under the key: [" + key + "] ");
+            set_once: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] set_once, Setting user's unique custom property value: [" + value + "] under the key: [" + key + "] ");
                 // truncate user's custom property value to internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData set_once", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData set_once", log);
-                change_custom_property(key, value, "$setOnce");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData set_once", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData set_once", this.#log);
+                this.#change_custom_property(key, value, "$setOnce");
             },
             /**
             * Increment value under the key of this user's custom properties by one
             * @memberof Countly.userData
             * @param {string} key - name of the property to attach to user
             * */
-            increment: function (key) {
-                log(logLevelEnums.INFO, "[userData] increment, Increasing user's custom property value under the key: [" + key + "] by one");
+            increment: (key) => {
+                this.#log(logLevelEnums.INFO, "[userData] increment, Increasing user's custom property value under the key: [" + key + "] by one");
                 // truncate property name wrt internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData increment", log);
-                change_custom_property(key, 1, "$inc");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData increment", this.#log);
+                this.#change_custom_property(key, 1, "$inc");
             },
             /**
             * Increment value under the key of this user's custom properties by provided value
@@ -1409,12 +1481,12 @@ constructor(ob) {
             * @param {string} key - name of the property to attach to user
             * @param {number} value - value by which to increment server value
             * */
-            increment_by: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] increment_by, Increasing user's custom property value under the key: [" + key + "] by: [" + value + "]");
+            increment_by: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] increment_by, Increasing user's custom property value under the key: [" + key + "] by: [" + value + "]");
                 // truncate property name and value wrt internal limits 
-                key = truncateSingleValue(key, self.maxKeyLength, "userData increment_by", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData increment_by", log);
-                change_custom_property(key, value, "$inc");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData increment_by", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData increment_by", this.#log);
+                this.#change_custom_property(key, value, "$inc");
             },
             /**
             * Multiply value under the key of this user's custom properties by provided value
@@ -1422,12 +1494,12 @@ constructor(ob) {
             * @param {string} key - name of the property to attach to user
             * @param {number} value - value by which to multiply server value
             * */
-            multiply: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] multiply, Multiplying user's custom property value under the key: [" + key + "] by: [" + value + "]");
+            multiply: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] multiply, Multiplying user's custom property value under the key: [" + key + "] by: [" + value + "]");
                 // truncate key value pair wrt internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData multiply", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData multiply", log);
-                change_custom_property(key, value, "$mul");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData multiply", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData multiply", this.#log);
+                this.#change_custom_property(key, value, "$mul");
             },
             /**
             * Save maximal value under the key of this user's custom properties
@@ -1435,12 +1507,12 @@ constructor(ob) {
             * @param {string} key - name of the property to attach to user
             * @param {number} value - value which to compare to server's value and store maximal value of both provided
             * */
-            max: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] max, Saving user's maximum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
+            max: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] max, Saving user's maximum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
                 // truncate key value pair wrt internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData max", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData max", log);
-                change_custom_property(key, value, "$max");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData max", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData max", this.#log);
+                this.#change_custom_property(key, value, "$max");
             },
             /**
             * Save minimal value under the key of this user's custom properties
@@ -1448,12 +1520,12 @@ constructor(ob) {
             * @param {string} key - name of the property to attach to user
             * @param {number} value - value which to compare to server's value and store minimal value of both provided
             * */
-            min: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] min, Saving user's minimum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
+            min: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] min, Saving user's minimum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
                 // truncate key value pair wrt internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData min", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData min", log);
-                change_custom_property(key, value, "$min");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData min", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData min", this.#log);
+                this.#change_custom_property(key, value, "$min");
             },
             /**
             * Add value to array under the key of this user's custom properties. If property is not an array, it will be converted to array
@@ -1461,12 +1533,12 @@ constructor(ob) {
             * @param {string} key - name of the property to attach to user
             * @param {string|number} value - value which to add to array
             * */
-            push: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] push, Pushing a value: [" + value + "] under the key: [" + key + "] to user's custom property array");
+            push: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] push, Pushing a value: [" + value + "] under the key: [" + key + "] to user's custom property array");
                 // truncate key value pair wrt internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData push", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData push", log);
-                change_custom_property(key, value, "$push");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData push", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData push", this.#log);
+                this.#change_custom_property(key, value, "$push");
             },
             /**
             * Add value to array under the key of this user's custom properties, storing only unique values. If property is not an array, it will be converted to array
@@ -1474,12 +1546,12 @@ constructor(ob) {
             * @param {string} key - name of the property to attach to user
             * @param {string|number} value - value which to add to array
             * */
-            push_unique: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] push_unique, Pushing a unique value: [" + value + "] under the key: [" + key + "] to user's custom property array");
+            push_unique: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] push_unique, Pushing a unique value: [" + value + "] under the key: [" + key + "] to user's custom property array");
                 // truncate key value pair wrt internal limits
-                key = truncateSingleValue(key, self.maxKeyLength, "userData push_unique", log);
-                value = truncateSingleValue(value, self.maxValueSize, "userData push_unique", log);
-                change_custom_property(key, value, "$addToSet");
+                key = truncateSingleValue(key, this.maxKeyLength, "userData push_unique", this.#log);
+                value = truncateSingleValue(value, this.maxValueSize, "userData push_unique", this.#log);
+                this.#change_custom_property(key, value, "$addToSet");
             },
             /**
             * Remove value from array under the key of this user's custom properties
@@ -1487,25 +1559,25 @@ constructor(ob) {
             * @param {string} key - name of the property
             * @param {string|number} value - value which to remove from array
             * */
-            pull: function (key, value) {
-                log(logLevelEnums.INFO, "[userData] pull, Removing the value: [" + value + "] under the key: [" + key + "] from user's custom property array");
-                change_custom_property(key, value, "$pull");
+            pull: (key, value) => {
+                this.#log(logLevelEnums.INFO, "[userData] pull, Removing the value: [" + value + "] under the key: [" + key + "] from user's custom property array");
+                this.#change_custom_property(key, value, "$pull");
             },
             /**
             * Save changes made to user's custom properties object and send them to server
             * @memberof Countly.userData
             * */
-            save: function () {
-                log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property");
-                if (self.check_consent(featureEnums.USERS)) {
+            save: () => {
+                this.#log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property");
+                if (this.check_consent(featureEnums.USERS)) {
                     // process async queue before sending events
-                    processAsyncQueue(); 
+                    this.#processAsyncQueue(); 
                     // flush events to event queue to prevent a drill issue
-                    sendEventsForced(); 
-                    log(logLevelEnums.INFO, "user_details, flushed the event queue");
-                    toRequestQueue({ user_details: JSON.stringify({ custom: customData }) });
+                    this.#sendEventsForced(); 
+                    this.#log(logLevelEnums.INFO, "user_details, flushed the event queue");
+                    this.#toRequestQueue({ user_details: JSON.stringify({ custom: this.#customData }) });
                 }
-                customData = {};
+                this.#customData = {};
             }
         };
 
@@ -1519,26 +1591,26 @@ constructor(ob) {
         * @param {Object} trace.app_metrics - key/value metrics like duration, to report with trace where value is number
         * @param {Object=} trace.apm_attr - object profiling attributes (not yet supported)
         */
-        this.report_trace = function (trace) {
-            log(logLevelEnums.INFO, "report_trace, Reporting performance trace");
+        report_trace = (trace) => {
+            this.#log(logLevelEnums.INFO, "report_trace, Reporting performance trace");
             if (this.check_consent(featureEnums.APM)) {
                 var props = ["type", "name", "stz", "etz", "apm_metrics", "apm_attr"];
                 for (var i = 0; i < props.length; i++) {
                     if (props[i] !== "apm_attr" && typeof trace[props[i]] === "undefined") {
-                        log(logLevelEnums.WARNING, "report_trace, APM trace don't have the property: " + props[i]);
+                        this.#log(logLevelEnums.WARNING, "report_trace, APM trace don't have the property: " + props[i]);
                         return;
                     }
                 }
                 // truncate trace name and metrics wrt internal limits
-                trace.name = truncateSingleValue(trace.name, self.maxKeyLength, "report_trace", log);
-                trace.app_metrics = truncateObject(trace.app_metrics, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "report_trace", log);
+                trace.name = truncateSingleValue(trace.name, this.maxKeyLength, "report_trace", this.#log);
+                trace.app_metrics = truncateObject(trace.app_metrics, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "report_trace", this.#log);
                 var e = createNewObjectFromProperties(trace, props);
                 e.timestamp = trace.stz;
                 var date = new Date();
                 e.hour = date.getHours();
                 e.dow = date.getDay();
-                toRequestQueue({ apm: JSON.stringify(e) });
-                log(logLevelEnums.INFO, "report_trace, Successfully adding APM trace: ", e);
+                this.#toRequestQueue({ apm: JSON.stringify(e) });
+                this.#log(logLevelEnums.INFO, "report_trace, Successfully adding APM trace: ", e);
             }
         };
 
@@ -1546,17 +1618,17 @@ constructor(ob) {
         * Automatically track javascript errors that happen on the website and report them to the server
         * @param {Object} segments - additional key value pairs you want to provide with error report, like versions of libraries used, etc.
         * */
-        this.track_errors = function (segments) {
+        track_errors = (segments) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "track_errors, window object is not available. Not tracking errors.");
+                this.#log(logLevelEnums.WARNING, "track_errors, window object is not available. Not tracking errors.");
                 return;
             }
-            log(logLevelEnums.INFO, "track_errors, Started tracking errors");
+            this.#log(logLevelEnums.INFO, "track_errors, Started tracking errors");
             // Indicated that for this instance of the countly error tracking is enabled
             Countly.i[this.app_key].tracking_crashes = true;
             if (!window.cly_crashes) {
                 window.cly_crashes = true;
-                crashSegments = segments;
+                this.#crashSegments = segments;
                 // override global 'uncaught error' handler
                 window.onerror = function errorBundler(msg, url, line, col, err) {
                     // old browsers like IE 10 and Safari 9 won't give this value 'err' to us, but if it is provided we can trigger error recording immediately
@@ -1594,7 +1666,7 @@ constructor(ob) {
                             error += stack.join("\n");
                         }
                         catch (ex) {
-                            log(logLevelEnums.ERROR, "track_errors, Call stack generation experienced a problem: " + ex);
+                            // silent error
                         }
                         // false indicates fatal error (as in non_fatal:false)
                         dispatchErrors(error, false);
@@ -1602,7 +1674,7 @@ constructor(ob) {
                 };
 
                 // error handling for 'uncaught rejections'
-                window.addEventListener("unhandledrejection", function (event) {
+                window.addEventListener("unhandledrejection", (event) => {
                     // true indicates non fatal error (as in non_fatal: true)
                     dispatchErrors(new Error("Unhandled rejection (reason: " + (event.reason && event.reason.stack ? event.reason.stack : event.reason) + ")."), true);
                 });
@@ -1614,8 +1686,8 @@ constructor(ob) {
         * @param {Object} err - error exception object provided in catch block
         * @param {Object} segments - additional key value pairs you want to provide with error report, like versions of libraries used, etc.
         * */
-        this.log_error = function (err, segments) {
-            log(logLevelEnums.INFO, "log_error, Logging errors");
+        log_error = (err, segments) => {
+            this.#log(logLevelEnums.INFO, "log_error, Logging errors");
             // true indicates non fatal error (as in non_fatal:true)
             this.recordError(err, true, segments);
         };
@@ -1624,16 +1696,16 @@ constructor(ob) {
         * Add new line in the log of breadcrumbs of what user did, will be included together with error report
         * @param {string} record - any text describing what user did
         * */
-        this.add_log = function (record) {
-            log(logLevelEnums.INFO, "add_log, Adding a new log of breadcrumbs: [ " + record + " ]");
+        add_log = (record) => {
+            this.#log(logLevelEnums.INFO, "add_log, Adding a new log of breadcrumbs: [ " + record + " ]");
             if (this.check_consent(featureEnums.CRASHES)) {
                 // truncate description wrt internal limits
-                record = truncateSingleValue(record, self.maxValueSize, "add_log", log);
-                while (crashLogs.length >= self.maxBreadcrumbCount) {
-                    crashLogs.shift();
-                    log(logLevelEnums.WARNING, "add_log, Reached maximum crashLogs size. Will erase the oldest one.");
+                record = truncateSingleValue(record, this.maxValueSize, "add_log", this.#log);
+                while (this.#crashLogs.length >= this.maxBreadcrumbCount) {
+                    this.#crashLogs.shift();
+                    this.#log(logLevelEnums.WARNING, "add_log, Reached maximum crashLogs size. Will erase the oldest one.");
                 }
-                crashLogs.push(record);
+                this.#crashLogs.push(record);
             }
         };
         /**
@@ -1642,7 +1714,7 @@ constructor(ob) {
         * @param {array=} omit_keys - Array of keys to omit, if provided will fetch all keys except provided ones
         * @param {function=} callback - Callback to notify with first param error and second param remote config object
         * */
-        this.fetch_remote_config = function (keys, omit_keys, callback) {
+        fetch_remote_config = (keys, omit_keys, callback) => {
             var keysFiltered = null;
             var omitKeysFiltered = null;
             var callbackFiltered = null;
@@ -1676,15 +1748,15 @@ constructor(ob) {
 
             // use new RC API
             if (this.useExplicitRcApi) {
-                log(logLevelEnums.INFO, "fetch_remote_config, Fetching remote config");
+                this.#log(logLevelEnums.INFO, "fetch_remote_config, Fetching remote config");
                 // opt in is true(1) or false(0)
                 var opt = this.rcAutoOptinAb ? 1 : 0;
-                fetch_remote_config_explicit(keysFiltered, omitKeysFiltered, opt, null, callbackFiltered);
+                this.#fetch_remote_config_explicit(keysFiltered, omitKeysFiltered, opt, null, callbackFiltered);
                 return;
             }
 
-            log(logLevelEnums.WARNING, "fetch_remote_config, Fetching remote config, with legacy API");
-            fetch_remote_config_explicit(keysFiltered, omitKeysFiltered, null, "legacy", callbackFiltered);
+            this.#log(logLevelEnums.WARNING, "fetch_remote_config, Fetching remote config, with legacy API");
+            this.#fetch_remote_config_explicit(keysFiltered, omitKeysFiltered, null, "legacy", callbackFiltered);
         };
 
         /**
@@ -1695,11 +1767,11 @@ constructor(ob) {
         * @param {string=} api - which API to use, if not provided would use default ("legacy" is for method="fetch_remote_config", default is method="rc")
         * @param {function=} callback - Callback to notify with first param error and second param remote config object
         * */
-        function fetch_remote_config_explicit(keys, omit_keys, optIn, api, callback) {
-            log(logLevelEnums.INFO, "fetch_remote_config_explicit, Fetching sequence initiated");
+        #fetch_remote_config_explicit = (keys, omit_keys, optIn, api, callback) =>{
+            this.#log(logLevelEnums.INFO, "fetch_remote_config_explicit, Fetching sequence initiated");
             var request = {
                 method: "rc",
-                av: self.app_version
+                av: this.app_version
             };
             // check if keys were provided
             if (keys) {
@@ -1725,12 +1797,12 @@ constructor(ob) {
             if (typeof callback === "function") {
                 providedCall = callback;
             }
-            if (self.check_consent(featureEnums.SESSIONS)) {
-                request.metrics = JSON.stringify(getMetrics());
+            if (this.check_consent(featureEnums.SESSIONS)) {
+                request.metrics = JSON.stringify(this.#getMetrics());
             }
-            if (self.check_consent(featureEnums.REMOTE_CONFIG)) {
-                prepareRequest(request);
-                makeNetworkRequest("fetch_remote_config_explicit", self.url + readPath, request, function (err, params, responseText) {
+            if (this.check_consent(featureEnums.REMOTE_CONFIG)) {
+                this.#prepareRequest(request);
+                this.#makeNetworkRequest("fetch_remote_config_explicit", this.url + this.#readPath, request, (err, params, responseText) => {
                     if (err) {
                         // error has been logged by the request function
                         return;
@@ -1740,29 +1812,29 @@ constructor(ob) {
                         if (request.keys || request.omit_keys) {
                             // we merge config
                             for (var i in configs) {
-                                remoteConfigs[i] = configs[i];
+                                this.#remoteConfigs[i] = configs[i];
                             }
                         }
                         else {
                             // we replace config
-                            remoteConfigs = configs;
+                            this.#remoteConfigs = configs;
                         }
-                        setValueInStorage("cly_remote_configs", remoteConfigs);
+                        this.#setValueInStorage("cly_remote_configs", this.#remoteConfigs);
                     }
                     catch (ex) {
-                        log(logLevelEnums.ERROR, "fetch_remote_config_explicit, Had an issue while parsing the response: " + ex);
+                        this.#log(logLevelEnums.ERROR, "fetch_remote_config_explicit, Had an issue while parsing the response: " + ex);
                     }
                     if (providedCall) {
-                        log(logLevelEnums.INFO, "fetch_remote_config_explicit, Callback function is provided");
-                        providedCall(err, remoteConfigs);
+                        this.#log(logLevelEnums.INFO, "fetch_remote_config_explicit, Callback function is provided");
+                        providedCall(err, this.#remoteConfigs);
                     }
                     // JSON array can pass    
                 }, true);
             }
             else {
-                log(logLevelEnums.ERROR, "fetch_remote_config_explicit, Remote config requires explicit consent");
+                this.#log(logLevelEnums.ERROR, "fetch_remote_config_explicit, Remote config requires explicit consent");
                 if (providedCall) {
-                    providedCall(new Error("Remote config requires explicit consent"), remoteConfigs);
+                    providedCall(new Error("Remote config requires explicit consent"), this.#remoteConfigs);
                 }
             }
         }
@@ -1771,29 +1843,29 @@ constructor(ob) {
         * AB testing key provider, opts the user in for the selected keys
         * @param {array=} keys - Array of keys opt in FOR
         * */
-        this.enrollUserToAb = function (keys) {
-            log(logLevelEnums.INFO, "enrollUserToAb, Providing AB test keys to opt in for");
+        enrollUserToAb = (keys) => {
+            this.#log(logLevelEnums.INFO, "enrollUserToAb, Providing AB test keys to opt in for");
             if (!keys || !Array.isArray(keys) || keys.length === 0) {
-                log(logLevelEnums.ERROR, "enrollUserToAb, No keys provided");
+                this.#log(logLevelEnums.ERROR, "enrollUserToAb, No keys provided");
                 return;
             }
             var request = {
                 method: "ab",
                 keys: JSON.stringify(keys),
-                av: self.app_version
+                av: this.app_version
             };
-            prepareRequest(request);
-            makeNetworkRequest("enrollUserToAb", this.url + readPath, request, function (err, params, responseText) {
+            this.#prepareRequest(request);
+            this.#makeNetworkRequest("enrollUserToAb", this.url + this.#readPath, request, (err, params, responseText) => {
                 if (err) {
                     // error has been logged by the request function
                     return;
                 }
                 try {
                     var resp = JSON.parse(responseText);
-                    log(logLevelEnums.DEBUG, "enrollUserToAb, Parsed the response's result: [" + resp.result + "]");
+                    this.#log(logLevelEnums.DEBUG, "enrollUserToAb, Parsed the response's result: [" + resp.result + "]");
                 }
                 catch (ex) {
-                    log(logLevelEnums.ERROR, "enrollUserToAb, Had an issue while parsing the response: " + ex);
+                    this.#log(logLevelEnums.ERROR, "enrollUserToAb, Had an issue while parsing the response: " + ex);
                 }
                 // JSON array can pass    
             }, true);
@@ -1804,59 +1876,59 @@ constructor(ob) {
         * @param {string=} key - if provided, will return value for key, or return whole object
         * @returns {object} remote configs
         * */
-        this.get_remote_config = function (key) {
-            log(logLevelEnums.INFO, "get_remote_config, Getting remote config from storage");
+        get_remote_config = (key) => {
+            this.#log(logLevelEnums.INFO, "get_remote_config, Getting remote config from storage");
             if (typeof key !== "undefined") {
-                return remoteConfigs[key];
+                return this.#remoteConfigs[key];
             }
-            return remoteConfigs;
+            return this.#remoteConfigs;
         };
 
         /**
         * Stop tracking duration time for this user
         * */
-        this.stop_time = function () {
-            log(logLevelEnums.INFO, "stop_time, Stopping tracking duration");
-            if (trackTime) {
-                trackTime = false;
-                storedDuration = getTimestamp() - lastBeat;
-                lastViewStoredDuration = getTimestamp() - lastViewTime;
+        #stop_time = () => {
+            this.#log(logLevelEnums.INFO, "stop_time, Stopping tracking duration");
+            if (this.#trackTime) {
+                this.#trackTime = false;
+                this.#storedDuration = getTimestamp() - this.#lastBeat;
+                this.#lastViewStoredDuration = getTimestamp() - this.#lastViewTime;
             }
         };
 
         /** 
         * Start tracking duration time for this user, by default it is automatically tracked if you are using internal session handling
         * */
-        this.start_time = function () {
-            log(logLevelEnums.INFO, "start_time, Starting tracking duration");
-            if (!trackTime) {
-                trackTime = true;
-                lastBeat = getTimestamp() - storedDuration;
-                lastViewTime = getTimestamp() - lastViewStoredDuration;
-                lastViewStoredDuration = 0;
-                extendSession();
+        #start_time = () => {
+            this.#log(logLevelEnums.INFO, "start_time, Starting tracking duration");
+            if (!this.#trackTime) {
+                this.#trackTime = true;
+                this.#lastBeat = getTimestamp() - this.#storedDuration;
+                this.#lastViewTime = getTimestamp() - this.#lastViewStoredDuration;
+                this.#lastViewStoredDuration = 0;
+                this.#extendSession();
             }
         };
 
         /**
         * Track user sessions automatically, including  time user spent on your website
         * */
-        this.track_sessions = function () {
+        track_sessions = () => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "track_sessions, window object is not available. Not tracking sessions.");
+                this.#log(logLevelEnums.WARNING, "track_sessions, window object is not available. Not tracking sessions.");
                 return;
             }
-            log(logLevelEnums.INFO, "track_session, Starting tracking user session");
+            this.#log(logLevelEnums.INFO, "track_session, Starting tracking user session");
             // start session
             this.begin_session();
-            this.start_time();
+            this.#start_time();
             // end session on unload
-            add_event_listener(window, "beforeunload", function () {
+            add_event_listener(window, "beforeunload", () => {
                 // process async queue before sending events
-                processAsyncQueue(); 
+                this.#processAsyncQueue(); 
                 // empty the event queue
-                sendEventsForced();
-                self.end_session();
+                this.#sendEventsForced();
+                this.end_session();
             });
 
             // manage sessions on window visibility events
@@ -1865,12 +1937,12 @@ constructor(ob) {
             /**
              *  Handle visibility change events
              */
-            function onchange() {
+            var onchange = () => {
                 if (document[hidden] || !document.hasFocus()) {
-                    self.stop_time();
+                    this.#stop_time();
                 }
                 else {
-                    self.start_time();
+                    this.#start_time();
                 }
             }
 
@@ -1908,11 +1980,11 @@ constructor(ob) {
             /**
              *  Reset inactivity counter and time
              */
-            function resetInactivity() {
-                if (inactivityCounter >= inactivityTime) {
-                    self.start_time();
+            var resetInactivity = () => {
+                if (this.#inactivityCounter >= this.#inactivityTime) {
+                    this.#start_time();
                 }
-                inactivityCounter = 0;
+                this.#inactivityCounter = 0;
             }
 
             add_event_listener(window, "mousemove", resetInactivity);
@@ -1921,10 +1993,10 @@ constructor(ob) {
             add_event_listener(window, "scroll", resetInactivity);
 
             // track user inactivity
-            setInterval(function () {
-                inactivityCounter++;
-                if (inactivityCounter >= inactivityTime) {
-                    self.stop_time();
+            setInterval(() => {
+                this.#inactivityCounter++;
+                if (this.#inactivityCounter >= this.#inactivityTime) {
+                    this.#stop_time();
                 }
             }, 60000);
         };
@@ -1935,24 +2007,24 @@ constructor(ob) {
         * @param {array=} ignoreList - optional array of strings or regexps to test for the url/view name to ignore and not report
         * @param {object=} viewSegments - optional key value object with segments to report with the view
         * */
-        this.track_pageview = function (page, ignoreList, viewSegments) {
+        track_pageview = (page, ignoreList, viewSegments) => {
             if (!isBrowser && !page) {
-                log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views is page is not provided.");
+                this.#log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views is page is not provided.");
                 return;
             }
-            log(logLevelEnums.INFO, "track_pageview, Tracking page views");
-            log(logLevelEnums.VERBOSE, "track_pageview, last view is:[" + lastView + "], current view ID is:[" + currentViewId + "], previous view ID is:[" + previousViewId + "]");
-            if (lastView && trackingScrolls) {
-                log(logLevelEnums.DEBUG, "track_pageview, Scroll registry triggered");
-                processScrollView(); // for single page site's view change
-                isScrollRegistryOpen = true;
-                scrollRegistryTopPosition = 0;
+            this.#log(logLevelEnums.INFO, "track_pageview, Tracking page views");
+            this.#log(logLevelEnums.VERBOSE, "track_pageview, last view is:[" + this.#lastView + "], current view ID is:[" + this.#currentViewId + "], previous view ID is:[" + this.#previousViewId + "]");
+            if (this.#lastView && this.#trackingScrolls) {
+                this.#log(logLevelEnums.DEBUG, "track_pageview, Scroll registry triggered");
+                this.#processScrollView(); // for single page site's view change
+                this.#isScrollRegistryOpen = true;
+                this.#scrollRegistryTopPosition = 0;
             }
-            reportViewDuration();
-            previousViewId = currentViewId;
-            currentViewId = secureRandom();
+            this.#reportViewDuration();
+            this.#previousViewId = this.#currentViewId;
+            this.#currentViewId = secureRandom();
             // truncate page name and segmentation wrt internal limits
-            page = truncateSingleValue(page, self.maxKeyLength, "track_pageview", log);
+            page = truncateSingleValue(page, this.maxKeyLength, "track_pageview", this.#log);
             // if the first parameter we got is an array we got the ignoreList first, assign it here
             if (page && Array.isArray(page)) {
                 ignoreList = page;
@@ -1963,11 +2035,11 @@ constructor(ob) {
                 page = this.getViewName();
             }
             if (page === undefined || page === "") {
-                log(logLevelEnums.ERROR, "track_pageview, No page name to track (it is either undefined or empty string). No page view can be tracked.");
+                this.#log(logLevelEnums.ERROR, "track_pageview, No page name to track (it is either undefined or empty string). No page view can be tracked.");
                 return;
             }
             if (page === null) {
-                log(logLevelEnums.ERROR, "track_pageview, View name returned as null. Page view will be ignored.");
+                this.#log(logLevelEnums.ERROR, "track_pageview, View name returned as null. Page view will be ignored.");
                 return;
             }
 
@@ -1976,38 +2048,38 @@ constructor(ob) {
                     try {
                         var reg = new RegExp(ignoreList[i]);
                         if (reg.test(page)) {
-                            log(logLevelEnums.INFO, "track_pageview, Ignoring the page: " + page);
+                            this.#log(logLevelEnums.INFO, "track_pageview, Ignoring the page: " + page);
                             return;
                         }
                     }
                     catch (ex) {
-                        log(logLevelEnums.ERROR, "track_pageview, Problem with finding ignore list item: " + ignoreList[i] + ", error: " + ex);
+                        this.#log(logLevelEnums.ERROR, "track_pageview, Problem with finding ignore list item: " + ignoreList[i] + ", error: " + ex);
                     }
                 }
             }
             var segments = {
                 name: page,
                 visit: 1,
-                view: self.getViewUrl()
+                view: this.getViewUrl()
             };
             // truncate new segment
-            segments = truncateObject(segments, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "track_pageview", log);
+            segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "track_pageview", this.#log);
             if (this.track_domains) {
                 segments.domain = window.location.hostname;
             }
 
-            if (useSessionCookie) {
-                if (!sessionStarted) {
+            if (this.#useSessionCookie) {
+                if (!this.#sessionStarted) {
                     // tracking view was called before tracking session, so we check expiration ourselves
-                    var expire = getValueFromStorage("cly_session");
+                    var expire = this.#getValueFromStorage("cly_session");
                     if (!expire || parseInt(expire) <= getTimestamp()) {
-                        firstView = false;
+                        this.#firstView = false;
                         segments.start = 1;
                     }
                 }
                 // tracking views called after tracking session, so we can rely on tracking session decision
-                else if (firstView) {
-                    firstView = false;
+                else if (this.#firstView) {
+                    this.#firstView = false;
                     segments.start = 1;
                 }
             }
@@ -2022,11 +2094,11 @@ constructor(ob) {
             }
 
             // add utm tags
-            if (freshUTMTags && Object.keys(freshUTMTags).length) {
-                log(logLevelEnums.INFO, "track_pageview, Adding fresh utm tags to segmentation:[" + JSON.stringify(freshUTMTags) + "]");
-                for (var utm in freshUTMTags) {
+            if (this.#freshUTMTags && Object.keys(this.#freshUTMTags).length) {
+                this.#log(logLevelEnums.INFO, "track_pageview, Adding fresh utm tags to segmentation:[" + JSON.stringify(this.#freshUTMTags) + "]");
+                for (var utm in this.#freshUTMTags) {
                     if (typeof segments["utm_" + utm] === "undefined") {
-                        segments["utm_" + utm] = freshUTMTags[utm];
+                        segments["utm_" + utm] = this.#freshUTMTags[utm];
                     }
                 }
                 // TODO: Current logic adds utm tags to each view if the user landed with utm tags for that session(in non literal sense)
@@ -2034,13 +2106,13 @@ constructor(ob) {
             }
 
             // add referrer if it is usable
-            if (isBrowser && isReferrerUsable()) {
-                log(logLevelEnums.INFO, "track_pageview, Adding referrer to segmentation:[" + document.referrer + "]");
+            if (isBrowser && this.#isReferrerUsable()) {
+                this.#log(logLevelEnums.INFO, "track_pageview, Adding referrer to segmentation:[" + document.referrer + "]");
                 segments.referrer = document.referrer; // add referrer
             }
 
             if (viewSegments) {
-                viewSegments = truncateObject(viewSegments, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "track_pageview", log);
+                viewSegments = truncateObject(viewSegments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "track_pageview", this.#log);
 
                 for (var key in viewSegments) {
                     if (typeof segments[key] === "undefined") {
@@ -2051,16 +2123,16 @@ constructor(ob) {
 
             // track pageview
             if (this.check_consent(featureEnums.VIEWS)) {
-                add_cly_events({
+                this.#add_cly_events({
                     key: internalEventKeyEnums.VIEW,
                     segmentation: segments
-                }, currentViewId);
-                lastView = page;
-                lastViewTime = getTimestamp();
-                log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + lastView + "]");
+                }, this.#currentViewId);
+                this.#lastView = page;
+                this.#lastViewTime = getTimestamp();
+                this.#log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + this.#lastView + "]");
             }
             else {
-                lastParams.track_pageview = arguments;
+                this.#lastParams.track_pageview = [page, ignoreList, viewSegments];
             }
         };
 
@@ -2070,8 +2142,8 @@ constructor(ob) {
         * @param {array=} ignoreList - optional array of strings or regexps to test for the url/view name to ignore and not report
         * @param {object=} segments - optional view segments to track with the view
         * */
-        this.track_view = function (page, ignoreList, segments) {
-            log(logLevelEnums.INFO, "track_view, Initiating tracking page views");
+        track_view = (page, ignoreList, segments) => {
+            this.#log(logLevelEnums.INFO, "track_view, Initiating tracking page views");
             this.track_pageview(page, ignoreList, segments);
         };
 
@@ -2079,14 +2151,14 @@ constructor(ob) {
         * Track all clicks on this page
         * @param {Object=} parent - DOM object which children to track, by default it is document body
         * */
-        this.track_clicks = function (parent) {
+        track_clicks = (parent) =>{
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "track_clicks, window object is not available. Not tracking clicks.");
+                this.#log(logLevelEnums.WARNING, "track_clicks, window object is not available. Not tracking clicks.");
                 return;
             }
-            log(logLevelEnums.INFO, "track_clicks, Starting to track clicks");
+            this.#log(logLevelEnums.INFO, "track_clicks, Starting to track clicks");
             if (parent) {
-                log(logLevelEnums.INFO, "track_clicks, Tracking the specified children:[" + parent + "]");
+                this.#log(logLevelEnums.INFO, "track_clicks, Tracking the specified children:[" + parent + "]");
             }
             parent = parent || document;
             var shouldProcess = true;
@@ -2094,7 +2166,7 @@ constructor(ob) {
              *  Process click information
              *  @param {Event} event - click event
              */
-            function processClick(event) {
+            var processClick = (event) => {
                 if (shouldProcess) {
                     shouldProcess = false;
 
@@ -2105,27 +2177,27 @@ constructor(ob) {
                         var width = getDocWidth();
 
                         // record click event
-                        if (self.check_consent(featureEnums.CLICKS)) {
+                        if (this.check_consent(featureEnums.CLICKS)) {
                             var segments = {
                                 type: "click",
                                 x: event.pageX,
                                 y: event.pageY,
                                 width: width,
                                 height: height,
-                                view: self.getViewUrl()
+                                view: this.getViewUrl()
                             };
                             // truncate new segment
-                            segments = truncateObject(segments, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "processClick", log);
-                            if (self.track_domains) {
+                            segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "processClick", this.#log);
+                            if (this.track_domains) {
                                 segments.domain = window.location.hostname;
                             }
-                            add_cly_events({
+                            this.#add_cly_events({
                                 key: internalEventKeyEnums.ACTION,
                                 segmentation: segments
                             });
                         }
                     }
-                    setTimeout(function () {
+                    setTimeout(() => {
                         shouldProcess = true;
                     }, 1000);
                 }
@@ -2138,42 +2210,42 @@ constructor(ob) {
         * Track all scrolls on this page
         * @param {Object=} parent - DOM object which children to track, by default it is document body
         * */
-        this.track_scrolls = function (parent) {
+        track_scrolls = (parent) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "track_scrolls, window object is not available. Not tracking scrolls.");
+                this.#log(logLevelEnums.WARNING, "track_scrolls, window object is not available. Not tracking scrolls.");
                 return;
             }
-            log(logLevelEnums.INFO, "track_scrolls, Starting to track scrolls");
+            this.#log(logLevelEnums.INFO, "track_scrolls, Starting to track scrolls");
             if (parent) {
-                log(logLevelEnums.INFO, "track_scrolls, Tracking the specified children");
+                this.#log(logLevelEnums.INFO, "track_scrolls, Tracking the specified children");
             }
             parent = parent || window;
-            isScrollRegistryOpen = true;
-            trackingScrolls = true;
+            this.#isScrollRegistryOpen = true;
+            this.#trackingScrolls = true;
 
-            add_event_listener(parent, "scroll", processScroll);
-            add_event_listener(parent, "beforeunload", processScrollView);
+            add_event_listener(parent, "scroll", this.#processScroll);
+            add_event_listener(parent, "beforeunload", this.#processScrollView);
         };
 
         /**
         * Generate custom event for all links that were clicked on this page
         * @param {Object=} parent - DOM object which children to track, by default it is document body
         * */
-        this.track_links = function (parent) {
+        track_links = (parent) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "track_links, window object is not available. Not tracking links.");
+                this.#log(logLevelEnums.WARNING, "track_links, window object is not available. Not tracking links.");
                 return;
             }
-            log(logLevelEnums.INFO, "track_links, Starting to track clicks to links");
+            this.#log(logLevelEnums.INFO, "track_links, Starting to track clicks to links");
             if (parent) {
-                log(logLevelEnums.INFO, "track_links, Tracking the specified children");
+                this.#log(logLevelEnums.INFO, "track_links, Tracking the specified children");
             }
             parent = parent || document;
             /**
              *  Process click information
              *  @param {Event} event - click event
              */
-            function processClick(event) {
+            var processClick = (event) => {
                 // get element which was clicked
                 var elem = get_closest_element(get_event_target(event), "a");
 
@@ -2182,14 +2254,14 @@ constructor(ob) {
                     get_page_coord(event);
 
                     // record click event
-                    if (self.check_consent(featureEnums.CLICKS)) {
-                        add_cly_events({
+                    if (this.check_consent(featureEnums.CLICKS)) {
+                        this.#add_cly_events({
                             key: "linkClick",
                             segmentation: {
                                 href: elem.href,
                                 text: elem.innerText,
                                 id: elem.id,
-                                view: self.getViewUrl()
+                                view: this.getViewUrl()
                             }
                         });
                     }
@@ -2205,33 +2277,33 @@ constructor(ob) {
         * @param {Object=} parent - DOM object which children to track, by default it is document body
         * @param {boolean=} trackHidden - provide true to also track hidden inputs, default false
         * */
-        this.track_forms = function (parent, trackHidden) {
+        track_forms = (parent, trackHidden) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "track_forms, window object is not available. Not tracking forms.");
+                this.#log(logLevelEnums.WARNING, "track_forms, window object is not available. Not tracking forms.");
                 return;
             }
-            log(logLevelEnums.INFO, "track_forms, Starting to track form submissions. DOM object provided:[" + (!!parent) + "] Tracking hidden inputs :[" + (!!trackHidden) + "]");
+            this.#log(logLevelEnums.INFO, "track_forms, Starting to track form submissions. DOM object provided:[" + (!!parent) + "] Tracking hidden inputs :[" + (!!trackHidden) + "]");
             parent = parent || document;
             /**
              *  Get name of the input
              *  @param {HTMLElement} input - HTML input from which to get name
              *  @returns {String} name of the input
              */
-            function getInputName(input) {
+            var getInputName = (input) => {
                 return input.name || input.id || input.type || input.nodeName;
             }
             /**
              *  Process form data
              *  @param {Event} event - form submission event
              */
-            function processForm(event) {
+            var processForm = (event) => {
                 var form = get_event_target(event);
                 var segmentation = {
                     id: form.attributes.id && form.attributes.id.nodeValue,
                     name: form.attributes.name && form.attributes.name.nodeValue,
                     action: form.attributes.action && form.attributes.action.nodeValue,
                     method: form.attributes.method && form.attributes.method.nodeValue,
-                    view: self.getViewUrl()
+                    view: this.getViewUrl()
                 };
 
                 // get input values
@@ -2282,8 +2354,8 @@ constructor(ob) {
                 }
 
                 // record submit event
-                if (self.check_consent(featureEnums.FORMS)) {
-                    add_cly_events({
+                if (this.check_consent(featureEnums.FORMS)) {
+                    this.#add_cly_events({
                         key: "formSubmit",
                         segmentation: segmentation
                     });
@@ -2299,18 +2371,18 @@ constructor(ob) {
         * @param {Object=} parent - DOM object which children to track, by default it is document body
         * @param {boolean} [useCustom=false] - submit collected data as custom user properties, by default collects as main user properties
         * */
-        this.collect_from_forms = function (parent, useCustom) {
+        collect_from_forms = (parent, useCustom) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "collect_from_forms, window object is not available. Not collecting from forms.");
+                this.#log(logLevelEnums.WARNING, "collect_from_forms, window object is not available. Not collecting from forms.");
                 return;
             }
-            log(logLevelEnums.INFO, "collect_from_forms, Starting to collect possible user data. DOM object provided:[" + (!!parent) + "] Submitting custom user property:[" + (!!useCustom) + "]");
+            this.#log(logLevelEnums.INFO, "collect_from_forms, Starting to collect possible user data. DOM object provided:[" + (!!parent) + "] Submitting custom user property:[" + (!!useCustom) + "]");
             parent = parent || document;
             /**
              *  Process form data
              *  @param {Event} event - form submission event
              */
-            function processForm(event) {
+            var processForm = (event) => {
                 var form = get_event_target(event);
                 var userdata = {};
                 var hasUserInfo = false;
@@ -2426,12 +2498,12 @@ constructor(ob) {
 
                 // record user info, if any
                 if (hasUserInfo) {
-                    log(logLevelEnums.INFO, "collect_from_forms, Gathered user data", userdata);
+                    this.#log(logLevelEnums.INFO, "collect_from_forms, Gathered user data", userdata);
                     if (useCustom) {
-                        self.user_details({ custom: userdata });
+                        this.user_details({ custom: userdata });
                     }
                     else {
-                        self.user_details(userdata);
+                        this.user_details(userdata);
                     }
                 }
             }
@@ -2444,18 +2516,18 @@ constructor(ob) {
         * Collect information about user from Facebook, if your website integrates Facebook SDK. Call this method after Facebook SDK is loaded and user is authenticated.
         * @param {Object=} custom - Custom keys to collected from Facebook, key will be used to store as key in custom user properties and value as key in Facebook graph object. For example, {"tz":"timezone"} will collect Facebook's timezone property, if it is available and store it in custom user's property under "tz" key. If you want to get value from some sub object properties, then use dot as delimiter, for example, {"location":"location.name"} will collect data from Facebook's {"location":{"name":"MyLocation"}} object and store it in user's custom property "location" key
         * */
-        this.collect_from_facebook = function (custom) {
+        collect_from_facebook = (custom) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "collect_from_facebook, window object is not available. Not collecting from Facebook.");
+                this.#log(logLevelEnums.WARNING, "collect_from_facebook, window object is not available. Not collecting from Facebook.");
                 return;
             }
             if (typeof FB === "undefined" || !FB || !FB.api) {
-                log(logLevelEnums.ERROR, "collect_from_facebook, Facebook SDK is not available");
+                this.#log(logLevelEnums.ERROR, "collect_from_facebook, Facebook SDK is not available");
                 return;
             }
-            log(logLevelEnums.INFO, "collect_from_facebook, Starting to collect possible user data");
+            this.#log(logLevelEnums.INFO, "collect_from_facebook, Starting to collect possible user data");
             /* globals FB */
-            FB.api("/me", function (resp) {
+            FB.api("/me", (resp) => {
                 var data = {};
                 if (resp.name) {
                     data.name = resp.name;
@@ -2495,30 +2567,31 @@ constructor(ob) {
                         }
                     }
                 }
-                self.user_details(data);
+                this.user_details(data);
             });
         };
         /**
         * Opts out user of any metric tracking
         * */
-        this.opt_out = function () {
-            log(logLevelEnums.INFO, "opt_out, Opting out the user");
+        opt_out = () => {
+            this.#log(logLevelEnums.WARNING, "opt_out, Opting out the user. Deprecated function call! Use 'consent' in place of this call.");
             this.ignore_visitor = true;
-            setValueInStorage("cly_ignore", true);
+            this.#setValueInStorage("cly_ignore", true);
         };
 
         /**
         * Opts in user for tracking, if complies with other user ignore rules like bot useragent and prefetch settings
         * */
-        this.opt_in = function () {
-            log(logLevelEnums.INFO, "opt_in, Opting in the user");
-            setValueInStorage("cly_ignore", false);
+        opt_in = () => {
+            this.#log(logLevelEnums.WARNING, "opt_in, Opting in the user. Deprecated function call! Use 'consent' in place of this call.");
+            this.#setValueInStorage("cly_ignore", false);
             this.ignore_visitor = false;
-            checkIgnore();
-            if (!this.ignore_visitor && !hasPulse) {
-                heartBeat();
+            this.#checkIgnore();
+            if (!this.ignore_visitor && !this.#hasPulse) {
+                this.#heartBeat();
             }
         };
+
         /**
         * Provide information about user
         * @param {Object} ratingWidget - object with rating widget properties
@@ -2532,8 +2605,8 @@ constructor(ob) {
         * 
         * @deprecated use 'recordRatingWidgetWithID' in place of this call
         * */
-        this.report_feedback = function (ratingWidget) {
-            log(logLevelEnums.WARNING, "report_feedback, Deprecated function call! Use 'recordRatingWidgetWithID' or 'reportFeedbackWidgetManually' in place of this call. Call will be redirected to 'recordRatingWidgetWithID' now!");
+        report_feedback = (ratingWidget) => {
+            this.#log(logLevelEnums.WARNING, "report_feedback, Deprecated function call! Use 'recordRatingWidgetWithID' or 'reportFeedbackWidgetManually' in place of this call. Call will be redirected to 'recordRatingWidgetWithID' now!");
             this.recordRatingWidgetWithID(ratingWidget);
         };
         /**
@@ -2547,17 +2620,17 @@ constructor(ob) {
         * @param {string=} ratingWidget.email - user's email
         * @param {string=} ratingWidget.comment - user's comment
         * */
-        this.recordRatingWidgetWithID = function (ratingWidget) {
-            log(logLevelEnums.INFO, "recordRatingWidgetWithID, Providing information about user with ID: [ " + ratingWidget.widget_id + " ]");
+        recordRatingWidgetWithID = (ratingWidget) => {
+            this.#log(logLevelEnums.INFO, "recordRatingWidgetWithID, Providing information about user with ID: [ " + ratingWidget.widget_id + " ]");
             if (!this.check_consent(featureEnums.STAR_RATING)) {
                 return;
             }
             if (!ratingWidget.widget_id) {
-                log(logLevelEnums.ERROR, "recordRatingWidgetWithID, Rating Widget must contain widget_id property");
+                this.#log(logLevelEnums.ERROR, "recordRatingWidgetWithID, Rating Widget must contain widget_id property");
                 return;
             }
             if (!ratingWidget.rating) {
-                log(logLevelEnums.ERROR, "recordRatingWidgetWithID, Rating Widget must contain rating property");
+                this.#log(logLevelEnums.ERROR, "recordRatingWidgetWithID, Rating Widget must contain rating property");
                 return;
             }
             var props = ["widget_id", "contactMe", "platform", "app_version", "rating", "email", "comment"];
@@ -2571,15 +2644,15 @@ constructor(ob) {
                 event.segmentation.app_version = this.metrics._app_version || this.app_version;
             }
             if (event.segmentation.rating > 5) {
-                log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating higher than 5. Changing it back to 5 now.");
+                this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating higher than 5. Changing it back to 5 now.");
                 event.segmentation.rating = 5;
             }
             else if (event.segmentation.rating < 1) {
-                log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating lower than 1. Changing it back to 1 now.");
+                this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating lower than 1. Changing it back to 1 now.");
                 event.segmentation.rating = 1;
             }
-            log(logLevelEnums.INFO, "recordRatingWidgetWithID, Reporting Rating Widget: ", event);
-            add_cly_events(event);
+            this.#log(logLevelEnums.INFO, "recordRatingWidgetWithID, Reporting Rating Widget: ", event);
+            this.#add_cly_events(event);
         };
         /**
         * Report information about survey, nps or rating widget answers/results
@@ -2608,24 +2681,24 @@ constructor(ob) {
         *   comment: "comment"
         *   }
         * */
-        this.reportFeedbackWidgetManually = function (CountlyFeedbackWidget, CountlyWidgetData, widgetResult) {
+        reportFeedbackWidgetManually = (CountlyFeedbackWidget, CountlyWidgetData, widgetResult) => {
             if (!this.check_consent(featureEnums.FEEDBACK)) {
                 return;
             }
             if (!(CountlyFeedbackWidget && CountlyWidgetData)) {
-                log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget data and/or Widget object not provided. Aborting.");
+                this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget data and/or Widget object not provided. Aborting.");
                 return;
             }
             if (!CountlyFeedbackWidget._id) {
-                log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Feedback Widgets must contain _id property");
+                this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Feedback Widgets must contain _id property");
                 return;
             }
-            if (offlineMode) {
-                log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Feedback Widgets can not be reported in offline mode");
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Feedback Widgets can not be reported in offline mode");
                 return;
             }
 
-            log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Providing information about user with, provided result of the widget with  ID: [ " + CountlyFeedbackWidget._id + " ] and type: [" + CountlyFeedbackWidget.type + "]");
+            this.#log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Providing information about user with, provided result of the widget with  ID: [ " + CountlyFeedbackWidget._id + " ] and type: [" + CountlyFeedbackWidget.type + "]");
 
             // type specific checks to see if everything was provided
             var props = [];
@@ -2634,16 +2707,16 @@ constructor(ob) {
             if (type === "nps") {
                 if (widgetResult) {
                     if (!widgetResult.rating) {
-                        log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
+                        this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
                         return;
                     }
                     widgetResult.rating = Math.round(widgetResult.rating);
                     if (widgetResult.rating > 10) {
-                        log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 10. Changing it back to 10 now.");
+                        this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 10. Changing it back to 10 now.");
                         widgetResult.rating = 10;
                     }
                     else if (widgetResult.rating < 0) {
-                        log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating lower than 0. Changing it back to 0 now.");
+                        this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating lower than 0. Changing it back to 0 now.");
                         widgetResult.rating = 0;
                     }
                     props = ["rating", "comment"];
@@ -2653,7 +2726,7 @@ constructor(ob) {
             else if (type === "survey") {
                 if (widgetResult) {
                     if (Object.keys(widgetResult).length < 1) {
-                        log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget should have answers to be reported");
+                        this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget should have answers to be reported");
                         return;
                     }
                     props = Object.keys(widgetResult);
@@ -2663,16 +2736,16 @@ constructor(ob) {
             else if (type === "rating") {
                 if (widgetResult) {
                     if (!widgetResult.rating) {
-                        log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
+                        this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
                         return;
                     }
                     widgetResult.rating = Math.round(widgetResult.rating);
                     if (widgetResult.rating > 5) {
-                        log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 5. Changing it back to 5 now.");
+                        this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 5. Changing it back to 5 now.");
                         widgetResult.rating = 5;
                     }
                     else if (widgetResult.rating < 1) {
-                        log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating lower than 1. Changing it back to 1 now.");
+                        this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating lower than 1. Changing it back to 1 now.");
                         widgetResult.rating = 1;
                     }
                     props = ["rating", "comment", "email", "contactMe"];
@@ -2680,7 +2753,7 @@ constructor(ob) {
                 eventKey = internalEventKeyEnums.STAR_RATING;
             }
             else {
-                log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget has an unacceptable type");
+                this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget has an unacceptable type");
                 return;
             }
 
@@ -2704,41 +2777,42 @@ constructor(ob) {
             }
 
             // add event
-            log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Reporting " + type + ": ", event);
-            add_cly_events(event);
+            this.#log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Reporting " + type + ": ", event);
+            this.#add_cly_events(event);
         };
         /**
         * Show specific widget popup by the widget id
         * @param {string} id - id value of related rating widget, you can get this value by click "Copy ID" button in row menu at "Feedback widgets" screen
         * 
-        * @deprecated use 'presentRatingWidgetWithID' in place of this call
+        * @deprecated use 'feedback.showRating' in place of this call
         */
-        this.show_feedback_popup = function (id) {
+        show_feedback_popup = (id) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "show_feedback_popup, window object is not available. Not showing feedback popup.");
+                this.#log(logLevelEnums.WARNING, "show_feedback_popup, window object is not available. Not showing feedback popup.");
                 return;
             }
-            log(logLevelEnums.WARNING, "show_feedback_popup, Deprecated function call! Use 'presentRatingWidgetWithID' in place of this call. Call will be redirected now!");
-            this.presentRatingWidgetWithID(id);
+            this.#log(logLevelEnums.WARNING, "show_feedback_popup, Deprecated function call! Use 'presentRatingWidgetWithID' in place of this call. Call will be redirected now!");
+            presentRatingWidgetWithID(id);
         };
         /**
         * Show specific widget popup by the widget id
         * @param {string} id - id value of related rating widget, you can get this value by click "Copy ID" button in row menu at "Feedback widgets" screen
+        * @deprecated use 'feedback.showRating' in place of this call
         */
-        this.presentRatingWidgetWithID = function (id) {
+        presentRatingWidgetWithID = (id) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "presentRatingWidgetWithID, window object is not available. Not showing rating widget popup.");
+                this.#log(logLevelEnums.WARNING, "presentRatingWidgetWithID, window object is not available. Not showing rating widget popup.");
                 return;
             }
-            log(logLevelEnums.INFO, "presentRatingWidgetWithID, Showing rating widget popup for the widget with ID: [ " + id + " ]");
+            this.#log(logLevelEnums.INFO, "presentRatingWidgetWithID, Showing rating widget popup for the widget with ID: [ " + id + " ]");
             if (!this.check_consent(featureEnums.STAR_RATING)) {
                 return;
             }
-            if (offlineMode) {
-                log(logLevelEnums.ERROR, "presentRatingWidgetWithID, Cannot show ratingWidget popup in offline mode");
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.ERROR, "presentRatingWidgetWithID, Cannot show ratingWidget popup in offline mode");
             }
             else {
-                makeNetworkRequest("presentRatingWidgetWithID,", this.url + "/o/feedback/widget", { widget_id: id, av: self.app_version }, function (err, params, responseText) {
+                this.#makeNetworkRequest("presentRatingWidgetWithID,", this.url + "/o/feedback/widget", { widget_id: id, av: this.app_version }, (err, params, responseText) => {
                     if (err) {
                         // error has been logged by the request function
                         return;
@@ -2746,10 +2820,10 @@ constructor(ob) {
                     try {
                         // widget object
                         var currentWidget = JSON.parse(responseText);
-                        processWidget(currentWidget, false);
+                        this.#processWidget(currentWidget, false);
                     }
                     catch (JSONParseError) {
-                        log(logLevelEnums.ERROR, "presentRatingWidgetWithID, JSON parse failed: " + JSONParseError);
+                        this.#log(logLevelEnums.ERROR, "presentRatingWidgetWithID, JSON parse failed: " + JSONParseError);
                     }
                     // JSON array can pass 
                 }, true);
@@ -2760,31 +2834,32 @@ constructor(ob) {
         * Prepare rating widgets according to the current options
         * @param {array=} enableWidgets - widget ids array
         * 
-        * @deprecated use 'initializeRatingWidgets' in place of this call
+        * @deprecated use 'feedback.showRating' in place of this call
         */
-        this.initialize_feedback_popups = function (enableWidgets) {
+        initialize_feedback_popups = (enableWidgets) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "initialize_feedback_popups, window object is not available. Not initializing feedback popups.");
+                this.#log(logLevelEnums.WARNING, "initialize_feedback_popups, window object is not available. Not initializing feedback popups.");
                 return;
             }
-            log(logLevelEnums.WARNING, "initialize_feedback_popups, Deprecated function call! Use 'initializeRatingWidgets' in place of this call. Call will be redirected now!");
+            this.#log(logLevelEnums.WARNING, "initialize_feedback_popups, Deprecated function call! Use 'initializeRatingWidgets' in place of this call. Call will be redirected now!");
             this.initializeRatingWidgets(enableWidgets);
         };
         /**
         * Prepare rating widgets according to the current options
         * @param {array=} enableWidgets - widget ids array
+        * @deprecated use 'feedback.showRating' in place of this call
         */
-        this.initializeRatingWidgets = function (enableWidgets) {
+        initializeRatingWidgets = (enableWidgets) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "initializeRatingWidgets, window object is not available. Not initializing rating widgets.");
+                this.#log(logLevelEnums.WARNING, "initializeRatingWidgets, window object is not available. Not initializing rating widgets.");
                 return;
             }
-            log(logLevelEnums.INFO, "initializeRatingWidgets, Initializing rating widget with provided widget IDs:[ " + enableWidgets + "]");
+            this.#log(logLevelEnums.INFO, "initializeRatingWidgets, Initializing rating widget with provided widget IDs:[ " + enableWidgets + "]");
             if (!this.check_consent(featureEnums.STAR_RATING)) {
                 return;
             }
             if (!enableWidgets) {
-                enableWidgets = getValueFromStorage("cly_fb_widgets");
+                enableWidgets = this.#getValueFromStorage("cly_fb_widgets");
             }
 
             // remove all old stickers before add new one
@@ -2793,7 +2868,7 @@ constructor(ob) {
                 stickers[0].remove();
             }
 
-            makeNetworkRequest("initializeRatingWidgets,", this.url + "/o/feedback/multiple-widgets-by-id", { widgets: JSON.stringify(enableWidgets), av: self.app_version }, function (err, params, responseText) {
+            this.#makeNetworkRequest("initializeRatingWidgets,", this.url + "/o/feedback/multiple-widgets-by-id", { widgets: JSON.stringify(enableWidgets), av: this.app_version }, (err, params, responseText) => {
                 if (err) {
                     // error has been logged by the request function
                     return;
@@ -2813,7 +2888,7 @@ constructor(ob) {
                                 }
                                 // is target_page option provided as "All"?
                                 if (widgets[i].target_page === "all" && !widgets[i].hide_sticker) {
-                                    processWidget(widgets[i], true);
+                                    this.#processWidget(widgets[i], true);
                                 }
                                 // is target_page option provided as "selected"?
                                 else {
@@ -2823,7 +2898,7 @@ constructor(ob) {
                                         var isFullPathMatched = pages[k] === window.location.pathname;
                                         var isContainAsterisk = pages[k].includes("*");
                                         if (((isContainAsterisk && isWildcardMatched) || isFullPathMatched) && !widgets[i].hide_sticker) {
-                                            processWidget(widgets[i], true);
+                                            this.#processWidget(widgets[i], true);
                                         }
                                     }
                                 }
@@ -2832,7 +2907,7 @@ constructor(ob) {
                     }
                 }
                 catch (JSONParseError) {
-                    log(logLevelEnums.ERROR, "initializeRatingWidgets, JSON parse error: " + JSONParseError);
+                    this.#log(logLevelEnums.ERROR, "initializeRatingWidgets, JSON parse error: " + JSONParseError);
                 }
                 // JSON array can pass
             }, true);
@@ -2843,35 +2918,36 @@ constructor(ob) {
         * @param {object=} params - required - includes "popups" property as string array of widgets ("widgets" for old versions)
         * example params: {"popups":["5b21581b967c4850a7818617"]}
         * 
-        * @deprecated use 'enableRatingWidgets' in place of this call
+        * @deprecated use 'feedback.showRating' in place of this call
         * */
-        this.enable_feedback = function (params) {
+        enable_feedback = (params) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "enable_feedback, window object is not available. Not enabling feedback.");
+                this.#log(logLevelEnums.WARNING, "enable_feedback, window object is not available. Not enabling feedback.");
                 return;
             }
-            log(logLevelEnums.WARNING, "enable_feedback, Deprecated function call! Use 'enableRatingWidgets' in place of this call. Call will be redirected now!");
+            this.#log(logLevelEnums.WARNING, "enable_feedback, Deprecated function call! Use 'enableRatingWidgets' in place of this call. Call will be redirected now!");
             this.enableRatingWidgets(params);
         };
         /**
         * Show rating widget popup by passed widget ids array
         * @param {object=} params - required - includes "popups" property as string array of widgets ("widgets" for old versions)
         * example params: {"popups":["5b21581b967c4850a7818617"]}
+        * @deprecated use 'feedback.showRating' in place of this call
         * */
-        this.enableRatingWidgets = function (params) {
+        enableRatingWidgets = (params) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "enableRatingWidgets, window object is not available. Not enabling rating widgets.");
+                this.#log(logLevelEnums.WARNING, "enableRatingWidgets, window object is not available. Not enabling rating widgets.");
                 return;
             }
-            log(logLevelEnums.INFO, "enableRatingWidgets, Enabling rating widget with params:", params);
+            this.#log(logLevelEnums.INFO, "enableRatingWidgets, Enabling rating widget with params:", params);
             if (!this.check_consent(featureEnums.STAR_RATING)) {
                 return;
             }
-            if (offlineMode) {
-                log(logLevelEnums.ERROR, "enableRatingWidgets, Cannot enable rating widgets in offline mode");
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.ERROR, "enableRatingWidgets, Cannot enable rating widgets in offline mode");
             }
             else {
-                setValueInStorage("cly_fb_widgets", params.popups || params.widgets);
+                this.#setValueInStorage("cly_fb_widgets", params.popups || params.widgets);
                 // inject feedback styles
                 loadCSS(this.url + "/star-rating/stylesheets/countly-feedback-web.css");
                 // get enable widgets by app_key
@@ -2883,7 +2959,7 @@ constructor(ob) {
                     this.initializeRatingWidgets(enableWidgets);
                 }
                 else {
-                    log(logLevelEnums.ERROR, "enableRatingWidgets, You should provide at least one widget id as param. Read documentation for more detail. https://resources.count.ly/plugins/feedback");
+                    this.#log(logLevelEnums.ERROR, "enableRatingWidgets, You should provide at least one widget id as param. Read documentation for more detail. https://resources.count.ly/plugins/feedback");
                 }
             }
         };
@@ -2893,11 +2969,11 @@ constructor(ob) {
          * @param {String} widgetType - The type of widget ("nps", "survey", "rating").
          * @param {String} [nameIDorTag] - The name, id, or tag of the widget to display.
          */
-        this.#showWidgetInternal = (widgetType, nameIDorTag) => {
-            log(logLevelEnums.INFO, `showWidget, Showing ${widgetType} widget, nameIDorTag:[${nameIDorTag}]`);
+        #showWidgetInternal = (widgetType, nameIDorTag) => {
+            this.#log(logLevelEnums.INFO, `showWidget, Showing ${widgetType} widget, nameIDorTag:[${nameIDorTag}]`);
             this.get_available_feedback_widgets((feedbackWidgetArray, error) => {
                 if (error) {
-                    log(logLevelEnums.ERROR, `showWidget, Error while getting feedback widgets list: ${error}`);
+                    this.#log(logLevelEnums.ERROR, `showWidget, Error while getting feedback widgets list: ${error}`);
                     return;
                 }
        
@@ -2910,24 +2986,24 @@ constructor(ob) {
                     );
                     if (matchedWidget) {
                         widget = matchedWidget;
-                        log(logLevelEnums.VERBOSE, `showWidget, Found ${widgetType} widget by name, id, or tag: [${JSON.stringify(matchedWidget)}]`);
+                        this.#log(logLevelEnums.VERBOSE, `showWidget, Found ${widgetType} widget by name, id, or tag: [${JSON.stringify(matchedWidget)}]`);
                     }
                 }
        
                 if (!widget) {
-                    log(logLevelEnums.ERROR, `showWidget, No ${widgetType} widget found.`);
+                    this.#log(logLevelEnums.ERROR, `showWidget, No ${widgetType} widget found.`);
                     return;
                 }
                 this.present_feedback_widget(widget, null, null, null);
             });
-        },
+        };
     /**
   * Feedback interface with convenience methods for feedback widgets:
   * - showNPS([String nameIDorTag]) - shows an NPS widget by name, id or tag, or a random one if not provided
   * - showSurvey([String nameIDorTag]) - shows a Survey widget by name, id or tag, or a random one if not provided
   * - showRating([String nameIDorTag]) - shows a Rating widget by name, id or tag, or a random one if not provided
   */
-    this.feedback = {
+    feedback = {
         /**
          * Displays the first available NPS widget or the one with the provided name, id, or tag.
          * @param {String} [nameIDorTag] - Name, id, or tag of the NPS widget to display.
@@ -2952,8 +3028,8 @@ constructor(ob) {
         * This function retrieves all associated widget information (IDs, type, name etc in an array/list of objects) of your app
         * @param {Function} callback - Callback function with two parameters, 1st for returned list, 2nd for error
         * */
-        this.get_available_feedback_widgets = function (callback) {
-            log(logLevelEnums.INFO, "get_available_feedback_widgets, Getting the feedback list, callback function is provided:[" + (!!callback) + "]");
+        get_available_feedback_widgets = (callback) => {
+            this.#log(logLevelEnums.INFO, "get_available_feedback_widgets, Getting the feedback list, callback function is provided:[" + (!!callback) + "]");
             if (!this.check_consent(featureEnums.FEEDBACK)) {
                 if (callback) {
                     callback(null, new Error("Consent for feedback not provided."));
@@ -2961,20 +3037,20 @@ constructor(ob) {
                 return;
             }
 
-            if (offlineMode) {
-                log(logLevelEnums.ERROR, "get_available_feedback_widgets, Cannot enable feedback widgets in offline mode.");
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.ERROR, "get_available_feedback_widgets, Cannot enable feedback widgets in offline mode.");
                 return;
             }
 
-            var url = this.url + readPath;
+            var url = this.url + this.#readPath;
             var data = {
                 method: featureEnums.FEEDBACK,
                 device_id: this.device_id,
                 app_key: this.app_key,
-                av: self.app_version
+                av: this.app_version
             };
 
-            makeNetworkRequest("get_available_feedback_widgets,", url, data, function (err, params, responseText) {
+            this.#makeNetworkRequest("get_available_feedback_widgets,", url, data, (err, params, responseText) => {
                 if (err) {
                     // error has been logged by the request function
                     if (callback) {
@@ -2991,7 +3067,7 @@ constructor(ob) {
                     }
                 }
                 catch (error) {
-                    log(logLevelEnums.ERROR, "get_available_feedback_widgets, Error while parsing feedback widgets list: " + error);
+                    this.#log(logLevelEnums.ERROR, "get_available_feedback_widgets, Error while parsing feedback widgets list: " + error);
                     if (callback) {
                         callback(null, error);
                     }
@@ -3005,12 +3081,12 @@ constructor(ob) {
         * @param {Object} CountlyFeedbackWidget - Widget object, retrieved from 'get_available_feedback_widgets'
         * @param {Function} callback - Callback function with two parameters, 1st for returned widget data, 2nd for error
         * */
-        this.getFeedbackWidgetData = function (CountlyFeedbackWidget, callback) {
+        getFeedbackWidgetData = (CountlyFeedbackWidget, callback) => {
             if (!CountlyFeedbackWidget.type) {
-                log(logLevelEnums.ERROR, "getFeedbackWidgetData, Expected the provided widget object to have a type but got: [" + JSON.stringify(CountlyFeedbackWidget) + "], aborting.");
+                this.#log(logLevelEnums.ERROR, "getFeedbackWidgetData, Expected the provided widget object to have a type but got: [" + JSON.stringify(CountlyFeedbackWidget) + "], aborting.");
                 return;
             }
-            log(logLevelEnums.INFO, "getFeedbackWidgetData, Retrieving data for: [" + JSON.stringify(CountlyFeedbackWidget) + "], callback function is provided:[" + (!!callback) + "]");
+            this.#log(logLevelEnums.INFO, "getFeedbackWidgetData, Retrieving data for: [" + JSON.stringify(CountlyFeedbackWidget) + "], callback function is provided:[" + (!!callback) + "]");
             if (!this.check_consent(featureEnums.FEEDBACK)) {
                 if (callback) {
                     callback(null, new Error("Consent for feedback not provided."));
@@ -3018,8 +3094,8 @@ constructor(ob) {
                 return;
             }
 
-            if (offlineMode) {
-                log(logLevelEnums.ERROR, "getFeedbackWidgetData, Cannot enable feedback widgets in offline mode.");
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.ERROR, "getFeedbackWidgetData, Cannot enable feedback widgets in offline mode.");
                 return;
             }
 
@@ -3027,8 +3103,8 @@ constructor(ob) {
             var data = {
                 widget_id: CountlyFeedbackWidget._id,
                 shown: 1,
-                sdk_version: sdkVersion,
-                sdk_name: sdkName,
+                sdk_version: this.#sdkVersion,
+                sdk_name: this.#sdkName,
                 platform: this.platform,
                 app_version: this.app_version
             };
@@ -3043,11 +3119,11 @@ constructor(ob) {
                 url += "/o/surveys/rating/widget";
             }
             else {
-                log(logLevelEnums.ERROR, "getFeedbackWidgetData, Unknown type info: [" + CountlyFeedbackWidget.type + "]");
+                this.#log(logLevelEnums.ERROR, "getFeedbackWidgetData, Unknown type info: [" + CountlyFeedbackWidget.type + "]");
                 return;
             }
 
-            makeNetworkRequest("getFeedbackWidgetData,", url, data, responseCallback, true);
+            this.#makeNetworkRequest("getFeedbackWidgetData,", url, data, responseCallback, true);
 
             /**
              *  Server response would be evaluated here
@@ -3055,7 +3131,7 @@ constructor(ob) {
              * @param {*} params - parameters
              * @param {*} responseText - server reponse text
              */
-            function responseCallback(err, params, responseText) {
+            var responseCallback = (err, params, responseText) => {
                 if (err) {
                     // error has been logged by the request function
                     if (callback) {
@@ -3072,7 +3148,7 @@ constructor(ob) {
                     }
                 }
                 catch (error) {
-                    log(logLevelEnums.ERROR, "getFeedbackWidgetData, Error while parsing feedback widgets list: " + error);
+                    this.#log(logLevelEnums.ERROR, "getFeedbackWidgetData, Error while parsing feedback widgets list: " + error);
                     if (callback) {
                         callback(null, error);
                     }
@@ -3087,13 +3163,13 @@ constructor(ob) {
         * @param {String} [className] - Class name to append the feedback widget (optional, in case not used pass undefined)
         * @param {Object} [feedbackWidgetSegmentation] - Segmentation object to be passed to the feedback widget (optional)
         * */
-        this.present_feedback_widget = function (presentableFeedback, id, className, feedbackWidgetSegmentation) {
+        present_feedback_widget = (presentableFeedback, id, className, feedbackWidgetSegmentation) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "present_feedback_widget, window object is not available. Not presenting feedback widget.");
+                this.#log(logLevelEnums.WARNING, "present_feedback_widget, window object is not available. Not presenting feedback widget.");
                 return;
             }
             // TODO: feedbackWidgetSegmentation implementation only assumes we want to send segmentation data. Change it if we add more data to the custom object.
-            log(logLevelEnums.INFO, "present_feedback_widget, Presenting the feedback widget by appending to the element with ID: [ " + id + " ] and className: [ " + className + " ]");
+            this.#log(logLevelEnums.INFO, "present_feedback_widget, Presenting the feedback widget by appending to the element with ID: [ " + id + " ] and className: [ " + className + " ]");
 
             if (!this.check_consent(featureEnums.FEEDBACK)) {
                 return;
@@ -3103,13 +3179,13 @@ constructor(ob) {
                 || (typeof presentableFeedback !== "object")
                 || Array.isArray(presentableFeedback)
             ) {
-                log(logLevelEnums.ERROR, "present_feedback_widget, Please provide at least one feedback widget object.");
+                this.#log(logLevelEnums.ERROR, "present_feedback_widget, Please provide at least one feedback widget object.");
                 return;
             }
 
-            log(logLevelEnums.INFO, "present_feedback_widget, Adding segmentation to feedback widgets:[" + JSON.stringify(feedbackWidgetSegmentation) + "]");
+            this.#log(logLevelEnums.INFO, "present_feedback_widget, Adding segmentation to feedback widgets:[" + JSON.stringify(feedbackWidgetSegmentation) + "]");
             if (!feedbackWidgetSegmentation || typeof feedbackWidgetSegmentation !== "object" || Object.keys(feedbackWidgetSegmentation).length === 0) {
-                log(logLevelEnums.DEBUG, "present_feedback_widget, Segmentation is not an object or empty");
+                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Segmentation is not an object or empty");
                 feedbackWidgetSegmentation = null;
             }
 
@@ -3117,19 +3193,19 @@ constructor(ob) {
                 var url = this.url;
 
                 if (presentableFeedback.type === "nps") {
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Widget type: nps.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Widget type: nps.");
                     url += "/feedback/nps";
                 }
                 else if (presentableFeedback.type === "survey") {
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Widget type: survey.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Widget type: survey.");
                     url += "/feedback/survey";
                 }
                 else if (presentableFeedback.type === "rating") {
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Widget type: rating.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Widget type: rating.");
                     url += "/feedback/rating";
                 }
                 else {
-                    log(logLevelEnums.ERROR, "present_feedback_widget, Feedback widget only accepts nps, rating and survey types.");
+                    this.#log(logLevelEnums.ERROR, "present_feedback_widget, Feedback widget only accepts nps, rating and survey types.");
                     return;
                 }
 
@@ -3138,14 +3214,14 @@ constructor(ob) {
 
                 // set feedback widget family as ratings and load related style file when type is ratings
                 if (presentableFeedback.type === "rating") {
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Loading css for rating widget.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Loading css for rating widget.");
                     feedbackWidgetFamily = "ratings";
                     loadCSS(this.url + "/star-rating/stylesheets/countly-feedback-web.css");
                 }
                 // if it's not ratings, it means we need to name it as surveys and load related style file
                 // (at least until we add new type in future)
                 else {
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Loading css for survey or nps.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Loading css for survey or nps.");
                     loadCSS(this.url + "/surveys/stylesheets/countly-surveys.css");
                     feedbackWidgetFamily = "surveys";
                 }
@@ -3153,10 +3229,10 @@ constructor(ob) {
                 url += "?widget_id=" + presentableFeedback._id;
                 url += "&app_key=" + this.app_key;
                 url += "&device_id=" + this.device_id;
-                url += "&sdk_name=" + sdkName;
+                url += "&sdk_name=" + this.#sdkName;
                 url += "&platform=" + this.platform;
                 url += "&app_version=" + this.app_version;
-                url += "&sdk_version=" + sdkVersion;
+                url += "&sdk_version=" + this.#sdkVersion;
                 var customObjectToSendWithTheWidget = {};
                 customObjectToSendWithTheWidget.tc = 1; // indicates SDK supports opening links from the widget in a new tab
                 if (feedbackWidgetSegmentation) {
@@ -3174,7 +3250,7 @@ constructor(ob) {
                 iframe.id = "countly-" + feedbackWidgetFamily + "-iframe";
 
                 var initiated = false;
-                iframe.onload = function () {
+                iframe.onload = () => {
                     // This is used as a fallback for browsers where postMessage API doesn't work.
 
                     if (initiated) {
@@ -3189,7 +3265,7 @@ constructor(ob) {
                     // Any subsequent onload means that the survey is being refreshed or reset.
                     // This time hide it as being done in the above check.
                     initiated = true;
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Loaded iframe.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Loaded iframe.");
                 };
 
                 var overlay = document.getElementById("csbg");
@@ -3197,14 +3273,14 @@ constructor(ob) {
                     // Remove any existing overlays
                     overlay.remove();
                     overlay = document.getElementById("csbg");
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Removing past overlay.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Removing past overlay.");
                 }
 
                 var wrapper = document.getElementsByClassName("countly-" + feedbackWidgetFamily + "-wrapper");
                 for (var i = 0; i < wrapper.length; i++) {
                     // Remove any existing feedback wrappers
                     wrapper[i].remove();
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, Removed a wrapper.");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Removed a wrapper.");
                 }
 
                 wrapper = document.createElement("div");
@@ -3225,7 +3301,7 @@ constructor(ob) {
                         found = true;
                     }
                     else {
-                        log(logLevelEnums.ERROR, "present_feedback_widget, Provided ID not found.");
+                        this.#log(logLevelEnums.ERROR, "present_feedback_widget, Provided ID not found.");
                     }
                 }
 
@@ -3236,7 +3312,7 @@ constructor(ob) {
                             element = document.getElementsByClassName(className)[0];
                         }
                         else {
-                            log(logLevelEnums.ERROR, "present_feedback_widget, Provided class not found.");
+                            this.#log(logLevelEnums.ERROR, "present_feedback_widget, Provided class not found.");
                         }
                     }
                 }
@@ -3249,36 +3325,84 @@ constructor(ob) {
                     ratingsOverlay.className = "countly-ratings-overlay";
                     ratingsOverlay.id = "countly-ratings-overlay-" + presentableFeedback._id;
                     wrapper.appendChild(ratingsOverlay);
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, appended the rating overlay to wrapper");
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, appended the rating overlay to wrapper");
 
                     // add an event listener for the overlay
                     // so if someone clicked on the overlay, we can close popup
-                    add_event_listener(document.getElementById("countly-ratings-overlay-" + presentableFeedback._id), "click", function () {
+                    add_event_listener(document.getElementById("countly-ratings-overlay-" + presentableFeedback._id), "click", () => {
                         document.getElementById("countly-ratings-wrapper-" + presentableFeedback._id).style.display = "none";
                     });
                 }
 
                 wrapper.appendChild(iframe);
-                log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
+                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
 
-                add_event_listener(window, "message", function (e) {
+                add_event_listener(window, "message", (e) => {
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Received message from widget with origin: [" + e.origin + "] and data: [" + e.data + "]");
                     var data = {};
                     try {
                         data = JSON.parse(e.data);
-                        log(logLevelEnums.DEBUG, "present_feedback_widget, Parsed response message " + data);
                     }
                     catch (ex) {
-                        log(logLevelEnums.ERROR, "present_feedback_widget, Error while parsing message body " + ex);
+                        this.#log(logLevelEnums.ERROR, "present_feedback_widget, Error while parsing message body " + ex);
                     }
 
-                    if (!data.close) {
-                        log(logLevelEnums.DEBUG, "present_feedback_widget, Closing signal not sent yet");
+                    if (data.close !== true) { // to not mix with content we check against true value
+                        this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
                         return;
                     }
 
                     document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
                     document.getElementById("csbg").style.display = "none";
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Closed the widget");
                 });
+                /**
+                 * Function to show survey popup
+                 * @param  {Object} feedback - feedback object
+                 */
+                var showSurvey = (feedback) => {
+                    document.getElementById("countly-surveys-wrapper-" + feedback._id).style.display = "block";
+                    document.getElementById("csbg").style.display = "block";
+                }
+
+                /**
+                 * Function to prepare rating sticker and feedback widget
+                 * @param  {Object} feedback - feedback object
+                 */
+                var showRatingForFeedbackWidget = (feedback) => {
+                    // remove old stickers if exists
+                    var stickers = document.getElementsByClassName("countly-feedback-sticker");
+                    while (stickers.length > 0) {
+                        this.#log(logLevelEnums.VERBOSE, "present_feedback_widget, Removing old stickers");
+                        stickers[0].remove();
+                    }
+
+                    // render sticker if hide sticker property isn't set
+                    if (!feedback.appearance.hideS) {
+                        this.#log(logLevelEnums.DEBUG, "present_feedback_widget, handling the sticker as it was not set to hidden");
+                        // create sticker wrapper element
+                        var sticker = document.createElement("div");
+                        sticker.innerText = feedback.appearance.text;
+                        sticker.style.color = ((feedback.appearance.text_color.length < 7) ? "#" + feedback.appearance.text_color : feedback.appearance.text_color);
+                        sticker.style.backgroundColor = ((feedback.appearance.bg_color.length < 7) ? "#" + feedback.appearance.bg_color : feedback.appearance.bg_color);
+                        sticker.className = "countly-feedback-sticker  " + feedback.appearance.position + "-" + feedback.appearance.size;
+                        sticker.id = "countly-feedback-sticker-" + feedback._id;
+                        document.body.appendChild(sticker);
+
+                        // sticker event handler
+                        add_event_listener(document.getElementById("countly-feedback-sticker-" + feedback._id), "click", () => {
+                            document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "flex";
+                            document.getElementById("csbg").style.display = "block";
+                        });
+                    }
+
+                    // feedback widget close event handler
+                    // TODO: Check if this is still valid
+                    add_event_listener(document.getElementById("countly-feedback-close-icon-" + feedback._id), "click", () => {
+                        document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "none";
+                        document.getElementById("csbg").style.display = "none";
+                    });
+                }
 
                 if (presentableFeedback.type === "survey") {
                     var surveyShown = false;
@@ -3293,7 +3417,7 @@ constructor(ob) {
                                 }
                             }
                             else {
-                                add_event_listener(document, "readystatechange", function (e) {
+                                add_event_listener(document, "readystatechange", (e) => {
                                     if (e.target.readyState === "complete") {
                                         if (!surveyShown) {
                                             surveyShown = true;
@@ -3306,7 +3430,7 @@ constructor(ob) {
                             break;
 
                         case "afterConstantDelay":
-                            setTimeout(function () {
+                            setTimeout(() => {
                                 if (!surveyShown) {
                                     surveyShown = true;
                                     showSurvey(presentableFeedback);
@@ -3317,7 +3441,7 @@ constructor(ob) {
 
                         case "onAbandon":
                             if (document.readyState === "complete") {
-                                add_event_listener(document, "mouseleave", function () {
+                                add_event_listener(document, "mouseleave", () => {
                                     if (!surveyShown) {
                                         surveyShown = true;
                                         showSurvey(presentableFeedback);
@@ -3325,9 +3449,9 @@ constructor(ob) {
                                 });
                             }
                             else {
-                                add_event_listener(document, "readystatechange", function (e) {
+                                add_event_listener(document, "readystatechange", (e) => {
                                     if (e.target.readyState === "complete") {
-                                        add_event_listener(document, "mouseleave", function () {
+                                        add_event_listener(document, "mouseleave", () => {
                                             if (!surveyShown) {
                                                 surveyShown = true;
                                                 showSurvey(presentableFeedback);
@@ -3340,7 +3464,7 @@ constructor(ob) {
                             break;
 
                         case "onScrollHalfwayDown":
-                            add_event_listener(window, "scroll", function () {
+                            add_event_listener(window, "scroll", () => {
                                 if (!surveyShown) {
                                     var scrollY = Math.max(window.scrollY, document.body.scrollTop, document.documentElement.scrollTop);
                                     var documentHeight = getDocHeight();
@@ -3374,7 +3498,7 @@ constructor(ob) {
                         }
                     }
                     else {
-                        add_event_listener(document, "readystatechange", function (e) {
+                        add_event_listener(document, "readystatechange", (e) => {
                             if (e.target.readyState === "complete") {
                                 if (!ratingShown) {
                                     ratingShown = true;
@@ -3386,56 +3510,10 @@ constructor(ob) {
                 }
             }
             catch (e) {
-                log(logLevelEnums.ERROR, "present_feedback_widget, Something went wrong while presenting the widget: " + e);
+                this.#log(logLevelEnums.ERROR, "present_feedback_widget, Something went wrong while presenting the widget: " + e);
             }
 
-            /**
-             * Function to show survey popup
-             * @param  {Object} feedback - feedback object
-             */
-            function showSurvey(feedback) {
-                document.getElementById("countly-surveys-wrapper-" + feedback._id).style.display = "block";
-                document.getElementById("csbg").style.display = "block";
-            }
 
-            /**
-             * Function to prepare rating sticker and feedback widget
-             * @param  {Object} feedback - feedback object
-             */
-            function showRatingForFeedbackWidget(feedback) {
-                // remove old stickers if exists
-                var stickers = document.getElementsByClassName("countly-feedback-sticker");
-                while (stickers.length > 0) {
-                    log(logLevelEnums.VERBOSE, "present_feedback_widget, Removing old stickers");
-                    stickers[0].remove();
-                }
-
-                // render sticker if hide sticker property isn't set
-                if (!feedback.appearance.hideS) {
-                    log(logLevelEnums.DEBUG, "present_feedback_widget, handling the sticker as it was not set to hidden");
-                    // create sticker wrapper element
-                    var sticker = document.createElement("div");
-                    sticker.innerText = feedback.appearance.text;
-                    sticker.style.color = ((feedback.appearance.text_color.length < 7) ? "#" + feedback.appearance.text_color : feedback.appearance.text_color);
-                    sticker.style.backgroundColor = ((feedback.appearance.bg_color.length < 7) ? "#" + feedback.appearance.bg_color : feedback.appearance.bg_color);
-                    sticker.className = "countly-feedback-sticker  " + feedback.appearance.position + "-" + feedback.appearance.size;
-                    sticker.id = "countly-feedback-sticker-" + feedback._id;
-                    document.body.appendChild(sticker);
-
-                    // sticker event handler
-                    add_event_listener(document.getElementById("countly-feedback-sticker-" + feedback._id), "click", function () {
-                        document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "flex";
-                        document.getElementById("csbg").style.display = "block";
-                    });
-                }
-
-                // feedback widget close event handler
-                // TODO: Check if this is still valid
-                add_event_listener(document.getElementById("countly-feedback-close-icon-" + feedback._id), "click", function () {
-                    document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "none";
-                    document.getElementById("csbg").style.display = "none";
-                });
-            }
         };
 
         /**
@@ -3444,11 +3522,11 @@ constructor(ob) {
          *  @param {Boolean} nonfatal - nonfatal if true and false if fatal
          *  @param {Object} segments - custom crash segments
          */
-        this.recordError = function (err, nonfatal, segments) {
-            log(logLevelEnums.INFO, "recordError, Recording error");
+        recordError = (err, nonfatal, segments) => {
+            this.#log(logLevelEnums.INFO, "recordError, Recording error");
             if (this.check_consent(featureEnums.CRASHES) && err) {
                 // crashSegments, if not null, was set while enabling error tracking
-                segments = segments || crashSegments;
+                segments = segments || this.#crashSegments;
                 var error = "";
                 if (typeof err === "object") {
                     if (typeof err.stack !== "undefined") {
@@ -3476,18 +3554,18 @@ constructor(ob) {
                     error = err + "";
                 }
                 // character limit check
-                if (error.length > (self.maxStackTraceLineLength * self.maxStackTraceLinesPerThread)) {
-                    log(logLevelEnums.DEBUG, "record_error, Error stack is too long will be truncated");
+                if (error.length > (this.maxStackTraceLineLength * this.maxStackTraceLinesPerThread)) {
+                    this.#log(logLevelEnums.DEBUG, "record_error, Error stack is too long will be truncated");
                     // convert error into an array split from each newline 
                     var splittedError = error.split("\n");
                     // trim the array if it is too long
-                    if (splittedError.length > self.maxStackTraceLinesPerThread) {
-                        splittedError = splittedError.splice(0, self.maxStackTraceLinesPerThread);
+                    if (splittedError.length > this.maxStackTraceLinesPerThread) {
+                        splittedError = splittedError.splice(0, this.maxStackTraceLinesPerThread);
                     }
                     // trim each line to a given limit
                     for (var i = 0, len = splittedError.length; i < len; i++) {
-                        if (splittedError[i].length > self.maxStackTraceLineLength) {
-                            splittedError[i] = splittedError[i].substring(0, self.maxStackTraceLineLength);
+                        if (splittedError[i].length > this.maxStackTraceLineLength) {
+                            splittedError[i] = splittedError[i].substring(0, this.maxStackTraceLineLength);
                         }
                     }
                     // turn modified array back into error string
@@ -3495,8 +3573,8 @@ constructor(ob) {
                 }
 
                 nonfatal = !!(nonfatal);
-                var metrics = getMetrics();
-                var obj = { _resolution: metrics._resolution, _error: error, _app_version: metrics._app_version, _run: getTimestamp() - startTime };
+                var metrics = this.#getMetrics();
+                var obj = { _resolution: metrics._resolution, _error: error, _app_version: metrics._app_version, _run: getTimestamp() - this.#startTime };
 
                 obj._not_os_specific = true;
                 obj._javascript = true;
@@ -3514,10 +3592,10 @@ constructor(ob) {
                     obj._background = !(document.hasFocus());
                 }
 
-                if (crashLogs.length > 0) {
-                    obj._logs = crashLogs.join("\n");
+                if (this.#crashLogs.length > 0) {
+                    obj._logs = this.#crashLogs.join("\n");
                 }
-                crashLogs = [];
+                this.#crashLogs = [];
 
                 obj._nonfatal = nonfatal;
 
@@ -3525,7 +3603,7 @@ constructor(ob) {
 
                 if (typeof segments !== "undefined") {
                     // truncate custom crash segment's key value pairs
-                    segments = truncateObject(segments, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "record_error", log);
+                    segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "record_error", this.#log);
                     obj._custom = segments;
                 }
 
@@ -3535,7 +3613,7 @@ constructor(ob) {
                     obj._opengl = gl.getParameter(gl.VERSION);
                 }
                 catch (ex) {
-                    log(logLevelEnums.ERROR, "Could not get the experimental-webgl context: " + ex);
+                    this.#log(logLevelEnums.ERROR, "Could not get the experimental-webgl context: " + ex);
                 }
 
                 // send userAgent string with the crash object incase it gets removed by a gateway
@@ -3543,34 +3621,184 @@ constructor(ob) {
                 req.crash = JSON.stringify(obj);
                 req.metrics = JSON.stringify({ _ua: metrics._ua });
 
-                toRequestQueue(req);
+                this.#toRequestQueue(req);
             }
         };
 
         /**
          *  Check if user or visit should be ignored
          */
-        function checkIgnore() {
-            log(logLevelEnums.INFO, "checkIgnore, Checking if user or visit should be ignored");
-            if (self.ignore_prefetch && isBrowser && typeof document.visibilityState !== "undefined" && document.visibilityState === "prerender") {
-                self.ignore_visitor = true;
-                log(logLevelEnums.DEBUG, "checkIgnore, Ignoring visit due to prerendering");
+        #checkIgnore = () => {
+            this.#log(logLevelEnums.INFO, "checkIgnore, Checking if user or visit should be ignored");
+            if (this.ignore_prefetch && isBrowser && typeof document.visibilityState !== "undefined" && document.visibilityState === "prerender") {
+                this.ignore_visitor = true;
+                this.#log(logLevelEnums.DEBUG, "checkIgnore, Ignoring visit due to prerendering");
             }
-            if (self.ignore_bots && userAgentSearchBotDetection()) {
-                self.ignore_visitor = true;
-                log(logLevelEnums.DEBUG, "checkIgnore, Ignoring visit due to bot");
+            if (this.ignore_bots && userAgentSearchBotDetection()) {
+                this.ignore_visitor = true;
+                this.#log(logLevelEnums.DEBUG, "checkIgnore, Ignoring visit due to bot");
             }
         }
 
+        content = {
+            enterContentZone: () => {
+                this.#enterContentZoneInternal();
+            },
+            exitContentZone: () => {
+                if (!this.#inContentZone) {
+                    this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
+                    return;
+                }
+                this.#log(logLevelEnums.INFO, "content.exitContentZone, Exiting content zone");
+                this.#inContentZone = false;
+                if (this.#contentZoneTimer) {
+                    clearInterval(this.#contentZoneTimer);
+                    this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
+                }
+            },
+        };
+
+        #enterContentZoneInternal = (forced) => {
+            if (!isBrowser) {
+                this.#log(logLevelEnums.WARNING, "content.enterContentZone, window object is not available. Not entering content zone.");
+                return;
+            };
+            if (this.#inContentZone && !forced) {
+                this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Already in content zone");
+                return;
+            }
+            this.#log(logLevelEnums.INFO, "content.enterContentZone, Entering content zone");
+            this.#inContentZone = true;
+            if (!forced) {
+                this.#sendContentRequest();
+            }
+            this.#contentZoneTimer = setInterval(() => {
+                this.#sendContentRequest();
+            }, this.#contentTimeInterval);
+        };
+
+        #prepareContentRequest = () => {
+            this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
+            const resInfo = this.#getResolution();
+            var resToSend = {l : {}, p: {}};
+            resToSend.l.w = resInfo.width;
+            resToSend.l.h = resInfo.height;
+            resToSend.p.w = resInfo.height;
+            resToSend.p.h = resInfo.width;
+
+            const local = navigator.language || navigator.browserLanguage || navigator.systemLanguage || navigator.userLanguage;
+            const language = local.split('-')[0];
+            var params = {
+                method: "queue",
+                la: language,
+                resolution: JSON.stringify(resToSend),
+                cly_ws: 1,
+                cly_origin: window.location.origin,
+            };
+
+            this.#prepareRequest(params);
+            return params;
+        };
+
+        #sendContentRequest = () => {
+            this.#log(logLevelEnums.DEBUG, "sendContentRequest, sending content request");
+            var params = this.#prepareContentRequest();
+            this.#makeNetworkRequest("sendContentRequest,", this.url + this.#contentEndPoint, params, (e,param,resp) => {
+                if (e) {
+                    return;
+                }
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, received content: [" + resp + "]");
+                this.#displayContent(resp);
+                clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
+                window.addEventListener('message', (event) => {
+                    this.#interpretContentMessage(event);   
+                });
+            }, true);
+        };
+
+        #displayContent = (content) => {
+            if (!content) {
+                this.#log(logLevelEnums.DEBUG, "displayContent, no content to display");
+                return;
+            }
+            this.#log(logLevelEnums.DEBUG, "displayContent, displaying content");
+            var response = JSON.parse(content);
+
+            var iframe = document.createElement("iframe");
+            iframe.id = this.#contentIframeID;
+            iframe.src = response.html;
+            iframe.style.position = "absolute";
+            iframe.style.left = response.geo.l.x + "px";
+            iframe.style.top = response.geo.l.y + "px";
+            iframe.style.width = response.geo.l.w + "px";
+            iframe.style.height = response.geo.l.h + "px";
+            iframe.style.border = "none";
+            iframe.style.zIndex = "999999";
+            document.body.appendChild(iframe);
+        };
+
+        #interpretContentMessage = (messageEvent) => {
+            this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
+            if (messageEvent.origin !== this.url) {
+                this.#log(logLevelEnums.ERROR, "sendContentRequest, Received message from invalid origin");
+                return;
+            }
+            const {close, link, event} = messageEvent.data;
+
+            if (event) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received event: [" + event + "]");
+                if (close === 1) {
+                    this.#log(logLevelEnums.DEBUG, "sendContentRequest, Closing content frame for event: [" + event + "]");
+                    this.#closeContentFrame();
+                }
+                if (!Array.isArray(event)) {
+                    if (typeof event === "object") {
+                        event = [event];
+                    } else {
+                        this.#log(logLevelEnums.ERROR, "sendContentRequest, Invalid event type: [" + typeof event + "]");
+                        return;
+                    }
+                };
+                // event is expected to be an array of events
+                for (var i = 0; i < event.length; i++) {
+                    this.#add_cly_events(event[i]);
+                }
+            }
+
+            if (link) {
+                if (close === 1) {
+                    this.#log(logLevelEnums.DEBUG, "sendContentRequest, Closing content frame for link");
+                    this.#closeContentFrame();
+                }
+                window.open(link, "_blank");
+                this.#log(logLevelEnums.DEBUG, `sendContentRequest, Opened link in new tab: [${link}]`);
+            }
+
+            if (close === 1) {
+                this.#closeContentFrame();
+            }
+        };
+        
+        #closeContentFrame = () => {
+            const iframe = document.getElementById(this.#contentIframeID);
+            if (iframe) {
+                iframe.remove();
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, removed iframe");
+                if (this.#inContentZone) { // if user did not exit content zone, re-enter
+                    this.#enterContentZoneInternal(true);
+                }
+            }
+        };
+        
         /**
          * Check and send the events to request queue if there are any, empty the event queue
          */
-        function sendEventsForced() {
-            if (eventQueue.length > 0) {
-                log(logLevelEnums.DEBUG, "Flushing events");
-                toRequestQueue({ events: JSON.stringify(eventQueue) });
-                eventQueue = [];
-                setValueInStorage("cly_event", eventQueue);
+        #sendEventsForced = () => {
+            if (this.#eventQueue.length > 0) {
+                this.#log(logLevelEnums.DEBUG, "Flushing events");
+                this.#toRequestQueue({ events: JSON.stringify(this.#eventQueue) });
+                this.#eventQueue = [];
+                this.#setValueInStorage("cly_event", this.#eventQueue);
             }
         }
 
@@ -3579,15 +3807,15 @@ constructor(ob) {
          *  @param {Object} currentWidget - widget object
          *  @param {Boolean} hasSticker - if widget has sticker
          */
-        function processWidget(currentWidget, hasSticker) {
+        #processWidget = (currentWidget, hasSticker) => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "processWidget, window object is not available. Not processing widget.");
+                this.#log(logLevelEnums.WARNING, "processWidget, window object is not available. Not processing widget.");
                 return;
             }
             // prevent widget create process if widget exist with same id
             var isDuplicate = !!document.getElementById("countly-feedback-sticker-" + currentWidget._id);
             if (isDuplicate) {
-                log(logLevelEnums.ERROR, "Widget with same ID exists");
+                this.#log(logLevelEnums.ERROR, "Widget with same ID exists");
                 return;
             }
             try {
@@ -3605,12 +3833,12 @@ constructor(ob) {
                 var iframe = document.createElement("iframe");
                 iframe.name = "countly-feedback-iframe";
                 iframe.id = "countly-feedback-iframe";
-                iframe.src = self.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + self.app_key + "&device_id=" + self.device_id + "&sdk_version=" + sdkVersion;
+                iframe.src = this.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + this.app_key + "&device_id=" + this.device_id + "&sdk_version=" + this.#sdkVersion;
                 // inject them to dom
                 document.body.appendChild(wrapper);
                 wrapper.appendChild(closeIcon);
                 wrapper.appendChild(iframe);
-                add_event_listener(document.getElementById("countly-feedback-close-icon-" + currentWidget._id), "click", function () {
+                add_event_listener(document.getElementById("countly-feedback-close-icon-" + currentWidget._id), "click", () => {
                     document.getElementById("countly-iframe-wrapper-" + currentWidget._id).style.display = "none";
                     document.getElementById("cfbg").style.display = "none";
                 });
@@ -3647,7 +3875,7 @@ constructor(ob) {
                     if (smileySvg) {
                         smileySvg.style.fill = ((currentWidget.trigger_font_color.length < 7) ? "#" + currentWidget.trigger_font_color : currentWidget.trigger_font_color);
                     }
-                    add_event_listener(document.getElementById("countly-feedback-sticker-" + currentWidget._id), "click", function () {
+                    add_event_listener(document.getElementById("countly-feedback-sticker-" + currentWidget._id), "click", () => {
                         document.getElementById("countly-iframe-wrapper-" + currentWidget._id).style.display = "block";
                         document.getElementById("cfbg").style.display = "block";
                     });
@@ -3658,23 +3886,23 @@ constructor(ob) {
                 }
             }
             catch (e) {
-                log(logLevelEnums.ERROR, "Somethings went wrong while element injecting process: " + e);
+                this.#log(logLevelEnums.ERROR, "Somethings went wrong while element injecting process: " + e);
             }
         }
 
         /**
          *  Notify all waiting callbacks that script was loaded and instance created
          */
-        function notifyLoaders() {
+        #notifyLoaders = () => {
             // notify load waiters
             var i;
-            if (typeof self.onload !== "undefined" && self.onload.length > 0) {
-                for (i = 0; i < self.onload.length; i++) {
-                    if (typeof self.onload[i] === "function") {
-                        self.onload[i](self);
+            if (typeof this.onload !== "undefined" && this.onload.length > 0) {
+                for (i = 0; i < this.onload.length; i++) {
+                    if (typeof this.onload[i] === "function") {
+                        this.onload[i](this);
                     }
                 }
-                self.onload = [];
+                this.onload = [];
             }
         }
 
@@ -3682,21 +3910,24 @@ constructor(ob) {
          *  Report duration of how long user was on this view
          *  @memberof Countly._internals
          */
-        function reportViewDuration() {
-            if (lastView) {
-                var segments = {
-                    name: lastView
-                };
+        #reportViewDuration = () => {
+            if (!this.#lastView) {
+                this.#log(logLevelEnums.INFO, "reportViewDuration, No last view, will not report view duration");
+                return;
+            }
+            this.#log(logLevelEnums.INFO, "reportViewDuration, Reporting view duration for: [" + this.#lastView + "]");
+            var segments = {
+                name: this.#lastView
+            };
 
-                // track pageview
-                if (self.check_consent(featureEnums.VIEWS)) {
-                    add_cly_events({
-                        key: internalEventKeyEnums.VIEW,
-                        dur: (trackTime) ? getTimestamp() - lastViewTime : lastViewStoredDuration,
-                        segmentation: segments
-                    }, currentViewId);
-                    lastView = null;
-                }
+            // track pageview
+            if (this.check_consent(featureEnums.VIEWS)) {
+                this.#add_cly_events({
+                    key: internalEventKeyEnums.VIEW,
+                    dur: (this.#trackTime) ? getTimestamp() - this.#lastViewTime : this.#lastViewStoredDuration,
+                    segmentation: segments
+                }, this.#currentViewId);
+                this.#lastView = null;
             }
         }
 
@@ -3705,38 +3936,43 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {String} view name
          */
-        function getLastView() {
-            return lastView;
+        #getLastView = () => {
+            this.#log(logLevelEnums.INFO, "getLastView, Getting last view: [" + this.#lastView + "]");
+            return this.#lastView;
         }
 
         /**
          *  Extend session's cookie's time
          */
-        function extendSession() {
-            if (useSessionCookie) {
-                // if session expired, we should start a new one
-                var expire = getValueFromStorage("cly_session");
-                if (!expire || parseInt(expire) <= getTimestamp()) {
-                    sessionStarted = false;
-                    self.begin_session(!autoExtend);
-                }
-                setValueInStorage("cly_session", getTimestamp() + (sessionCookieTimeout * 60));
+        #extendSession = () => {
+            if (!this.#useSessionCookie) {
+                this.#log(logLevelEnums.DEBUG, "Will not extend the session as session cookie is disabled");
+                return;
             }
+            this.#log(logLevelEnums.DEBUG, "Extending session");
+
+            // if session expired, we should start a new one
+            var expire = this.#getValueFromStorage("cly_session");
+            if (!expire || parseInt(expire) <= getTimestamp()) {
+                this.#sessionStarted = false;
+                this.begin_session(!this.#autoExtend);
+            }
+            this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
         }
 
         /**
          *  Prepare request params by adding common properties to it
          *  @param {Object} request - request object
          */
-        function prepareRequest(request) {
-            request.app_key = self.app_key;
-            request.device_id = self.device_id;
-            request.sdk_name = sdkName;
-            request.sdk_version = sdkVersion;
-            request.t = deviceIdType;
-            request.av = self.app_version;
+        #prepareRequest = (request) => {
+            request.app_key = this.app_key;
+            request.device_id = this.device_id;
+            request.sdk_name = this.#sdkName;
+            request.sdk_version = this.#sdkVersion;
+            request.t = this.#deviceIdType;
+            request.av = this.app_version;
 
-            var ua = getUA();
+            var ua = this.#getUA();
             if (!request.metrics) { // if metrics not provided pass useragent with this event
                 request.metrics = JSON.stringify({ _ua: ua });
             }
@@ -3748,17 +3984,17 @@ constructor(ob) {
                 }
             }
 
-            if (self.check_consent(featureEnums.LOCATION)) {
-                if (self.country_code) {
-                    request.country_code = self.country_code;
+            if (this.check_consent(featureEnums.LOCATION)) {
+                if (this.country_code) {
+                    request.country_code = this.country_code;
                 }
 
-                if (self.city) {
-                    request.city = self.city;
+                if (this.city) {
+                    request.city = this.city;
                 }
 
-                if (self.ip_address !== null) {
-                    request.ip_address = self.ip_address;
+                if (this.ip_address !== null) {
+                    request.ip_address = this.ip_address;
                 }
             }
             else {
@@ -3777,25 +4013,25 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @param {Object} request - object with request parameters
          */
-        function toRequestQueue(request) {
-            if (self.ignore_visitor) {
-                log(logLevelEnums.WARNING, "User is opt_out will ignore the request: " + request);
+        #toRequestQueue = (request) => {
+            if (this.ignore_visitor) {
+                this.#log(logLevelEnums.WARNING, "User is opt_out will ignore the request: " + request);
                 return;
             }
 
-            if (!self.app_key || !self.device_id) {
-                log(logLevelEnums.ERROR, "app_key or device_id is missing ", self.app_key, self.device_id);
+            if (!this.app_key || !this.device_id) {
+                this.#log(logLevelEnums.ERROR, "app_key or device_id is missing ", this.app_key, this.device_id);
                 return;
             }
 
-            prepareRequest(request);
+            this.#prepareRequest(request);
 
-            if (requestQueue.length > queueSize) {
-                requestQueue.shift();
+            if (this.#requestQueue.length > this.#queueSize) {
+                this.#requestQueue.shift();
             }
 
-            requestQueue.push(request);
-            setValueInStorage("cly_queue", requestQueue, true);
+            this.#requestQueue.push(request);
+            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
         }
 
         /**
@@ -3803,85 +4039,95 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {void} void
          */
-        function heartBeat() {
-            notifyLoaders();
+        #heartBeat = () => {
+            this.#notifyLoaders();
 
             // ignore bots
-            if (self.ignore_visitor) {
-                hasPulse = false;
-                log(logLevelEnums.WARNING, "User opt_out, no heartbeat");
+            if (this.ignore_visitor) {
+                this.#hasPulse = false;
+                this.#log(logLevelEnums.WARNING, "User opt_out, no heartbeat");
                 return;
             }
 
-            hasPulse = true;
+            this.#hasPulse = true;
             // process queue
-            if (global && typeof Countly.q !== "undefined" && Countly.q.length > 0) {
-                processAsyncQueue();
+            if (this.#global && typeof Countly.q !== "undefined" && Countly.q.length > 0) {
+                this.#processAsyncQueue();
             }
 
             // extend session if needed
-            if (sessionStarted && autoExtend && trackTime) {
+            if (this.#sessionStarted && this.#autoExtend && this.#trackTime) {
                 var last = getTimestamp();
-                if (last - lastBeat > sessionUpdate) {
-                    self.session_duration(last - lastBeat);
-                    lastBeat = last;
+                if (last - this.#lastBeat > this.#sessionUpdate) {
+                    this.session_duration(last - this.#lastBeat);
+                    this.#lastBeat = last;
                     // save health check logging counters if there are any
-                    if (self.hcErrorCount > 0) {
-                        setValueInStorage(healthCheckCounterEnum.errorCount, self.hcErrorCount);
+                    if (this.hcErrorCount > 0) {
+                        this.#setValueInStorage(healthCheckCounterEnum.errorCount, this.hcErrorCount);
                     }
-                    if (self.hcWarningCount > 0) {
-                        setValueInStorage(healthCheckCounterEnum.warningCount, self.hcWarningCount);
+                    if (this.hcWarningCount > 0) {
+                        this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
                     }
                 }
             }
 
             // process event queue
-            if (eventQueue.length > 0 && !self.test_mode_eq) {
-                if (eventQueue.length <= maxEventBatch) {
-                    toRequestQueue({ events: JSON.stringify(eventQueue) });
-                    eventQueue = [];
+            if (this.#eventQueue.length > 0 && !this.test_mode_eq) {
+                if (this.#eventQueue.length <= this.#maxEventBatch) {
+                    this.#toRequestQueue({ events: JSON.stringify(this.#eventQueue) });
+                    this.#eventQueue = [];
                 }
                 else {
-                    var events = eventQueue.splice(0, maxEventBatch);
-                    toRequestQueue({ events: JSON.stringify(events) });
+                    var events = this.#eventQueue.splice(0, this.#maxEventBatch);
+                    this.#toRequestQueue({ events: JSON.stringify(events) });
                 }
-                setValueInStorage("cly_event", eventQueue);
+                this.#setValueInStorage("cly_event", this.#eventQueue);
             }
 
             // process request queue with event queue
-            if (!offlineMode && requestQueue.length > 0 && readyToProcess && getTimestamp() > failTimeout) {
-                readyToProcess = false;
-                var params = requestQueue[0];
-                params.rr = requestQueue.length; // added at 23.2.3. It would give the current length of the queue. That includes the current request.
-                log(logLevelEnums.DEBUG, "Processing request", params);
-                setValueInStorage("cly_queue", requestQueue, true);
-                if (!self.test_mode) {
-                    makeNetworkRequest("send_request_queue", self.url + apiPath, params, function (err, parameters) {
+            if (!this.#offlineMode && this.#requestQueue.length > 0 && this.#readyToProcess && getTimestamp() > this.#failTimeout) {
+                this.#readyToProcess = false;
+                var params = this.#requestQueue[0];
+                params.rr = this.#requestQueue.length; // added at 23.2.3. It would give the current length of the queue. That includes the current request.
+                this.#log(logLevelEnums.DEBUG, "Processing request", params);
+                this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+                if (!this.test_mode) {
+                    this.#makeNetworkRequest("send_request_queue", this.url + this.#apiPath, params, (err, parameters) => {
                         if (err) {
                             // error has been logged by the request function
-                            failTimeout = getTimestamp() + failTimeoutAmount;
+                            this.#failTimeout = getTimestamp() + this.#failTimeoutAmount;
                         }
                         else {
                             // remove first item from queue
-                            requestQueue.shift();
+                            this.#requestQueue.shift();
                         }
-                        setValueInStorage("cly_queue", requestQueue, true);
-                        readyToProcess = true;
+                        this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+                        this.#readyToProcess = true;
                         // expected response is only JSON object
                     }, false);
                 }
             }
 
-            setTimeout(heartBeat, beatInterval);
+            setTimeout(() => {
+            this.#heartBeat(); 
+            }, this.#beatInterval);
         }
+
+        /**
+         * Returns generated requests for the instance for testing purposes
+         * @returns {Array} - Returns generated requests
+         */
+        #getGeneratedRequests = () => {
+            return this.#generatedRequests;
+        };
 
         /**
          * Process queued calls
          * @memberof Countly._internals
          */
-        function processAsyncQueue() {
+        #processAsyncQueue = () => {
             if (typeof Countly === "undefined" || typeof Countly.i === "undefined") {
-                log(logLevelEnums.DEBUG, "Countly is not finished initialization yet, will process the queue after initialization is done");
+                this.#log(logLevelEnums.DEBUG, "Countly is not finished initialization yet, will process the queue after initialization is done");
                 return;
             }
 
@@ -3889,12 +4135,12 @@ constructor(ob) {
             Countly.q = [];
             for (let i = 0; i < q.length; i++) {
                 let req = q[i];
-                log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
+                this.#log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
                 if (typeof req === "function") {
                     req();
                 }
                 else if (Array.isArray(req) && req.length > 0) {
-                    var inst = self;
+                    var inst = this;
                     var arg = 0;
                     // check if it is meant for other tracker
                     try {
@@ -3904,7 +4150,7 @@ constructor(ob) {
                         }
                     } catch (error) {
                         // possibly first init and no other instance
-                        log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
+                        this.#log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
                         Countly.q.push(req); // return it back to queue and continue to the next one
                         continue;
                     }
@@ -3929,10 +4175,10 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {String} device id
          */
-        function getStoredIdOrGenerateId() {
-            var storedDeviceId = getValueFromStorage("cly_id");
+        #getStoredIdOrGenerateId = () => {
+            var storedDeviceId = this.#getValueFromStorage("cly_id");
             if (storedDeviceId) {
-                deviceIdType = getValueFromStorage("cly_id_type");
+                this.#deviceIdType = this.#getValueFromStorage("cly_id_type");
                 return storedDeviceId;
             }
             return generateUUID();
@@ -3944,7 +4190,7 @@ constructor(ob) {
          * @param {string} providedId -  Id to check
          *  @returns {Boolean} true if it is in UUID format
          */
-        function isUUID(providedId) {
+        #isUUID = (providedId) => {
             return /[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-4[0-9a-fA-F]{3}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}/.test(providedId);
         }
 
@@ -3953,8 +4199,8 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {string} returns userAgent string
          */
-        function getUA() {
-            return self.metrics._ua || currentUserAgentString();
+        #getUA = () => {
+            return this.metrics._ua || currentUserAgentString();
         }
 
         /**
@@ -3962,35 +4208,18 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {Object} Metrics object
          */
-        function getMetrics() {
-            var metrics = JSON.parse(JSON.stringify(self.metrics || {}));
+        #getMetrics = () => {
+            var metrics = JSON.parse(JSON.stringify(this.metrics || {}));
 
             // getting app version
-            metrics._app_version = metrics._app_version || self.app_version;
+            metrics._app_version = metrics._app_version || this.app_version;
             metrics._ua = metrics._ua || currentUserAgentString();
 
             // getting resolution
-            if (isBrowser && screen.width) {
-                var width = (screen.width) ? parseInt(screen.width) : 0;
-                var height = (screen.height) ? parseInt(screen.height) : 0;
-                if (width !== 0 && height !== 0) {
-                    var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
-                    if (iOS && window.devicePixelRatio) {
-                        // ios provides dips, need to multiply
-                        width = Math.round(width * window.devicePixelRatio);
-                        height = Math.round(height * window.devicePixelRatio);
-                    }
-                    else {
-                        if (Math.abs(window.orientation) === 90) {
-                            // we have landscape orientation
-                            // switch values for all except ios
-                            var temp = width;
-                            width = height;
-                            height = temp;
-                        }
-                    }
-                    metrics._resolution = metrics._resolution || "" + width + "x" + height;
-                }
+            var resolution = this.#getResolution();
+            if (resolution) {
+                var formattedRes = "" + resolution.width + "x" + resolution.height;
+                metrics._resolution = metrics._resolution || formattedRes;
             }
 
             // getting density ratio
@@ -4004,13 +4233,55 @@ constructor(ob) {
                 metrics._locale = metrics._locale || locale;
             }
 
-            if (isReferrerUsable()) {
+            if (this.#isReferrerUsable()) {
                 metrics._store = metrics._store || document.referrer;
             }
 
-            log(logLevelEnums.DEBUG, "Got metrics", metrics);
+            this.#log(logLevelEnums.DEBUG, "Got metrics", metrics);
             return metrics;
         }
+
+        /**
+         * returns the resolution of the device
+         * @param {bool} getAvailable - get available resolution
+         * @returns {object} resolution object: {width: 1920, height: 1080, orientation: 0}
+         */
+        #getResolution = (getAvailable) => {
+            this.#log(logLevelEnums.DEBUG, "Getting the resolution of the device");
+            if (!isBrowser || !screen) {
+                this.#log(logLevelEnums.DEBUG, "No screen available");
+                return null;
+            };
+
+            var width = (screen.width) ? parseInt(screen.width) : 0;
+            var height = (screen.height) ? parseInt(screen.height) : 0;
+
+            if (getAvailable) {
+                width = (screen.availWidth) ? parseInt(screen.availWidth) : width;
+                height = (screen.availHeight) ? parseInt(screen.availHeight) : height;
+            }
+
+            if (width === 0 || height === 0) { 
+                this.#log(logLevelEnums.DEBUG, "Screen width or height is non existent");
+                return null;
+            }
+            var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
+            if (iOS && window.devicePixelRatio) {
+                // ios provides dips, need to multiply
+                width = Math.round(width * window.devicePixelRatio);
+                height = Math.round(height * window.devicePixelRatio);
+            }
+            else {
+                if (Math.abs(screen.orientation.angle) === 90) {
+                    // we have landscape orientation
+                    // switch values for all except ios
+                    var temp = width;
+                    width = height;
+                    height = temp;
+                }
+            }
+            return { width: width, height: height , orientation: screen.orientation.angle };
+        };
 
         /**
          *  @memberof Countly._internals
@@ -4021,7 +4292,7 @@ constructor(ob) {
          * @param {string} customReferrer - custom referrer for testing
          * @returns {boolean} true if document.referrer is not empty string, undefined, current host or in the ignore list.
          */
-        function isReferrerUsable(customReferrer) {
+        #isReferrerUsable = (customReferrer) => {
             if (!isBrowser) {
                 return false;
             }
@@ -4030,33 +4301,33 @@ constructor(ob) {
 
             // do not report referrer if it is empty string or undefined
             if (typeof referrer === "undefined" || referrer.length === 0) {
-                log(logLevelEnums.DEBUG, "Invalid referrer:[" + referrer + "], ignoring.");
+                this.#log(logLevelEnums.DEBUG, "Invalid referrer:[" + referrer + "], ignoring.");
             }
             else {
                 // dissect the referrer (check urlParseRE's comments for more info on this process)
                 var matches = urlParseRE.exec(referrer); // this can return null
                 if (!matches) {
-                    log(logLevelEnums.DEBUG, "Referrer is corrupt:[" + referrer + "], ignoring.");
+                    this.#log(logLevelEnums.DEBUG, "Referrer is corrupt:[" + referrer + "], ignoring.");
                 }
                 else if (!matches[11]) {
-                    log(logLevelEnums.DEBUG, "No path found in referrer:[" + referrer + "], ignoring.");
+                    this.#log(logLevelEnums.DEBUG, "No path found in referrer:[" + referrer + "], ignoring.");
                 }
                 else if (matches[11] === window.location.hostname) {
-                    log(logLevelEnums.DEBUG, "Referrer is current host:[" + referrer + "], ignoring.");
+                    this.#log(logLevelEnums.DEBUG, "Referrer is current host:[" + referrer + "], ignoring.");
                 }
                 else {
-                    if (ignoreReferrers && ignoreReferrers.length) {
+                    if (this.#ignoreReferrers && this.#ignoreReferrers.length) {
                         isReferrerLegit = true;
-                        for (var k = 0; k < ignoreReferrers.length; k++) {
-                            if (referrer.indexOf(ignoreReferrers[k]) >= 0) {
-                                log(logLevelEnums.DEBUG, "Referrer in ignore list:[" + referrer + "], ignoring.");
+                        for (var k = 0; k < this.#ignoreReferrers.length; k++) {
+                            if (referrer.indexOf(this.#ignoreReferrers[k]) >= 0) {
+                                this.#log(logLevelEnums.DEBUG, "Referrer in ignore list:[" + referrer + "], ignoring.");
                                 isReferrerLegit = false;
                                 break;
                             }
                         }
                     }
                     else {
-                        log(logLevelEnums.DEBUG, "Valid referrer:[" + referrer + "]");
+                        this.#log(logLevelEnums.DEBUG, "Valid referrer:[" + referrer + "]");
                         isReferrerLegit = true;
                     }
                 }
@@ -4071,15 +4342,15 @@ constructor(ob) {
          * @param {string} message - any string message
          * @memberof Countly._internals
          */
-        function log(level, message) {
-            if (self.debug && typeof console !== "undefined") {
+        #log = (level, message, third) => {
+            if (this.debug && typeof console !== "undefined") {
                 // parse the arguments into a string if it is an object
-                if (arguments[2] && typeof arguments[2] === "object") {
-                    arguments[2] = JSON.stringify(arguments[2]);
+                if (third && typeof third === "object") {
+                    third = JSON.stringify(third);
                 }
                 // append app_key to the start of the message if it is not the first instance (for multi instancing)
-                if (!global) {
-                    message = "[" + self.app_key + "] " + message;
+                if (!this.#global) {
+                    message = "[" + this.app_key + "] " + message;
                 }
                 // if the provided level is not a proper log level re-assign it as [DEBUG]
                 if (!level) {
@@ -4087,8 +4358,8 @@ constructor(ob) {
                 }
                 // append level, message and args
                 var extraArguments = "";
-                for (var i = 2; i < arguments.length; i++) {
-                    extraArguments += arguments[i];
+                if (third) {
+                    extraArguments = " " + third;
                 }
                 // eslint-disable-next-line no-shadow
                 var log = level + "[Countly] " + message + extraArguments;
@@ -4096,12 +4367,12 @@ constructor(ob) {
                 if (level === logLevelEnums.ERROR) {
                     // eslint-disable-next-line no-console
                     console.error(log);
-                    HealthCheck.incrementErrorCount();
+                    this.#HealthCheck.incrementErrorCount();
                 }
                 else if (level === logLevelEnums.WARNING) {
                     // eslint-disable-next-line no-console
                     console.warn(log);
-                    HealthCheck.incrementWarningCount();
+                    this.#HealthCheck.incrementWarningCount();
                 }
                 else if (level === logLevelEnums.INFO) {
                     // eslint-disable-next-line no-console
@@ -4128,12 +4399,13 @@ constructor(ob) {
          *  @param {Function} callback - callback when request finished or failed
          *  @param {Boolean} useBroadResponseValidator - if true that means the expected response is either a JSON object or a JSON array, if false only JSON 
          */
-        function makeNetworkRequest(functionName, url, params, callback, useBroadResponseValidator) {
+        #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator) => {
+            this.#generatedRequests.push({ functionName: functionName, url: url, params: params});
             if (!isBrowser) {
-                sendFetchRequest(functionName, url, params, callback, useBroadResponseValidator);
+                this.#sendFetchRequest(functionName, url, params, callback, useBroadResponseValidator);
             }
             else {
-                sendXmlHttpRequest(functionName, url, params, callback, useBroadResponseValidator);
+                this.#sendXmlHttpRequest(functionName, url, params, callback, useBroadResponseValidator);
             }
         }
 
@@ -4146,15 +4418,15 @@ constructor(ob) {
          *  @param {Function} callback - callback when request finished or failed
          *  @param {Boolean} useBroadResponseValidator - if true that means the expected response is either a JSON object or a JSON array, if false only JSON 
          */
-        function sendXmlHttpRequest(functionName, url, params, callback, useBroadResponseValidator) {
+        #sendXmlHttpRequest = (functionName, url, params, callback, useBroadResponseValidator) => {
             useBroadResponseValidator = useBroadResponseValidator || false;
             try {
-                log(logLevelEnums.DEBUG, "Sending XML HTTP request");
+                this.#log(logLevelEnums.DEBUG, "Sending XML HTTP request");
                 var xhr = new XMLHttpRequest();
                 params = params || {};
-                prepareParams(params, self.salt).then(saltedData => {
+                prepareParams(params, this.salt).then(saltedData => {
                     var method = "POST";
-                    if (self.force_post || saltedData.length >= 2000) {
+                    if (this.force_post || saltedData.length >= 2000) {
                         method = "POST";
                     }
                     if (method === "GET") {
@@ -4164,35 +4436,35 @@ constructor(ob) {
                         xhr.open("POST", url, true);
                         xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
                     }
-                    for (var header in self.headers) {
-                        xhr.setRequestHeader(header, self.headers[header]);
+                    for (var header in this.headers) {
+                        xhr.setRequestHeader(header, this.headers[header]);
                     }
                     // fallback on error
-                    xhr.onreadystatechange = function () {
-                        if (this.readyState === 4) {
-                            log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + this.status + "] and response: [" + this.responseText + "]");
+                    xhr.onreadystatechange = () => {
+                        if (xhr.readyState === 4) {
+                            this.#log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + xhr.status + "] and response: [" + xhr.responseText + "]");
                             // response validation function will be selected to also accept JSON arrays if useBroadResponseValidator is true
                             var isResponseValidated;
                             if (useBroadResponseValidator) {
                                 // JSON array/object both can pass
-                                isResponseValidated = isResponseValidBroad(this.status, this.responseText);
+                                isResponseValidated = this.#isResponseValidBroad(xhr.status, xhr.responseText);
                             }
                             else {
                                 // only JSON object can pass
-                                isResponseValidated = isResponseValid(this.status, this.responseText);
+                                isResponseValidated = this.#isResponseValid(xhr.status, xhr.responseText);
                             }
                             if (isResponseValidated) {
                                 if (typeof callback === "function") {
-                                    callback(false, params, this.responseText);
+                                    callback(false, params, xhr.responseText);
                                 }
                             }
                             else {
-                                log(logLevelEnums.ERROR, functionName + " Invalid response from server");
+                                this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
                                 if (functionName === "send_request_queue") {
-                                    HealthCheck.saveRequestCounters(this.status, this.responseText);
+                                    this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
                                 }
                                 if (typeof callback === "function") {
-                                    callback(true, params, this.status, this.responseText);
+                                    callback(true, params, xhr.status, xhr.responseText);
                                 }
                             }
                         }
@@ -4207,7 +4479,7 @@ constructor(ob) {
             }
             catch (e) {
                 // fallback
-                log(logLevelEnums.ERROR, functionName + " Something went wrong while making an XML HTTP request: " + e);
+                this.#log(logLevelEnums.ERROR, functionName + " Something went wrong while making an XML HTTP request: " + e);
                 if (typeof callback === "function") {
                     callback(true, params);
                 }
@@ -4223,12 +4495,12 @@ constructor(ob) {
          *  @param {Function} callback - callback when request finished or failed
          *  @param {Boolean} useBroadResponseValidator - if true that means the expected response is either a JSON object or a JSON array, if false only JSON 
          */
-        function sendFetchRequest(functionName, url, params, callback, useBroadResponseValidator) {
+        #sendFetchRequest = (functionName, url, params, callback, useBroadResponseValidator) => {
             useBroadResponseValidator = useBroadResponseValidator || false;
             var response;
 
             try {
-                log(logLevelEnums.DEBUG, "Sending Fetch request");
+                this.#log(logLevelEnums.DEBUG, "Sending Fetch request");
 
                 // Prepare request options
                 var method = "POST";
@@ -4236,8 +4508,8 @@ constructor(ob) {
                 var body = null;
 
                 params = params || {};
-                prepareParams(params, self.salt).then(saltedData => {
-                    if (self.force_post || saltedData.length >= 2000) {
+                prepareParams(params, this.salt).then(saltedData => {
+                    if (this.force_post || saltedData.length >= 2000) {
                         method = "POST";
                         body = saltedData;
                     }
@@ -4246,8 +4518,8 @@ constructor(ob) {
                     }
 
                     // Add custom headers
-                    for (var header in self.headers) {
-                        headers[header] = self.headers[header];
+                    for (var header in this.headers) {
+                        headers[header] = this.headers[header];
                     }
 
                     // Make the fetch request
@@ -4255,17 +4527,17 @@ constructor(ob) {
                         method: method,
                         headers: headers,
                         body: body,
-                    }).then(function (res) {
+                    }).then((res) => {
                         response = res;
                         return response.text();
-                    }).then(function (data) {
-                        log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
+                    }).then((data) => {
+                        this.#log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
                         var isResponseValidated;
                         if (useBroadResponseValidator) {
-                            isResponseValidated = isResponseValidBroad(response.status, data);
+                            isResponseValidated = this.#isResponseValidBroad(response.status, data);
                         }
                         else {
-                            isResponseValidated = isResponseValid(response.status, data);
+                            isResponseValidated = this.#isResponseValid(response.status, data);
                         }
 
                         if (isResponseValidated) {
@@ -4274,16 +4546,16 @@ constructor(ob) {
                             }
                         }
                         else {
-                            log(logLevelEnums.ERROR, functionName + " Invalid response from server");
+                            this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
                             if (functionName === "send_request_queue") {
-                                HealthCheck.saveRequestCounters(response.status, data);
+                                this.#HealthCheck.saveRequestCounters(response.status, data);
                             }
                             if (typeof callback === "function") {
                                 callback(true, params, response.status, data);
                             }
                         }
-                    }).catch(function (error) {
-                        log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
+                    }).catch((error) => {
+                        this.#log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
                         if (typeof callback === "function") {
                             callback(true, params);
                         }
@@ -4292,7 +4564,7 @@ constructor(ob) {
             }
             catch (e) {
                 // fallback
-                log(logLevelEnums.ERROR, functionName + " Something went wrong with the Fetch request attempt: " + e);
+                this.#log(logLevelEnums.ERROR, functionName + " Something went wrong with the Fetch request attempt: " + e);
                 if (typeof callback === "function") {
                     callback(true, params);
                 }
@@ -4308,10 +4580,10 @@ constructor(ob) {
          * @param {String} str - response from server, ideally must be: {"result":"Success"} or should contain at least result field
          * @returns {Boolean} - returns true if response passes the tests 
          */
-        function isResponseValid(statusCode, str) {
+        #isResponseValid = (statusCode, str) => {
             // status code and response format check
             if (!(statusCode >= 200 && statusCode < 300)) {
-                log(logLevelEnums.ERROR, "Http response status code:[" + statusCode + "] is not within the expected range");
+                this.#log(logLevelEnums.ERROR, "Http response status code:[" + statusCode + "] is not within the expected range");
                 return false;
             }
 
@@ -4321,14 +4593,14 @@ constructor(ob) {
 
                 // check if parsed response is a JSON object, if not the response is not valid
                 if (Object.prototype.toString.call(parsedResponse) !== "[object Object]") {
-                    log(logLevelEnums.ERROR, "Http response is not JSON Object");
+                    this.#log(logLevelEnums.ERROR, "Http response is not JSON Object");
                     return false;
                 }
 
                 return !!(parsedResponse.result);
             }
             catch (e) {
-                log(logLevelEnums.ERROR, "Http response is not JSON: " + e);
+                this.#log(logLevelEnums.ERROR, "Http response is not JSON: " + e);
                 return false;
             }
         }
@@ -4342,10 +4614,10 @@ constructor(ob) {
          * @param {String} str - response from server, ideally must be: {"result":"Success"} or should contain at least result field
          * @returns {Boolean} - returns true if response passes the tests 
          */
-        function isResponseValidBroad(statusCode, str) {
+        #isResponseValidBroad = (statusCode, str) => {
             // status code and response format check
             if (!(statusCode >= 200 && statusCode < 300)) {
-                log(logLevelEnums.ERROR, "Http response status code:[" + statusCode + "] is not within the expected range");
+                this.#log(logLevelEnums.ERROR, "Http response status code:[" + statusCode + "] is not within the expected range");
                 return false;
             }
 
@@ -4354,7 +4626,7 @@ constructor(ob) {
                 var parsedResponse = JSON.parse(str);
                 // check if parsed response is a JSON object or JSON array, if not it is not valid 
                 if ((Object.prototype.toString.call(parsedResponse) !== "[object Object]") && (!Array.isArray(parsedResponse))) {
-                    log(logLevelEnums.ERROR, "Http response is not JSON Object nor JSON Array");
+                    this.#log(logLevelEnums.ERROR, "Http response is not JSON Object nor JSON Array");
                     return false;
                 }
 
@@ -4362,7 +4634,7 @@ constructor(ob) {
                 return true;
             }
             catch (e) {
-                log(logLevelEnums.ERROR, "Http response is not JSON: " + e);
+                this.#log(logLevelEnums.ERROR, "Http response is not JSON: " + e);
                 return false;
             }
         }
@@ -4372,44 +4644,44 @@ constructor(ob) {
          *  @memberof Countly._internals
          * 
          */
-        function processScroll() {
+        #processScroll = () => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "processScroll, window object is not available. Not processing scroll.");
+                this.#log(logLevelEnums.WARNING, "processScroll, window object is not available. Not processing scroll.");
                 return;
             }
-            scrollRegistryTopPosition = Math.max(scrollRegistryTopPosition, window.scrollY, document.body.scrollTop, document.documentElement.scrollTop);
+            this.#scrollRegistryTopPosition = Math.max(this.#scrollRegistryTopPosition, window.scrollY, document.body.scrollTop, document.documentElement.scrollTop);
         }
 
         /**
          *  Process scroll data
          *  @memberof Countly._internals
          */
-        function processScrollView() {
+        #processScrollView = () => {
             if (!isBrowser) {
-                log(logLevelEnums.WARNING, "processScrollView, window object is not available. Not processing scroll view.");
+                this.#log(logLevelEnums.WARNING, "processScrollView, window object is not available. Not processing scroll view.");
                 return;
             }
-            if (isScrollRegistryOpen) {
-                isScrollRegistryOpen = false;
+            if (this.#isScrollRegistryOpen) {
+                this.#isScrollRegistryOpen = false;
                 var height = getDocHeight();
                 var width = getDocWidth();
 
                 var viewportHeight = getViewportHeight();
 
-                if (self.check_consent(featureEnums.SCROLLS)) {
+                if (this.check_consent(featureEnums.SCROLLS)) {
                     var segments = {
                         type: "scroll",
-                        y: scrollRegistryTopPosition + viewportHeight,
+                        y: this.#scrollRegistryTopPosition + viewportHeight,
                         width: width,
                         height: height,
-                        view: self.getViewUrl()
+                        view: this.getViewUrl()
                     };
                     // truncate new segment
-                    segments = truncateObject(segments, self.maxKeyLength, self.maxValueSize, self.maxSegmentationValues, "processScrollView", log);
-                    if (self.track_domains) {
+                    segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "processScrollView", this.#log);
+                    if (this.track_domains) {
                         segments.domain = window.location.hostname;
                     }
-                    add_cly_events({
+                    this.#add_cly_events({
                         key: internalEventKeyEnums.ACTION,
                         segmentation: segments
                     });
@@ -4422,8 +4694,8 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {String} token - auth token
          */
-        function getInternalDeviceIdType() {
-            return deviceIdType;
+        #getInternalDeviceIdType = () => {
+            return this.#deviceIdType;
         }
 
         /**
@@ -4431,8 +4703,8 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @param {String} token - auth token
          */
-        function setToken(token) {
-            setValueInStorage("cly_token", token);
+        #setToken = (token) => {
+            this.#setValueInStorage("cly_token", token);
         }
 
         /**
@@ -4440,9 +4712,9 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {String} auth token
          */
-        function getToken() {
-            var token = getValueFromStorage("cly_token");
-            removeValueFromStorage("cly_token");
+        #getToken = () => {
+            var token = this.#getValueFromStorage("cly_token");
+            this.#removeValueFromStorage("cly_token");
             return token;
         }
 
@@ -4451,8 +4723,8 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {Array} event queue
          */
-        function getEventQueue() {
-            return eventQueue;
+        #getEventQueue = () => {
+            return this.#eventQueue;
         }
 
         /**
@@ -4460,8 +4732,8 @@ constructor(ob) {
          *  @memberof Countly._internals
          *  @returns {Array} request queue
          */
-        function getRequestQueue() {
-            return requestQueue;
+        #getRequestQueue = () => {
+            return this.#requestQueue;
         }
 
         /**
@@ -4469,7 +4741,7 @@ constructor(ob) {
         * @param {String} cookieKey - The key, name or identifier for the cookie
         * @returns {Varies} stored value
         */
-        function readCookie(cookieKey) {
+        #readCookie = (cookieKey) => {
             var cookieID = cookieKey + "=";
             // array of all cookies available
             var cookieArray = document.cookie.split(";");
@@ -4495,7 +4767,7 @@ constructor(ob) {
          *  @param {String} cookieVal - Contents to store
          *  @param {Number} exp - Expiration in days
          */
-        function createCookie(cookieKey, cookieVal, exp) {
+        #createCookie = (cookieKey, cookieVal, exp) => {
             var date = new Date();
             date.setTime(date.getTime() + (exp * 24 * 60 * 60 * 1000));
             // TODO: If we offer the developer the ability to manipulate the expiration date in the future, this part must be reworked
@@ -4511,39 +4783,39 @@ constructor(ob) {
          *  @param {Boolean} useRawKey - if true, raw key will be used without any prefix
          *  @returns {Varies} values stored for key
          */
-        function getValueFromStorage(key, useLocalStorage, useRawKey) {
+        #getValueFromStorage = (key, useLocalStorage, useRawKey) => {
             // check if we should use storage at all. If in worker context but no storage is available, return early
-            if (self.storage === "none" || (typeof self.storage !== "object" && !isBrowser)) {
-                log(logLevelEnums.DEBUG, "Storage is disabled. Value with key: [" + key + "] won't be retrieved");
+            if (this.storage === "none" || (typeof this.storage !== "object" && !isBrowser)) {
+                this.#log(logLevelEnums.DEBUG, "Storage is disabled. Value with key: [" + key + "] won't be retrieved");
                 return;
             }
 
             // apply namespace or app_key
             if (!useRawKey) {
-                key = self.app_key + "/" + key;
-                if (self.namespace) {
-                    key = stripTrailingSlash(self.namespace) + "/" + key;
+                key = this.app_key + "/" + key;
+                if (this.namespace) {
+                    key = stripTrailingSlash(this.namespace) + "/" + key;
                 }
             }
 
             var data;
             // use dev provided storage if available
-            if (typeof self.storage === "object" && typeof self.storage.getItem === "function") {
-                data = self.storage.getItem(key);
-                return key.endsWith("cly_id") ? data : self.deserialize(data);
+            if (typeof this.storage === "object" && typeof this.storage.getItem === "function") {
+                data = this.storage.getItem(key);
+                return key.endsWith("cly_id") ? data : this.deserialize(data);
             }
 
             // developer set values takes priority
             if (useLocalStorage === undefined) {
-                useLocalStorage = lsSupport;
+                useLocalStorage = this.#lsSupport;
             }
 
             // Get value
             if (useLocalStorage) { // Native support
                 data = localStorage.getItem(key);
             }
-            else if (self.storage !== "localstorage") { // Use cookie
-                data = readCookie(key);
+            else if (this.storage !== "localstorage") { // Use cookie
+                data = this.#readCookie(key);
             }
 
             // we return early without parsing if we are trying to get the device ID. This way we are keeping it as a string incase it was numerical.
@@ -4551,7 +4823,7 @@ constructor(ob) {
                 return data;
             }
 
-            return self.deserialize(data);
+            return this.deserialize(data);
         }
 
         /**
@@ -4562,40 +4834,40 @@ constructor(ob) {
          *  @param {Boolean} useLocalStorage - if false, will fallback to storing as cookies
          *  @param {Boolean} useRawKey - if true, raw key will be used without any prefix
         */
-        function setValueInStorage(key, value, useLocalStorage, useRawKey) {
+        #setValueInStorage = (key, value, useLocalStorage, useRawKey) => {
             // check if we should use storage options at all
-            if (self.storage === "none" || (typeof self.storage !== "object" && !isBrowser)) {
-                log(logLevelEnums.DEBUG, "Storage is disabled. Value with key: " + key + " won't be stored");
+            if (this.storage === "none" || (typeof this.storage !== "object" && !isBrowser)) {
+                this.#log(logLevelEnums.DEBUG, "Storage is disabled. Value with key: " + key + " won't be stored");
                 return;
             }
 
             // apply namespace
             if (!useRawKey) {
-                key = self.app_key + "/" + key;
-                if (self.namespace) {
-                    key = stripTrailingSlash(self.namespace) + "/" + key;
+                key = this.app_key + "/" + key;
+                if (this.namespace) {
+                    key = stripTrailingSlash(this.namespace) + "/" + key;
                 }
             }
 
             if (typeof value !== "undefined" && value !== null) {
                 // use dev provided storage if available
-                if (typeof self.storage === "object" && typeof self.storage.setItem === "function") {
-                    self.storage.setItem(key, value);
+                if (typeof this.storage === "object" && typeof this.storage.setItem === "function") {
+                    this.storage.setItem(key, value);
                     return;
                 }
 
                 // developer set values takes priority
                 if (useLocalStorage === undefined) {
-                    useLocalStorage = lsSupport;
+                    useLocalStorage = this.#lsSupport;
                 }
 
-                value = self.serialize(value);
+                value = this.serialize(value);
                 // Set the store
                 if (useLocalStorage) { // Native support
                     localStorage.setItem(key, value);
                 }
-                else if (self.storage !== "localstorage") { // Use Cookie
-                    createCookie(key, value, 30);
+                else if (this.storage !== "localstorage") { // Use Cookie
+                    this.#createCookie(key, value, 30);
                 }
             }
         }
@@ -4607,76 +4879,76 @@ constructor(ob) {
          *  @param {Boolean} useLocalStorage - if false, will fallback to removing cookies
          *  @param {Boolean} useRawKey - if true, raw key will be used without any prefix
         */
-        function removeValueFromStorage(key, useLocalStorage, useRawKey) {
+        #removeValueFromStorage = (key, useLocalStorage, useRawKey) => {
             // check if we should use storage options at all
-            if (self.storage === "none" || (typeof self.storage !== "object" && !isBrowser)) {
-                log(logLevelEnums.DEBUG, "Storage is disabled. Value with key: " + key + " won't be removed");
+            if (this.storage === "none" || (typeof this.storage !== "object" && !isBrowser)) {
+                this.#log(logLevelEnums.DEBUG, "Storage is disabled. Value with key: " + key + " won't be removed");
                 return;
             }
 
             // apply namespace
             if (!useRawKey) {
-                key = self.app_key + "/" + key;
-                if (self.namespace) {
-                    key = stripTrailingSlash(self.namespace) + "/" + key;
+                key = this.app_key + "/" + key;
+                if (this.namespace) {
+                    key = stripTrailingSlash(this.namespace) + "/" + key;
                 }
             }
 
             // use dev provided storage if available
-            if (typeof self.storage === "object" && typeof self.storage.removeItem === "function") {
-                self.storage.removeItem(key);
+            if (typeof this.storage === "object" && typeof this.storage.removeItem === "function") {
+                this.storage.removeItem(key);
                 return;
             }
 
             // developer set values takes priority
             if (useLocalStorage === undefined) {
-                useLocalStorage = lsSupport;
+                useLocalStorage = this.#lsSupport;
             }
 
             if (useLocalStorage) { // Native support
                 localStorage.removeItem(key);
             }
-            else if (self.storage !== "localstorage") { // Use cookie
-                createCookie(key, "", -1);
+            else if (this.storage !== "localstorage") { // Use cookie
+                this.#createCookie(key, "", -1);
             }
         }
 
         /**
          *  Migrate from old storage to new app_key prefixed storage
          */
-        function migrate() {
-            if (getValueFromStorage(self.namespace + "cly_id", false, true)) {
+        #migrate = () => {
+            if (this.#getValueFromStorage(this.namespace + "cly_id", false, true)) {
                 // old data exists, we should migrate it
-                setValueInStorage("cly_id", getValueFromStorage(self.namespace + "cly_id", false, true));
-                setValueInStorage("cly_id_type", getValueFromStorage(self.namespace + "cly_id_type", false, true));
-                setValueInStorage("cly_event", getValueFromStorage(self.namespace + "cly_event", false, true));
-                setValueInStorage("cly_session", getValueFromStorage(self.namespace + "cly_session", false, true));
+                this.#setValueInStorage("cly_id", this.#getValueFromStorage(this.namespace + "cly_id", false, true));
+                this.#setValueInStorage("cly_id_type", this.#getValueFromStorage(this.namespace + "cly_id_type", false, true));
+                this.#setValueInStorage("cly_event", this.#getValueFromStorage(this.namespace + "cly_event", false, true));
+                this.#setValueInStorage("cly_session", this.#getValueFromStorage(this.namespace + "cly_session", false, true));
 
                 // filter out requests with correct app_key
-                var requests = getValueFromStorage(self.namespace + "cly_queue", false, true);
+                var requests = this.#getValueFromStorage(this.namespace + "cly_queue", false, true);
                 if (Array.isArray(requests)) {
-                    requests = requests.filter(function (req) {
-                        return req.app_key === self.app_key;
+                    requests = requests.filter((req) => {
+                        return req.app_key === this.app_key;
                     });
-                    setValueInStorage("cly_queue", requests);
+                    this.#setValueInStorage("cly_queue", requests);
                 }
-                if (getValueFromStorage(self.namespace + "cly_cmp_id", false, true)) {
-                    setValueInStorage("cly_cmp_id", getValueFromStorage(self.namespace + "cly_cmp_id", false, true));
-                    setValueInStorage("cly_cmp_uid", getValueFromStorage(self.namespace + "cly_cmp_uid", false, true));
+                if (this.#getValueFromStorage(this.namespace + "cly_cmp_id", false, true)) {
+                    this.#setValueInStorage("cly_cmp_id", this.#getValueFromStorage(this.namespace + "cly_cmp_id", false, true));
+                    this.#setValueInStorage("cly_cmp_uid", this.#getValueFromStorage(this.namespace + "cly_cmp_uid", false, true));
                 }
-                if (getValueFromStorage(self.namespace + "cly_ignore", false, true)) {
-                    setValueInStorage("cly_ignore", getValueFromStorage(self.namespace + "cly_ignore", false, true));
+                if (this.#getValueFromStorage(this.namespace + "cly_ignore", false, true)) {
+                    this.#setValueInStorage("cly_ignore", this.#getValueFromStorage(this.namespace + "cly_ignore", false, true));
                 }
 
                 // now deleting old data, so we won't migrate again
-                removeValueFromStorage("cly_id", false, true);
-                removeValueFromStorage("cly_id_type", false, true);
-                removeValueFromStorage("cly_event", false, true);
-                removeValueFromStorage("cly_session", false, true);
-                removeValueFromStorage("cly_queue", false, true);
-                removeValueFromStorage("cly_cmp_id", false, true);
-                removeValueFromStorage("cly_cmp_uid", false, true);
-                removeValueFromStorage("cly_ignore", false, true);
+                this.#removeValueFromStorage("cly_id", false, true);
+                this.#removeValueFromStorage("cly_id_type", false, true);
+                this.#removeValueFromStorage("cly_event", false, true);
+                this.#removeValueFromStorage("cly_session", false, true);
+                this.#removeValueFromStorage("cly_queue", false, true);
+                this.#removeValueFromStorage("cly_cmp_id", false, true);
+                this.#removeValueFromStorage("cly_cmp_uid", false, true);
+                this.#removeValueFromStorage("cly_ignore", false, true);
             }
         }
 
@@ -4685,29 +4957,29 @@ constructor(ob) {
          *  @param {String} key - key of storage modified
          *  @param {Varies} newValue - new value for storage
          */
-        this.onStorageChange = function (key, newValue) {
-            log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for key:", key);
-            log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for value:", newValue);
+        #onStorageChange = (key, newValue) => {
+            this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for key:", key);
+            this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for value:", newValue);
             switch (key) {
                 // queue of requests
                 case "cly_queue":
-                    requestQueue = self.deserialize(newValue || "[]");
+                    this.#requestQueue = this.deserialize(newValue || "[]");
                     break;
                 // queue of events
                 case "cly_event":
-                    eventQueue = self.deserialize(newValue || "[]");
+                    this.#eventQueue = this.deserialize(newValue || "[]");
                     break;
                 case "cly_remote_configs":
-                    remoteConfigs = self.deserialize(newValue || "{}");
+                    this.#remoteConfigs = this.deserialize(newValue || "{}");
                     break;
                 case "cly_ignore":
-                    self.ignore_visitor = self.deserialize(newValue);
+                    this.ignore_visitor = this.deserialize(newValue);
                     break;
                 case "cly_id":
-                    self.device_id = newValue;
+                    this.device_id = newValue;
                     break;
                 case "cly_id_type":
-                    deviceIdType = self.deserialize(newValue);
+                    this.#deviceIdType = this.deserialize(newValue);
                     break;
                 default:
                 // do nothing
@@ -4715,13 +4987,34 @@ constructor(ob) {
         };
 
         /**
+        *  Clear queued data for testing purposes
+        *  @memberof Countly._internals
+        */
+        #clearQueue = () => {
+            this.#requestQueue = [];
+            this.#setValueInStorage("cly_queue", []);
+            this.#eventQueue = [];
+            this.#setValueInStorage("cly_event", []);
+        };
+
+        /**
+         * For testing purposes only
+         * @returns {Object} - returns the local queues
+         */
+        #getLocalQueues = () => {
+            return {
+                eventQ: this.#eventQueue,
+                requestQ: this.#requestQueue
+            };
+        };
+
+        /**
         * Expose internal methods to end user for usability
         * @namespace Countly._internals
         * @name Countly._internals
         */
-        this._internals = {
-            // TODO: looks like we do not use this function. Either use it for something or eliminate.
-            store: setValueInStorage,
+        _internals = {
+            store: this.#setValueInStorage,
             getDocWidth: getDocWidth,
             getDocHeight: getDocHeight,
             getViewportHeight: getViewportHeight,
@@ -4733,69 +5026,53 @@ constructor(ob) {
             truncateSingleValue: truncateSingleValue,
             stripTrailingSlash: stripTrailingSlash,
             prepareParams: prepareParams,
-            sendXmlHttpRequest: sendXmlHttpRequest,
-            isResponseValid: isResponseValid,
-            getInternalDeviceIdType: getInternalDeviceIdType,
+            sendXmlHttpRequest: this.#sendXmlHttpRequest,
+            isResponseValid: this.#isResponseValid,
+            getInternalDeviceIdType: this.#getInternalDeviceIdType,
             getMsTimestamp: getMsTimestamp,
             getTimestamp: getTimestamp,
-            isResponseValidBroad: isResponseValidBroad,
+            isResponseValidBroad: this.#isResponseValidBroad,
             secureRandom: secureRandom,
-            log: log,
+            log: this.#log,
             checkIfLoggingIsOn: checkIfLoggingIsOn,
-            getMetrics: getMetrics,
-            getUA: getUA,
-            prepareRequest: prepareRequest,
+            getMetrics: this.#getMetrics,
+            getUA: this.#getUA,
+            prepareRequest: this.#prepareRequest,
             generateUUID: generateUUID,
-            sendEventsForced: sendEventsForced,
-            isUUID: isUUID,
+            sendEventsForced: this.#sendEventsForced,
+            isUUID: this.#isUUID,
             calculateChecksum: calculateChecksum,
-            isReferrerUsable: isReferrerUsable,
-            getId: getStoredIdOrGenerateId,
-            heartBeat: heartBeat,
-            toRequestQueue: toRequestQueue,
-            reportViewDuration: reportViewDuration,
+            isReferrerUsable: this.#isReferrerUsable,
+            getId: this.#getStoredIdOrGenerateId,
+            heartBeat: this.#heartBeat,
+            toRequestQueue: this.#toRequestQueue,
+            reportViewDuration: this.#reportViewDuration,
             loadJS: loadJS,
             loadCSS: loadCSS,
-            getLastView: getLastView,
-            setToken: setToken,
-            getToken: getToken,
+            getLastView: this.#getLastView,
+            setToken: this.#setToken,
+            getToken: this.#getToken,
             showLoader: showLoader,
             hideLoader: hideLoader,
-            setValueInStorage: setValueInStorage,
-            getValueFromStorage: getValueFromStorage,
-            removeValueFromStorage: removeValueFromStorage,
-            add_cly_events: add_cly_events,
-            processScrollView: processScrollView,
-            processScroll: processScroll,
+            setValueInStorage: this.#setValueInStorage,
+            getValueFromStorage: this.#getValueFromStorage,
+            removeValueFromStorage: this.#removeValueFromStorage,
+            add_cly_events: this.#add_cly_events,
+            processScrollView: this.#processScrollView,
+            processScroll: this.#processScroll,
             currentUserAgentString: currentUserAgentString,
             currentUserAgentDataString: currentUserAgentDataString,
             userAgentDeviceDetection: userAgentDeviceDetection,
             userAgentSearchBotDetection: userAgentSearchBotDetection,
-            getRequestQueue: getRequestQueue,
-            getEventQueue: getEventQueue,
-            sendFetchRequest: sendFetchRequest,
-            processAsyncQueue: processAsyncQueue,
-            makeNetworkRequest: makeNetworkRequest,
-            /**
-             *  Clear queued data
-             *  @memberof Countly._internals
-             */
-            clearQueue: function () {
-                requestQueue = [];
-                setValueInStorage("cly_queue", []);
-                eventQueue = [];
-                setValueInStorage("cly_event", []);
-            },
-            /**
-             * For testing pusposes only
-             * @returns {Object} - returns the local queues
-             */
-            getLocalQueues: function () {
-                return {
-                    eventQ: eventQueue,
-                    requestQ: requestQueue
-                };
-            }
+            getRequestQueue: this.#getRequestQueue,
+            getEventQueue: this.#getEventQueue,
+            sendFetchRequest: this.#sendFetchRequest,
+            processAsyncQueue: this.#processAsyncQueue,
+            makeNetworkRequest: this.#makeNetworkRequest,
+            onStorageChange: this.#onStorageChange,
+            clearQueue: this.#clearQueue,
+            getLocalQueues: this.#getLocalQueues,
+            testingGetRequests: this.#getGeneratedRequests,
         };
 
         /**
@@ -4807,96 +5084,67 @@ constructor(ob) {
          * {resetCounters} Resets health check counters
          * {saveRequestCounters} Saves health check request counters
          */
-        var HealthCheck = {};
-        HealthCheck.sendInstantHCRequest = sendInstantHCRequest;
-        HealthCheck.resetAndSaveCounters = resetAndSaveCounters;
-        HealthCheck.incrementErrorCount = incrementErrorCount;
-        HealthCheck.incrementWarningCount = incrementWarningCount;
-        HealthCheck.resetCounters = resetCounters;
-        HealthCheck.saveRequestCounters = saveRequestCounters;
-        /**
-         * Increments health check error count
-         */
-        function incrementErrorCount() {
-            self.hcErrorCount++;
-        }
-        /**
-         * Increments health check warning count
-         */
-        function incrementWarningCount() {
-            self.hcWarningCount++;
-        }
-        /**
-         * Resets health check counters
-         */
-        function resetCounters() {
-            self.hcErrorCount = 0;
-            self.hcWarningCount = 0;
-            self.hcStatusCode = -1;
-            self.hcErrorMessage = "";
-        }
-        /**
-         * Sets and saves the status code and error message counters 
-         * @param {number} status - response status code of the request
-         * @param {string} responseText - response text of the request
-         */
-        function saveRequestCounters(status, responseText) {
-            self.hcStatusCode = status;
-            self.hcErrorMessage = responseText;
-            setValueInStorage(healthCheckCounterEnum.statusCode, self.hcStatusCode);
-            setValueInStorage(healthCheckCounterEnum.errorMessage, self.hcErrorMessage);
-        }
-        /**
-         * Resets and saves health check counters
-         */
-        function resetAndSaveCounters() {
-            HealthCheck.resetCounters();
-            setValueInStorage(healthCheckCounterEnum.errorCount, self.hcErrorCount);
-            setValueInStorage(healthCheckCounterEnum.warningCount, self.hcWarningCount);
-            setValueInStorage(healthCheckCounterEnum.statusCode, self.hcStatusCode);
-            setValueInStorage(healthCheckCounterEnum.errorMessage, self.hcErrorMessage);
-        }
-        /**
-         * Countly health check request sender
-         */
-        function sendInstantHCRequest() {
-            if (offlineMode) {
-                log(logLevelEnums.DEBUG, "sendInstantHCRequest, Offline mode is active. Not sending health check request.");
-                shouldSendHC = true;
-                return;
-            }
-            // truncate error message to 1000 characters
-            var curbedMessage = truncateSingleValue(self.hcErrorMessage, 1000, "healthCheck", log);
-            // due to some server issues we pass empty string as is
-            if (curbedMessage !== "") {
-                curbedMessage = JSON.stringify(curbedMessage);
-            }
-            // prepare hc object
-            var hc = {
-                el: self.hcErrorCount,
-                wl: self.hcWarningCount,
-                sc: self.hcStatusCode,
-                em: curbedMessage
-            };
-            // prepare request
-            var request = {
-                hc: JSON.stringify(hc),
-                metrics: JSON.stringify({ _app_version: self.app_version })
-            };
-            // add common request params
-            prepareRequest(request);
-            // send request
-            makeNetworkRequest("[healthCheck]", self.url + apiPath, request, function (err) {
-                // request maker already logs the error. No need to log it again here
-                if (!err) {
-                    // reset and save health check counters if request was successful
-                    HealthCheck.resetAndSaveCounters();
+        #HealthCheck = {
+            sendInstantHCRequest: () => {
+                if (this.#offlineMode) {
+                    this.#log(logLevelEnums.DEBUG, "sendInstantHCRequest, Offline mode is active. Not sending health check request.");
+                    this.#shouldSendHC = true;
+                    return;
                 }
-            }, true);
-        }
-
-        // initialize Countly Class
-        this.initialize();
-    };
+                // truncate error message to 1000 characters
+                var curbedMessage = truncateSingleValue(this.hcErrorMessage, 1000, "healthCheck", this.#log);
+                // due to some server issues we pass empty string as is
+                if (curbedMessage !== "") {
+                    curbedMessage = JSON.stringify(curbedMessage);
+                }
+                // prepare hc object
+                var hc = {
+                    el: this.hcErrorCount,
+                    wl: this.hcWarningCount,
+                    sc: this.hcStatusCode,
+                    em: curbedMessage
+                };
+                // prepare request
+                var request = {
+                    hc: JSON.stringify(hc),
+                    metrics: JSON.stringify({ _app_version: this.app_version })
+                };
+                // add common request params
+                this.#prepareRequest(request);
+                // send request
+                this.#makeNetworkRequest("[healthCheck]", this.url + this.#apiPath, request, (err) => {
+                    // request maker already logs the error. No need to log it again here
+                    if (!err) {
+                        // reset and save health check counters if request was successful
+                        this.#HealthCheck.resetAndSaveCounters();
+                    }
+                }, true);
+            },
+            resetAndSaveCounters: () => {
+                this.#HealthCheck.resetCounters();
+                this.#setValueInStorage(healthCheckCounterEnum.errorCount, this.hcErrorCount);
+                this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
+                this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
+                this.#setValueInStorage(healthCheckCounterEnum.errorMessage, this.hcErrorMessage);
+            },
+            incrementErrorCount: () => { 
+                this.hcErrorCount++;
+            },
+            incrementWarningCount: () => {
+                this.hcWarningCount++;
+            },
+            resetCounters: () => {
+                this.hcErrorCount = 0;
+                this.hcWarningCount = 0;
+                this.hcStatusCode = -1;
+                this.hcErrorMessage = "";
+            },
+            saveRequestCounters: (status, responseText) => {
+                this.hcStatusCode = status;
+                this.hcErrorMessage = responseText;
+                this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
+                this.#setValueInStorage(healthCheckCounterEnum.errorMessage, this.hcErrorMessage);
+            }
+        };
 }
 export default CountlyClass;
