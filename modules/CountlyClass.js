@@ -87,6 +87,11 @@ class CountlyClass {
     #shouldSendHC;
     #consents;
     #generatedRequests;
+    #contentTimeInterval;
+    #contentEndPoint;
+    #inContentZone;
+    #contentZoneTimer;
+    #contentIframeID;
 constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
@@ -136,6 +141,11 @@ constructor(ob) {
         this.#sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
         this.#shouldSendHC = false;
         this.#generatedRequests = [];
+        this.#contentTimeInterval = 30000;
+        this.#contentEndPoint = "/o/sdk/content";
+        this.#inContentZone = false;
+        this.#contentZoneTimer = null;
+        this.#contentIframeID = "cly-content-iframe";
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -153,10 +163,15 @@ constructor(ob) {
             this.#consents[Countly.features[it]] = {};
         }
 
-        this.initialize(ob);
+        this.#initialize(ob);
     };
 
-    initialize = (ob) => {
+    /**
+     * Initialize the Countly
+     * @param {Object} ob - config object
+     * @returns 
+     */
+    #initialize = (ob) => {
         this.serialize = getConfig("serialize", ob, Countly.serialize);
         this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
         this.getViewName = getConfig("getViewName", ob, Countly.getViewName);
@@ -231,39 +246,6 @@ constructor(ob) {
             // opted out user
             this.ignore_visitor = true;
         }
-
-        this.#migrate();
-
-        this.#requestQueue = this.#getValueFromStorage("cly_queue") || [];
-        this.#eventQueue = this.#getValueFromStorage("cly_event") || [];
-        this.#remoteConfigs = this.#getValueFromStorage("cly_remote_configs") || {};
-
-        // flag that indicates that the offline mode was enabled at the end of the previous app session 
-        var tempIdModeWasEnabled = (this.#getValueFromStorage("cly_id") === "[CLY]_temp_id");
-
-        if (this.clearStoredId) {
-            // retrieve stored device ID and type from local storage and use it to flush existing events
-            if (this.#getValueFromStorage("cly_id") && !tempIdModeWasEnabled) {
-                this.device_id = this.#getValueFromStorage("cly_id");
-                this.#log(logLevelEnums.DEBUG, "initialize, temporarily using the previous device ID to flush existing events");
-                this.#deviceIdType = this.#getValueFromStorage("cly_id_type");
-                if (!this.#deviceIdType) {
-                    this.#log(logLevelEnums.DEBUG, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED, for event flushing");
-                    this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                }
-                // don't process async queue here, just send the events (most likely async data is for the new user)
-                this.#sendEventsForced();
-                // set them back to their initial values
-                this.device_id = undefined;
-                this.#deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
-            }
-            // then clear the storage so that a new device ID is set again later
-            this.#log(logLevelEnums.INFO, "initialize, Clearing the device ID storage");
-            this.#removeValueFromStorage("cly_id");
-            this.#removeValueFromStorage("cly_id_type");
-            this.#removeValueFromStorage("cly_session");
-        }
-
         this.#checkIgnore();
 
         if (isBrowser) {
@@ -317,6 +299,38 @@ constructor(ob) {
         if (this.ignore_visitor) {
             this.#log(logLevelEnums.WARNING, "initialize, ignore_visitor:[" + this.ignore_visitor + "], this user will not be tracked");
             return;
+        }
+
+        this.#migrate();
+
+        this.#requestQueue = this.#getValueFromStorage("cly_queue") || [];
+        this.#eventQueue = this.#getValueFromStorage("cly_event") || [];
+        this.#remoteConfigs = this.#getValueFromStorage("cly_remote_configs") || {};
+
+        // flag that indicates that the offline mode was enabled at the end of the previous app session 
+        var tempIdModeWasEnabled = (this.#getValueFromStorage("cly_id") === "[CLY]_temp_id");
+
+        if (this.clearStoredId) {
+            // retrieve stored device ID and type from local storage and use it to flush existing events
+            if (this.#getValueFromStorage("cly_id") && !tempIdModeWasEnabled) {
+                this.device_id = this.#getValueFromStorage("cly_id");
+                this.#log(logLevelEnums.DEBUG, "initialize, temporarily using the previous device ID to flush existing events");
+                this.#deviceIdType = this.#getValueFromStorage("cly_id_type");
+                if (!this.#deviceIdType) {
+                    this.#log(logLevelEnums.DEBUG, "initialize, No device ID type info from the previous session, falling back to DEVELOPER_SUPPLIED, for event flushing");
+                    this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+                }
+                // don't process async queue here, just send the events (most likely async data is for the new user)
+                this.#sendEventsForced();
+                // set them back to their initial values
+                this.device_id = undefined;
+                this.#deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
+            }
+            // then clear the storage so that a new device ID is set again later
+            this.#log(logLevelEnums.INFO, "initialize, Clearing the device ID storage");
+            this.#removeValueFromStorage("cly_id");
+            this.#removeValueFromStorage("cly_id_type");
+            this.#removeValueFromStorage("cly_session");
         }
 
         // init configuration is printed out here:
@@ -856,12 +870,12 @@ constructor(ob) {
                         this.#updateConsent();
                         setTimeout(() => {
                             if (feature === featureEnums.SESSIONS && this.#lastParams.begin_session) {
-                                this.begin_session.apply(self, this.#lastParams.begin_session);
+                                this.begin_session.apply(this, this.#lastParams.begin_session);
                                 this.#lastParams.begin_session = null;
                             }
                             else if (feature === featureEnums.VIEWS && this.#lastParams.track_pageview) {
                                 this.#lastView = null;
-                                this.track_pageview.apply(self, this.#lastParams.track_pageview);
+                                this.track_pageview.apply(this, this.#lastParams.track_pageview);
                                 this.#lastParams.track_pageview = null;
                             }
                         }, 1);
@@ -2980,7 +2994,7 @@ constructor(ob) {
                     this.#log(logLevelEnums.ERROR, `showWidget, No ${widgetType} widget found.`);
                     return;
                 }
-                present_feedback_widget(widget, null, null, null);
+                this.present_feedback_widget(widget, null, null, null);
             });
         };
     /**
@@ -3324,23 +3338,71 @@ constructor(ob) {
                 this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
 
                 add_event_listener(window, "message", (e) => {
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Received message from widget with origin: [" + e.origin + "] and data: [" + e.data + "]");
                     var data = {};
                     try {
                         data = JSON.parse(e.data);
-                        this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Parsed response message " + data);
                     }
                     catch (ex) {
                         this.#log(logLevelEnums.ERROR, "present_feedback_widget, Error while parsing message body " + ex);
                     }
 
-                    if (!data.close) {
-                        this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Closing signal not sent yet");
+                    if (data.close !== true) { // to not mix with content we check against true value
+                        this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
                         return;
                     }
 
                     document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
                     document.getElementById("csbg").style.display = "none";
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Closed the widget");
                 });
+                /**
+                 * Function to show survey popup
+                 * @param  {Object} feedback - feedback object
+                 */
+                var showSurvey = (feedback) => {
+                    document.getElementById("countly-surveys-wrapper-" + feedback._id).style.display = "block";
+                    document.getElementById("csbg").style.display = "block";
+                }
+
+                /**
+                 * Function to prepare rating sticker and feedback widget
+                 * @param  {Object} feedback - feedback object
+                 */
+                var showRatingForFeedbackWidget = (feedback) => {
+                    // remove old stickers if exists
+                    var stickers = document.getElementsByClassName("countly-feedback-sticker");
+                    while (stickers.length > 0) {
+                        this.#log(logLevelEnums.VERBOSE, "present_feedback_widget, Removing old stickers");
+                        stickers[0].remove();
+                    }
+
+                    // render sticker if hide sticker property isn't set
+                    if (!feedback.appearance.hideS) {
+                        this.#log(logLevelEnums.DEBUG, "present_feedback_widget, handling the sticker as it was not set to hidden");
+                        // create sticker wrapper element
+                        var sticker = document.createElement("div");
+                        sticker.innerText = feedback.appearance.text;
+                        sticker.style.color = ((feedback.appearance.text_color.length < 7) ? "#" + feedback.appearance.text_color : feedback.appearance.text_color);
+                        sticker.style.backgroundColor = ((feedback.appearance.bg_color.length < 7) ? "#" + feedback.appearance.bg_color : feedback.appearance.bg_color);
+                        sticker.className = "countly-feedback-sticker  " + feedback.appearance.position + "-" + feedback.appearance.size;
+                        sticker.id = "countly-feedback-sticker-" + feedback._id;
+                        document.body.appendChild(sticker);
+
+                        // sticker event handler
+                        add_event_listener(document.getElementById("countly-feedback-sticker-" + feedback._id), "click", () => {
+                            document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "flex";
+                            document.getElementById("csbg").style.display = "block";
+                        });
+                    }
+
+                    // feedback widget close event handler
+                    // TODO: Check if this is still valid
+                    add_event_listener(document.getElementById("countly-feedback-close-icon-" + feedback._id), "click", () => {
+                        document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "none";
+                        document.getElementById("csbg").style.display = "none";
+                    });
+                }
 
                 if (presentableFeedback.type === "survey") {
                     var surveyShown = false;
@@ -3451,53 +3513,7 @@ constructor(ob) {
                 this.#log(logLevelEnums.ERROR, "present_feedback_widget, Something went wrong while presenting the widget: " + e);
             }
 
-            /**
-             * Function to show survey popup
-             * @param  {Object} feedback - feedback object
-             */
-            var showSurvey = (feedback) => {
-                document.getElementById("countly-surveys-wrapper-" + feedback._id).style.display = "block";
-                document.getElementById("csbg").style.display = "block";
-            }
 
-            /**
-             * Function to prepare rating sticker and feedback widget
-             * @param  {Object} feedback - feedback object
-             */
-            var showRatingForFeedbackWidget = (feedback) => {
-                // remove old stickers if exists
-                var stickers = document.getElementsByClassName("countly-feedback-sticker");
-                while (stickers.length > 0) {
-                    this.#log(logLevelEnums.VERBOSE, "present_feedback_widget, Removing old stickers");
-                    stickers[0].remove();
-                }
-
-                // render sticker if hide sticker property isn't set
-                if (!feedback.appearance.hideS) {
-                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, handling the sticker as it was not set to hidden");
-                    // create sticker wrapper element
-                    var sticker = document.createElement("div");
-                    sticker.innerText = feedback.appearance.text;
-                    sticker.style.color = ((feedback.appearance.text_color.length < 7) ? "#" + feedback.appearance.text_color : feedback.appearance.text_color);
-                    sticker.style.backgroundColor = ((feedback.appearance.bg_color.length < 7) ? "#" + feedback.appearance.bg_color : feedback.appearance.bg_color);
-                    sticker.className = "countly-feedback-sticker  " + feedback.appearance.position + "-" + feedback.appearance.size;
-                    sticker.id = "countly-feedback-sticker-" + feedback._id;
-                    document.body.appendChild(sticker);
-
-                    // sticker event handler
-                    add_event_listener(document.getElementById("countly-feedback-sticker-" + feedback._id), "click", () => {
-                        document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "flex";
-                        document.getElementById("csbg").style.display = "block";
-                    });
-                }
-
-                // feedback widget close event handler
-                // TODO: Check if this is still valid
-                add_event_listener(document.getElementById("countly-feedback-close-icon-" + feedback._id), "click", () => {
-                    document.getElementById("countly-ratings-wrapper-" + feedback._id).style.display = "none";
-                    document.getElementById("csbg").style.display = "none";
-                });
-            }
         };
 
         /**
@@ -3624,6 +3640,156 @@ constructor(ob) {
             }
         }
 
+        content = {
+            enterContentZone: () => {
+                this.#enterContentZoneInternal();
+            },
+            exitContentZone: () => {
+                if (!this.#inContentZone) {
+                    this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
+                    return;
+                }
+                this.#log(logLevelEnums.INFO, "content.exitContentZone, Exiting content zone");
+                this.#inContentZone = false;
+                if (this.#contentZoneTimer) {
+                    clearInterval(this.#contentZoneTimer);
+                    this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
+                }
+            },
+        };
+
+        #enterContentZoneInternal = (forced) => {
+            if (!isBrowser) {
+                this.#log(logLevelEnums.WARNING, "content.enterContentZone, window object is not available. Not entering content zone.");
+                return;
+            };
+            if (this.#inContentZone && !forced) {
+                this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Already in content zone");
+                return;
+            }
+            this.#log(logLevelEnums.INFO, "content.enterContentZone, Entering content zone");
+            this.#inContentZone = true;
+            if (!forced) {
+                this.#sendContentRequest();
+            }
+            this.#contentZoneTimer = setInterval(() => {
+                this.#sendContentRequest();
+            }, this.#contentTimeInterval);
+        };
+
+        #prepareContentRequest = () => {
+            this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
+            const resInfo = this.#getResolution();
+            var resToSend = {l : {}, p: {}};
+            resToSend.l.w = resInfo.width;
+            resToSend.l.h = resInfo.height;
+            resToSend.p.w = resInfo.height;
+            resToSend.p.h = resInfo.width;
+
+            const local = navigator.language || navigator.browserLanguage || navigator.systemLanguage || navigator.userLanguage;
+            const language = local.split('-')[0];
+            var params = {
+                method: "queue",
+                la: language,
+                resolution: JSON.stringify(resToSend),
+                cly_ws: 1,
+                cly_origin: window.location.origin,
+            };
+
+            this.#prepareRequest(params);
+            return params;
+        };
+
+        #sendContentRequest = () => {
+            this.#log(logLevelEnums.DEBUG, "sendContentRequest, sending content request");
+            var params = this.#prepareContentRequest();
+            this.#makeNetworkRequest("sendContentRequest,", this.url + this.#contentEndPoint, params, (e,param,resp) => {
+                if (e) {
+                    return;
+                }
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, received content: [" + resp + "]");
+                this.#displayContent(resp);
+                clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
+                window.addEventListener('message', (event) => {
+                    this.#interpretContentMessage(event);   
+                });
+            }, true);
+        };
+
+        #displayContent = (content) => {
+            if (!content) {
+                this.#log(logLevelEnums.DEBUG, "displayContent, no content to display");
+                return;
+            }
+            this.#log(logLevelEnums.DEBUG, "displayContent, displaying content");
+            var response = JSON.parse(content);
+
+            var iframe = document.createElement("iframe");
+            iframe.id = this.#contentIframeID;
+            iframe.src = response.html;
+            iframe.style.position = "absolute";
+            iframe.style.left = response.geo.l.x + "px";
+            iframe.style.top = response.geo.l.y + "px";
+            iframe.style.width = response.geo.l.w + "px";
+            iframe.style.height = response.geo.l.h + "px";
+            iframe.style.border = "none";
+            iframe.style.zIndex = "999999";
+            document.body.appendChild(iframe);
+        };
+
+        #interpretContentMessage = (messageEvent) => {
+            this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
+            if (messageEvent.origin !== this.url) {
+                this.#log(logLevelEnums.ERROR, "sendContentRequest, Received message from invalid origin");
+                return;
+            }
+            const {close, link, event} = messageEvent.data;
+
+            if (event) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received event: [" + event + "]");
+                if (close === 1) {
+                    this.#log(logLevelEnums.DEBUG, "sendContentRequest, Closing content frame for event: [" + event + "]");
+                    this.#closeContentFrame();
+                }
+                if (!Array.isArray(event)) {
+                    if (typeof event === "object") {
+                        event = [event];
+                    } else {
+                        this.#log(logLevelEnums.ERROR, "sendContentRequest, Invalid event type: [" + typeof event + "]");
+                        return;
+                    }
+                };
+                // event is expected to be an array of events
+                for (var i = 0; i < event.length; i++) {
+                    this.#add_cly_events(event[i]);
+                }
+            }
+
+            if (link) {
+                if (close === 1) {
+                    this.#log(logLevelEnums.DEBUG, "sendContentRequest, Closing content frame for link");
+                    this.#closeContentFrame();
+                }
+                window.open(link, "_blank");
+                this.#log(logLevelEnums.DEBUG, `sendContentRequest, Opened link in new tab: [${link}]`);
+            }
+
+            if (close === 1) {
+                this.#closeContentFrame();
+            }
+        };
+        
+        #closeContentFrame = () => {
+            const iframe = document.getElementById(this.#contentIframeID);
+            if (iframe) {
+                iframe.remove();
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, removed iframe");
+                if (this.#inContentZone) { // if user did not exit content zone, re-enter
+                    this.#enterContentZoneInternal(true);
+                }
+            }
+        };
+        
         /**
          * Check and send the events to request queue if there are any, empty the event queue
          */
@@ -3733,7 +3899,7 @@ constructor(ob) {
             if (typeof this.onload !== "undefined" && this.onload.length > 0) {
                 for (i = 0; i < this.onload.length; i++) {
                     if (typeof this.onload[i] === "function") {
-                        this.onload[i](self);
+                        this.onload[i](this);
                     }
                 }
                 this.onload = [];
@@ -3974,7 +4140,7 @@ constructor(ob) {
                     req();
                 }
                 else if (Array.isArray(req) && req.length > 0) {
-                    var inst = self;
+                    var inst = this;
                     var arg = 0;
                     // check if it is meant for other tracker
                     try {
@@ -4050,27 +4216,10 @@ constructor(ob) {
             metrics._ua = metrics._ua || currentUserAgentString();
 
             // getting resolution
-            if (isBrowser && screen.width) {
-                var width = (screen.width) ? parseInt(screen.width) : 0;
-                var height = (screen.height) ? parseInt(screen.height) : 0;
-                if (width !== 0 && height !== 0) {
-                    var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
-                    if (iOS && window.devicePixelRatio) {
-                        // ios provides dips, need to multiply
-                        width = Math.round(width * window.devicePixelRatio);
-                        height = Math.round(height * window.devicePixelRatio);
-                    }
-                    else {
-                        if (Math.abs(window.orientation) === 90) {
-                            // we have landscape orientation
-                            // switch values for all except ios
-                            var temp = width;
-                            width = height;
-                            height = temp;
-                        }
-                    }
-                    metrics._resolution = metrics._resolution || "" + width + "x" + height;
-                }
+            var resolution = this.#getResolution();
+            if (resolution) {
+                var formattedRes = "" + resolution.width + "x" + resolution.height;
+                metrics._resolution = metrics._resolution || formattedRes;
             }
 
             // getting density ratio
@@ -4091,6 +4240,48 @@ constructor(ob) {
             this.#log(logLevelEnums.DEBUG, "Got metrics", metrics);
             return metrics;
         }
+
+        /**
+         * returns the resolution of the device
+         * @param {bool} getAvailable - get available resolution
+         * @returns {object} resolution object: {width: 1920, height: 1080, orientation: 0}
+         */
+        #getResolution = (getAvailable) => {
+            this.#log(logLevelEnums.DEBUG, "Getting the resolution of the device");
+            if (!isBrowser || !screen) {
+                this.#log(logLevelEnums.DEBUG, "No screen available");
+                return null;
+            };
+
+            var width = (screen.width) ? parseInt(screen.width) : 0;
+            var height = (screen.height) ? parseInt(screen.height) : 0;
+
+            if (getAvailable) {
+                width = (screen.availWidth) ? parseInt(screen.availWidth) : width;
+                height = (screen.availHeight) ? parseInt(screen.availHeight) : height;
+            }
+
+            if (width === 0 || height === 0) { 
+                this.#log(logLevelEnums.DEBUG, "Screen width or height is non existent");
+                return null;
+            }
+            var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
+            if (iOS && window.devicePixelRatio) {
+                // ios provides dips, need to multiply
+                width = Math.round(width * window.devicePixelRatio);
+                height = Math.round(height * window.devicePixelRatio);
+            }
+            else {
+                if (Math.abs(screen.orientation.angle) === 90) {
+                    // we have landscape orientation
+                    // switch values for all except ios
+                    var temp = width;
+                    width = height;
+                    height = temp;
+                }
+            }
+            return { width: width, height: height , orientation: screen.orientation.angle };
+        };
 
         /**
          *  @memberof Countly._internals
