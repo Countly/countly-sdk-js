@@ -585,25 +585,22 @@ function showLoader() {
         head.appendChild(style);
         loader = document.createElement("div");
         loader.setAttribute("id", "cly-loader");
-        document.body.onload = function () {
-            // check if hideLoader is on and if so return
+        window.addEventListener("load", () => {
             if (Countly.showLoaderProtection) {
                 if (checkIfLoggingIsOn()) {
-                    // eslint-disable-next-line no-console
-                    console.warn("[WARNING] [Countly] showloader, Loader is already on");
+                    console.warn("[WARNING] [Countly] showLoader, Loader is already on");
                 }
                 return;
             }
             try {
                 document.body.appendChild(loader);
-            }
-            catch (e) {
+            } catch (e) {
                 if (checkIfLoggingIsOn()) {
-                    // eslint-disable-next-line no-console
                     console.error("[ERROR] [Countly] showLoader, Body is not loaded for loader to append: " + e);
                 }
             }
-        };
+        });
+
     }
     loader.style.display = "block";
 }

@@ -174,7 +174,7 @@ if (isBrowser) {
         var key = parts.pop();
         var appKey = parts.pop();
         if (Countly.i && Countly.i[appKey]) {
-            Countly.i[appKey].onStorageChange(key, e.newValue);
+            Countly.i[appKey]._internals.onStorageChange(key, e.newValue);
         }
     });
 }
