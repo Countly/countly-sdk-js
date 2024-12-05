@@ -1,6 +1,5 @@
 node_modules/
 dist/
-rollup.config.js
 Countly.d.ts
 src/
 instrumented/
