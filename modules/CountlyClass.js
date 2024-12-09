@@ -91,6 +91,7 @@ class CountlyClass {
     #contentEndPoint;
     #inContentZone;
     #contentZoneTimer;
+    #contentZoneTimerInterval;
     #contentIframeID;
 constructor(ob) {
         this.#self = this;
@@ -216,6 +217,11 @@ constructor(ob) {
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
+        this.#contentZoneTimerInterval = getConfig("content_zone_timer_interval", ob, null);
+
+        if (this.#contentZoneTimerInterval) {
+            this.#contentTimeInterval = Math.max(this.#contentZoneTimerInterval, 15) * 1000;
+        }
 
         if (this.#maxCrashLogs && !this.maxBreadcrumbCount) {
             this.maxBreadcrumbCount = this.#maxCrashLogs;
@@ -418,6 +424,9 @@ constructor(ob) {
         }
         if (this.#remoteConfigs) {
             this.#log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(this.#remoteConfigs) + "]");
+        }
+        if (this.#contentZoneTimerInterval) {
+            this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#contentZoneTimerInterval + "]");
         }
         // functions, if provided, would be printed as true without revealing their content
         this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
@@ -3679,12 +3688,14 @@ constructor(ob) {
 
         #prepareContentRequest = () => {
             this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
-            const resInfo = this.#getResolution();
+            const resInfo = this.#getResolution(true);
             var resToSend = {l : {}, p: {}};
-            resToSend.l.w = resInfo.width;
-            resToSend.l.h = resInfo.height;
-            resToSend.p.w = resInfo.height;
-            resToSend.p.h = resInfo.width;
+            const lWidthPHeight = Math.max(resInfo.width, resInfo.height);
+            const lHeightPWidth = Math.min(resInfo.width, resInfo.height);
+            resToSend.l.w = lWidthPHeight;
+            resToSend.l.h = lHeightPWidth;
+            resToSend.p.w = lHeightPWidth;
+            resToSend.p.h = lWidthPHeight;
 
             const local = navigator.language || navigator.browserLanguage || navigator.systemLanguage || navigator.userLanguage;
             const language = local.split('-')[0];
@@ -3728,10 +3739,15 @@ constructor(ob) {
             iframe.id = this.#contentIframeID;
             iframe.src = response.html;
             iframe.style.position = "absolute";
-            iframe.style.left = response.geo.l.x + "px";
-            iframe.style.top = response.geo.l.y + "px";
-            iframe.style.width = response.geo.l.w + "px";
-            iframe.style.height = response.geo.l.h + "px";
+            var dimensionToUse = response.geo.p;
+            const resInfo = this.#getResolution(true);
+            if (resInfo.width >= resInfo.height) {
+                dimensionToUse = response.geo.l;
+            };
+            iframe.style.left = dimensionToUse.x + "px";
+            iframe.style.top = dimensionToUse.y + "px";
+            iframe.style.width = dimensionToUse.w + "px";
+            iframe.style.height = dimensionToUse.h + "px";
             iframe.style.border = "none";
             iframe.style.zIndex = "999999";
             document.body.appendChild(iframe);
@@ -4243,10 +4259,10 @@ constructor(ob) {
 
         /**
          * returns the resolution of the device
-         * @param {bool} getAvailable - get available resolution
+         * @param {bool} getViewPort - get viewport
          * @returns {object} resolution object: {width: 1920, height: 1080, orientation: 0}
          */
-        #getResolution = (getAvailable) => {
+        #getResolution = (getViewPort) => {
             this.#log(logLevelEnums.DEBUG, "Getting the resolution of the device");
             if (!isBrowser || !screen) {
                 this.#log(logLevelEnums.DEBUG, "No screen available");
@@ -4256,9 +4272,16 @@ constructor(ob) {
             var width = (screen.width) ? parseInt(screen.width) : 0;
             var height = (screen.height) ? parseInt(screen.height) : 0;
 
-            if (getAvailable) {
-                width = (screen.availWidth) ? parseInt(screen.availWidth) : width;
-                height = (screen.availHeight) ? parseInt(screen.availHeight) : height;
+            if (getViewPort) {
+                const viewportWidth = window.innerWidth;
+                const viewportHeight = window.innerHeight;
+                const layoutWidth = document.documentElement.clientWidth;
+                const layoutHeight = document.documentElement.clientHeight;
+                const visibleWidth = Math.min(viewportWidth, layoutWidth);
+                const visibleHeight = Math.min(viewportHeight, layoutHeight);
+
+                width = visibleWidth ? parseInt(visibleWidth) : width;
+                height = visibleHeight ? parseInt(visibleHeight) : height;
             }
 
             if (width === 0 || height === 0) { 
@@ -4267,18 +4290,16 @@ constructor(ob) {
             }
             var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
             if (iOS && window.devicePixelRatio) {
+                this.#log(logLevelEnums.VERBOSE, "Mobile Mac device detected, adjusting resolution");
                 // ios provides dips, need to multiply
                 width = Math.round(width * window.devicePixelRatio);
                 height = Math.round(height * window.devicePixelRatio);
             }
-            else {
-                if (Math.abs(screen.orientation.angle) === 90) {
-                    // we have landscape orientation
-                    // switch values for all except ios
-                    var temp = width;
-                    width = height;
-                    height = temp;
-                }
+            if (Math.abs(screen.orientation.angle) === 90) {
+                this.#log(logLevelEnums.VERBOSE, "Screen is in landscape mode, adjusting resolution");
+                var temp = width;
+                width = height;
+                height = temp;
             }
             return { width: width, height: height , orientation: screen.orientation.angle };
         };
