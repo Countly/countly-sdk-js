@@ -1,3 +1,7 @@
+## 24.11.2
+
+* Mitigated an issue about content's positioning (Experimental!)
+
 ## 24.11.1
 
 * Deprecated `initializeRatingWidgets` method, use `feedback.showRating` instead.

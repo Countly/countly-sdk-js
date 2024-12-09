@@ -3679,7 +3679,7 @@ constructor(ob) {
 
         #prepareContentRequest = () => {
             this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
-            const resInfo = this.#getResolution();
+            const resInfo = this.#getResolution(true);
             var resToSend = {l : {}, p: {}};
             resToSend.l.w = resInfo.width;
             resToSend.l.h = resInfo.height;
@@ -4243,10 +4243,10 @@ constructor(ob) {
 
         /**
          * returns the resolution of the device
-         * @param {bool} getAvailable - get available resolution
+         * @param {bool} getViewPort - get viewport
          * @returns {object} resolution object: {width: 1920, height: 1080, orientation: 0}
          */
-        #getResolution = (getAvailable) => {
+        #getResolution = (getViewPort) => {
             this.#log(logLevelEnums.DEBUG, "Getting the resolution of the device");
             if (!isBrowser || !screen) {
                 this.#log(logLevelEnums.DEBUG, "No screen available");
@@ -4256,9 +4256,16 @@ constructor(ob) {
             var width = (screen.width) ? parseInt(screen.width) : 0;
             var height = (screen.height) ? parseInt(screen.height) : 0;
 
-            if (getAvailable) {
-                width = (screen.availWidth) ? parseInt(screen.availWidth) : width;
-                height = (screen.availHeight) ? parseInt(screen.availHeight) : height;
+            if (getViewPort) {
+                const viewportWidth = window.innerWidth;
+                const viewportHeight = window.innerHeight;
+                const layoutWidth = document.documentElement.clientWidth;
+                const layoutHeight = document.documentElement.clientHeight;
+                const visibleWidth = Math.min(viewportWidth, layoutWidth);
+                const visibleHeight = Math.min(viewportHeight, layoutHeight);
+
+                width = visibleWidth ? parseInt(visibleWidth) : width;
+                height = visibleHeight ? parseInt(visibleHeight) : height;
             }
 
             if (width === 0 || height === 0) { 
