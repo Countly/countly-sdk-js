@@ -3681,10 +3681,12 @@ constructor(ob) {
             this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
             const resInfo = this.#getResolution(true);
             var resToSend = {l : {}, p: {}};
-            resToSend.l.w = resInfo.width;
-            resToSend.l.h = resInfo.height;
-            resToSend.p.w = resInfo.height;
-            resToSend.p.h = resInfo.width;
+            const lWidthPHeight = Math.max(resInfo.width, resInfo.height);
+            const lHeightPWidth = Math.min(resInfo.width, resInfo.height);
+            resToSend.l.w = lWidthPHeight;
+            resToSend.l.h = lHeightPWidth;
+            resToSend.p.w = lHeightPWidth;
+            resToSend.p.h = lWidthPHeight;
 
             const local = navigator.language || navigator.browserLanguage || navigator.systemLanguage || navigator.userLanguage;
             const language = local.split('-')[0];
@@ -3729,7 +3731,8 @@ constructor(ob) {
             iframe.src = response.html;
             iframe.style.position = "absolute";
             var dimensionToUse = response.geo.p;
-            if (screen && screen.orientation.angle === 90) {
+            const resInfo = this.#getResolution(true);
+            if (resInfo.width >= resInfo.height) {
                 dimensionToUse = response.geo.l;
             };
             iframe.style.left = dimensionToUse.x + "px";
