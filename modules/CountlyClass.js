@@ -91,6 +91,7 @@ class CountlyClass {
     #contentEndPoint;
     #inContentZone;
     #contentZoneTimer;
+    #contentZoneTimerInterval;
     #contentIframeID;
 constructor(ob) {
         this.#self = this;
@@ -216,6 +217,11 @@ constructor(ob) {
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
+        this.#contentZoneTimerInterval = getConfig("content_zone_timer_interval", ob, null);
+
+        if (this.#contentZoneTimerInterval) {
+            this.#contentTimeInterval = Math.max(this.#contentZoneTimerInterval, 15) * 1000;
+        }
 
         if (this.#maxCrashLogs && !this.maxBreadcrumbCount) {
             this.maxBreadcrumbCount = this.#maxCrashLogs;
@@ -418,6 +424,9 @@ constructor(ob) {
         }
         if (this.#remoteConfigs) {
             this.#log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(this.#remoteConfigs) + "]");
+        }
+        if (this.#contentZoneTimerInterval) {
+            this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#contentZoneTimerInterval + "]");
         }
         // functions, if provided, would be printed as true without revealing their content
         this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
