@@ -3728,10 +3728,14 @@ constructor(ob) {
             iframe.id = this.#contentIframeID;
             iframe.src = response.html;
             iframe.style.position = "absolute";
-            iframe.style.left = response.geo.l.x + "px";
-            iframe.style.top = response.geo.l.y + "px";
-            iframe.style.width = response.geo.l.w + "px";
-            iframe.style.height = response.geo.l.h + "px";
+            var dimensionToUse = response.geo.p;
+            if (screen && screen.orientation.angle === 90) {
+                dimensionToUse = response.geo.l;
+            };
+            iframe.style.left = dimensionToUse.x + "px";
+            iframe.style.top = dimensionToUse.y + "px";
+            iframe.style.width = dimensionToUse.w + "px";
+            iframe.style.height = dimensionToUse.h + "px";
             iframe.style.border = "none";
             iframe.style.zIndex = "999999";
             document.body.appendChild(iframe);
@@ -4274,18 +4278,16 @@ constructor(ob) {
             }
             var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
             if (iOS && window.devicePixelRatio) {
+                this.#log(logLevelEnums.VERBOSE, "Mobile Mac device detected, adjusting resolution");
                 // ios provides dips, need to multiply
                 width = Math.round(width * window.devicePixelRatio);
                 height = Math.round(height * window.devicePixelRatio);
             }
-            else {
-                if (Math.abs(screen.orientation.angle) === 90) {
-                    // we have landscape orientation
-                    // switch values for all except ios
-                    var temp = width;
-                    width = height;
-                    height = temp;
-                }
+            if (Math.abs(screen.orientation.angle) === 90) {
+                this.#log(logLevelEnums.VERBOSE, "Screen is in landscape mode, adjusting resolution");
+                var temp = width;
+                width = height;
+                height = temp;
             }
             return { width: width, height: height , orientation: screen.orientation.angle };
         };
