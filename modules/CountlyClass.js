@@ -3724,6 +3724,21 @@ constructor(ob) {
                 window.addEventListener('message', (event) => {
                     this.#interpretContentMessage(event);   
                 });
+                let resizeTimeout;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimeout);
+                    resizeTimeout = setTimeout(() => {
+                        const width = window.innerWidth;
+                        const height = window.innerHeight;
+                        const iframe = document.getElementById(this.#contentIframeID);
+                        iframe.contentWindow.postMessage(
+                            { type: 'resize', width: width, height: height },
+                            '*'
+                        );
+                    }, 200);
+                });
+
+                
             }, true);
         };
 
