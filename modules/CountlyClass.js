@@ -694,6 +694,22 @@ constructor(ob) {
                 localStorage.setItem("cly_testLocal", true);
                 // clean up test
                 localStorage.removeItem("cly_testLocal");
+                localStorage.removeItem("cly_old_token");
+                localStorage.removeItem("cly_cmp_id");
+                localStorage.removeItem("cly_cmp_uid");
+                localStorage.removeItem("cly_id");
+                localStorage.removeItem("cly_id_type");
+                localStorage.removeItem("cly_queue");
+                localStorage.removeItem("cly_session");
+                localStorage.removeItem("cly_remote_configs");
+                localStorage.removeItem("cly_event");
+                localStorage.removeItem("cly_ignore");
+                localStorage.removeItem("cly_fb_widgets");
+                localStorage.removeItem("cly_token");
+                localStorage.removeItem("cly_hc_error_count");  
+                localStorage.removeItem("cly_hc_warning_count");
+                localStorage.removeItem("cly_hc_status_code");
+                localStorage.removeItem("cly_hc_error_message");
             }
             catch (e) {
                 this.#log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
