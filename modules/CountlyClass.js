@@ -3366,7 +3366,6 @@ constructor(ob) {
                 this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
 
                 add_event_listener(window, "message", (e) => {
-                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Received message from widget with origin: [" + e.origin + "] and data: [" + e.data + "]");
                     var data = {};
                     try {
                         data = JSON.parse(e.data);
@@ -3374,11 +3373,13 @@ constructor(ob) {
                     catch (ex) {
                         this.#log(logLevelEnums.ERROR, "present_feedback_widget, Error while parsing message body " + ex);
                     }
-
+                    
                     if (data.close !== true) { // to not mix with content we check against true value
-                        this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
+                        // this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
+                        // silent ignore
                         return;
                     }
+                    this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Received message from widget with origin: [" + e.origin + "] and data: [" + e.data + "]");
 
                     document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
                     document.getElementById("csbg").style.display = "none";
@@ -3788,17 +3789,18 @@ constructor(ob) {
         };
 
         #interpretContentMessage = (messageEvent) => {
-            this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
             if (messageEvent.origin !== this.url) {
-                this.#log(logLevelEnums.ERROR, "sendContentRequest, Received message from invalid origin");
+                // this.#log(logLevelEnums.ERROR, "sendContentRequest, Received message from invalid origin");
+                // silent ignore
                 return;
             }
+            this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
             const {close, link, event, resize_me} = messageEvent.data;
 
             if (event) {
-                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received event: [" + event + "]");
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received event");
                 if (close === 1) {
-                    this.#log(logLevelEnums.DEBUG, "sendContentRequest, Closing content frame for event: [" + event + "]");
+                    this.#log(logLevelEnums.DEBUG, "sendContentRequest, Closing content frame for event");
                     this.#closeContentFrame();
                 }
                 if (!Array.isArray(event)) {
