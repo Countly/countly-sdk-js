@@ -337,6 +337,7 @@ constructor(ob) {
             this.#removeValueFromStorage("cly_id");
             this.#removeValueFromStorage("cly_id_type");
             this.#removeValueFromStorage("cly_session");
+            tempIdModeWasEnabled = false;
         }
 
         // init configuration is printed out here:
@@ -694,6 +695,22 @@ constructor(ob) {
                 localStorage.setItem("cly_testLocal", true);
                 // clean up test
                 localStorage.removeItem("cly_testLocal");
+                localStorage.removeItem("cly_old_token");
+                localStorage.removeItem("cly_cmp_id");
+                localStorage.removeItem("cly_cmp_uid");
+                localStorage.removeItem("cly_id");
+                localStorage.removeItem("cly_id_type");
+                localStorage.removeItem("cly_queue");
+                localStorage.removeItem("cly_session");
+                localStorage.removeItem("cly_remote_configs");
+                localStorage.removeItem("cly_event");
+                localStorage.removeItem("cly_ignore");
+                localStorage.removeItem("cly_fb_widgets");
+                localStorage.removeItem("cly_token");
+                localStorage.removeItem("cly_hc_error_count");  
+                localStorage.removeItem("cly_hc_warning_count");
+                localStorage.removeItem("cly_hc_status_code");
+                localStorage.removeItem("cly_hc_error_message");
             }
             catch (e) {
                 this.#log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
@@ -937,12 +954,15 @@ constructor(ob) {
         };
 
         enable_offline_mode = () => {
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.WARNING, "enable_offline_mode, Countly is already in offline mode.");
+                return;
+            }
             this.#log(logLevelEnums.INFO, "enable_offline_mode, Enabling offline mode");
             // clear consents
             this.remove_consent_internal(Countly.features, false);
             this.#offlineMode = true;
             this.device_id = "[CLY]_temp_id";
-            this.device_id = this.device_id;
             this.#deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
         };
 
@@ -955,7 +975,6 @@ constructor(ob) {
             this.#offlineMode = false;
             if (device_id && this.device_id !== device_id) {
                 this.device_id = device_id;
-                this.device_id = this.device_id;
                 this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                 this.#setValueInStorage("cly_id", this.device_id);
                 this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
@@ -966,7 +985,6 @@ constructor(ob) {
                 if (this.device_id === "[CLY]_temp_id") {
                     this.device_id = generateUUID();
                 }
-                this.device_id = this.device_id;
                 if (this.device_id !== this.#getValueFromStorage("cly_id")) {
                     this.#setValueInStorage("cly_id", this.device_id);
                     this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.SDK_GENERATED);
@@ -977,6 +995,7 @@ constructor(ob) {
                 for (var i = 0; i < this.#requestQueue.length; i++) {
                     if (this.#requestQueue[i].device_id === "[CLY]_temp_id") {
                         this.#requestQueue[i].device_id = this.device_id;
+                        this.#requestQueue[i].t = this.#deviceIdType;
                         needResync = true;
                     }
                 }
@@ -4125,7 +4144,7 @@ constructor(ob) {
             }
 
             setTimeout(() => {
-            this.#heartBeat(); 
+                this.#heartBeat(); 
             }, this.#beatInterval);
         }
 
