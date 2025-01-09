@@ -3743,6 +3743,21 @@ constructor(ob) {
                 window.addEventListener('message', (event) => {
                     this.#interpretContentMessage(event);   
                 });
+                let resizeTimeout;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimeout);
+                    resizeTimeout = setTimeout(() => {
+                        const width = window.innerWidth;
+                        const height = window.innerHeight;
+                        const iframe = document.getElementById(this.#contentIframeID);
+                        iframe.contentWindow.postMessage(
+                            { type: 'resize', width: width, height: height },
+                            '*'
+                        );
+                    }, 200);
+                });
+
+                
             }, true);
         };
 
@@ -3778,7 +3793,7 @@ constructor(ob) {
                 this.#log(logLevelEnums.ERROR, "sendContentRequest, Received message from invalid origin");
                 return;
             }
-            const {close, link, event} = messageEvent.data;
+            const {close, link, event, resize_me} = messageEvent.data;
 
             if (event) {
                 this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received event: [" + event + "]");
@@ -3807,6 +3822,20 @@ constructor(ob) {
                 }
                 window.open(link, "_blank");
                 this.#log(logLevelEnums.DEBUG, `sendContentRequest, Opened link in new tab: [${link}]`);
+            }
+
+            if (resize_me) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Resizing iframe");
+                const resInfo = this.#getResolution(true);
+                var dimensionToUse = resize_me.p;
+                if (resInfo.width >= resInfo.height) {
+                    dimensionToUse = resize_me.l;
+                };
+                const iframe = document.getElementById(this.#contentIframeID);
+                iframe.style.left = dimensionToUse.x + "px";
+                iframe.style.top = dimensionToUse.y + "px";
+                iframe.style.width = dimensionToUse.w + "px";
+                iframe.style.height = dimensionToUse.h + "px";
             }
 
             if (close === 1) {
