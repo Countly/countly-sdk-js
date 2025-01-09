@@ -2,6 +2,7 @@ var Countly = require("../../Countly.js");
 
 const appKey = "YOUR_APP_KEY";
 const sWait = 100;
+const sWait2 = 550;
 const mWait = 4000;
 const lWait = 10000;
 /**
@@ -9,11 +10,12 @@ const lWait = 10000;
  * @param {Function} callback - callback function that includes the Countly init and the tests
  */
 function haltAndClearStorage(callback) {
-    if (Countly.i !== undefined) {
+    if (Countly.halt !== undefined) {
         Countly.halt();
     }
     cy.wait(sWait).then(() => {
-        cy.clearLocalStorage();
+        cy.clearAllLocalStorage();
+        cy.clearAllCookies();
         cy.wait(sWait).then(() => {
             callback();
         });
@@ -329,6 +331,7 @@ function turnSearchStringToObject(searchString) {
 module.exports = {
     haltAndClearStorage,
     sWait,
+    sWait2,
     mWait,
     lWait,
     appKey,

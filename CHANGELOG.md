@@ -1,3 +1,8 @@
+## 24.11.3
+
+* Mitigated an issue where device ID type was assigned wrongly when SDK was generating an ID after stored device ID was cleared.
+* Mitigated an issue where device ID type of initially generated requests were not correctly reassigned after offline mode.
+
 ## 24.11.2
 
 * Added a new init method to set the interval of Content Zone's timer (Experimental!):
