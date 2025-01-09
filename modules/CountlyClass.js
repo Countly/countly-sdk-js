@@ -91,6 +91,7 @@ class CountlyClass {
     #contentEndPoint;
     #inContentZone;
     #contentZoneTimer;
+    #contentZoneTimerInterval;
     #contentIframeID;
 constructor(ob) {
         this.#self = this;
@@ -216,6 +217,11 @@ constructor(ob) {
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
+        this.#contentZoneTimerInterval = getConfig("content_zone_timer_interval", ob, null);
+
+        if (this.#contentZoneTimerInterval) {
+            this.#contentTimeInterval = Math.max(this.#contentZoneTimerInterval, 15) * 1000;
+        }
 
         if (this.#maxCrashLogs && !this.maxBreadcrumbCount) {
             this.maxBreadcrumbCount = this.#maxCrashLogs;
@@ -331,6 +337,7 @@ constructor(ob) {
             this.#removeValueFromStorage("cly_id");
             this.#removeValueFromStorage("cly_id_type");
             this.#removeValueFromStorage("cly_session");
+            tempIdModeWasEnabled = false;
         }
 
         // init configuration is printed out here:
@@ -418,6 +425,9 @@ constructor(ob) {
         }
         if (this.#remoteConfigs) {
             this.#log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(this.#remoteConfigs) + "]");
+        }
+        if (this.#contentZoneTimerInterval) {
+            this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#contentZoneTimerInterval + "]");
         }
         // functions, if provided, would be printed as true without revealing their content
         this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
@@ -685,6 +695,22 @@ constructor(ob) {
                 localStorage.setItem("cly_testLocal", true);
                 // clean up test
                 localStorage.removeItem("cly_testLocal");
+                localStorage.removeItem("cly_old_token");
+                localStorage.removeItem("cly_cmp_id");
+                localStorage.removeItem("cly_cmp_uid");
+                localStorage.removeItem("cly_id");
+                localStorage.removeItem("cly_id_type");
+                localStorage.removeItem("cly_queue");
+                localStorage.removeItem("cly_session");
+                localStorage.removeItem("cly_remote_configs");
+                localStorage.removeItem("cly_event");
+                localStorage.removeItem("cly_ignore");
+                localStorage.removeItem("cly_fb_widgets");
+                localStorage.removeItem("cly_token");
+                localStorage.removeItem("cly_hc_error_count");  
+                localStorage.removeItem("cly_hc_warning_count");
+                localStorage.removeItem("cly_hc_status_code");
+                localStorage.removeItem("cly_hc_error_message");
             }
             catch (e) {
                 this.#log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
@@ -928,12 +954,15 @@ constructor(ob) {
         };
 
         enable_offline_mode = () => {
+            if (this.#offlineMode) {
+                this.#log(logLevelEnums.WARNING, "enable_offline_mode, Countly is already in offline mode.");
+                return;
+            }
             this.#log(logLevelEnums.INFO, "enable_offline_mode, Enabling offline mode");
             // clear consents
             this.remove_consent_internal(Countly.features, false);
             this.#offlineMode = true;
             this.device_id = "[CLY]_temp_id";
-            this.device_id = this.device_id;
             this.#deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
         };
 
@@ -946,7 +975,6 @@ constructor(ob) {
             this.#offlineMode = false;
             if (device_id && this.device_id !== device_id) {
                 this.device_id = device_id;
-                this.device_id = this.device_id;
                 this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
                 this.#setValueInStorage("cly_id", this.device_id);
                 this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
@@ -957,7 +985,6 @@ constructor(ob) {
                 if (this.device_id === "[CLY]_temp_id") {
                     this.device_id = generateUUID();
                 }
-                this.device_id = this.device_id;
                 if (this.device_id !== this.#getValueFromStorage("cly_id")) {
                     this.#setValueInStorage("cly_id", this.device_id);
                     this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.SDK_GENERATED);
@@ -968,6 +995,7 @@ constructor(ob) {
                 for (var i = 0; i < this.#requestQueue.length; i++) {
                     if (this.#requestQueue[i].device_id === "[CLY]_temp_id") {
                         this.#requestQueue[i].device_id = this.device_id;
+                        this.#requestQueue[i].t = this.#deviceIdType;
                         needResync = true;
                     }
                 }
@@ -3679,12 +3707,14 @@ constructor(ob) {
 
         #prepareContentRequest = () => {
             this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
-            const resInfo = this.#getResolution();
+            const resInfo = this.#getResolution(true);
             var resToSend = {l : {}, p: {}};
-            resToSend.l.w = resInfo.width;
-            resToSend.l.h = resInfo.height;
-            resToSend.p.w = resInfo.height;
-            resToSend.p.h = resInfo.width;
+            const lWidthPHeight = Math.max(resInfo.width, resInfo.height);
+            const lHeightPWidth = Math.min(resInfo.width, resInfo.height);
+            resToSend.l.w = lWidthPHeight;
+            resToSend.l.h = lHeightPWidth;
+            resToSend.p.w = lHeightPWidth;
+            resToSend.p.h = lWidthPHeight;
 
             const local = navigator.language || navigator.browserLanguage || navigator.systemLanguage || navigator.userLanguage;
             const language = local.split('-')[0];
@@ -3713,6 +3743,21 @@ constructor(ob) {
                 window.addEventListener('message', (event) => {
                     this.#interpretContentMessage(event);   
                 });
+                let resizeTimeout;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimeout);
+                    resizeTimeout = setTimeout(() => {
+                        const width = window.innerWidth;
+                        const height = window.innerHeight;
+                        const iframe = document.getElementById(this.#contentIframeID);
+                        iframe.contentWindow.postMessage(
+                            { type: 'resize', width: width, height: height },
+                            '*'
+                        );
+                    }, 200);
+                });
+
+                
             }, true);
         };
 
@@ -3728,10 +3773,15 @@ constructor(ob) {
             iframe.id = this.#contentIframeID;
             iframe.src = response.html;
             iframe.style.position = "absolute";
-            iframe.style.left = response.geo.l.x + "px";
-            iframe.style.top = response.geo.l.y + "px";
-            iframe.style.width = response.geo.l.w + "px";
-            iframe.style.height = response.geo.l.h + "px";
+            var dimensionToUse = response.geo.p;
+            const resInfo = this.#getResolution(true);
+            if (resInfo.width >= resInfo.height) {
+                dimensionToUse = response.geo.l;
+            };
+            iframe.style.left = dimensionToUse.x + "px";
+            iframe.style.top = dimensionToUse.y + "px";
+            iframe.style.width = dimensionToUse.w + "px";
+            iframe.style.height = dimensionToUse.h + "px";
             iframe.style.border = "none";
             iframe.style.zIndex = "999999";
             document.body.appendChild(iframe);
@@ -3743,7 +3793,7 @@ constructor(ob) {
                 this.#log(logLevelEnums.ERROR, "sendContentRequest, Received message from invalid origin");
                 return;
             }
-            const {close, link, event} = messageEvent.data;
+            const {close, link, event, resize_me} = messageEvent.data;
 
             if (event) {
                 this.#log(logLevelEnums.DEBUG, "sendContentRequest, Received event: [" + event + "]");
@@ -3772,6 +3822,20 @@ constructor(ob) {
                 }
                 window.open(link, "_blank");
                 this.#log(logLevelEnums.DEBUG, `sendContentRequest, Opened link in new tab: [${link}]`);
+            }
+
+            if (resize_me) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Resizing iframe");
+                const resInfo = this.#getResolution(true);
+                var dimensionToUse = resize_me.p;
+                if (resInfo.width >= resInfo.height) {
+                    dimensionToUse = resize_me.l;
+                };
+                const iframe = document.getElementById(this.#contentIframeID);
+                iframe.style.left = dimensionToUse.x + "px";
+                iframe.style.top = dimensionToUse.y + "px";
+                iframe.style.width = dimensionToUse.w + "px";
+                iframe.style.height = dimensionToUse.h + "px";
             }
 
             if (close === 1) {
@@ -4109,7 +4173,7 @@ constructor(ob) {
             }
 
             setTimeout(() => {
-            this.#heartBeat(); 
+                this.#heartBeat(); 
             }, this.#beatInterval);
         }
 
@@ -4243,10 +4307,10 @@ constructor(ob) {
 
         /**
          * returns the resolution of the device
-         * @param {bool} getAvailable - get available resolution
+         * @param {bool} getViewPort - get viewport
          * @returns {object} resolution object: {width: 1920, height: 1080, orientation: 0}
          */
-        #getResolution = (getAvailable) => {
+        #getResolution = (getViewPort) => {
             this.#log(logLevelEnums.DEBUG, "Getting the resolution of the device");
             if (!isBrowser || !screen) {
                 this.#log(logLevelEnums.DEBUG, "No screen available");
@@ -4256,9 +4320,16 @@ constructor(ob) {
             var width = (screen.width) ? parseInt(screen.width) : 0;
             var height = (screen.height) ? parseInt(screen.height) : 0;
 
-            if (getAvailable) {
-                width = (screen.availWidth) ? parseInt(screen.availWidth) : width;
-                height = (screen.availHeight) ? parseInt(screen.availHeight) : height;
+            if (getViewPort) {
+                const viewportWidth = window.innerWidth;
+                const viewportHeight = window.innerHeight;
+                const layoutWidth = document.documentElement.clientWidth;
+                const layoutHeight = document.documentElement.clientHeight;
+                const visibleWidth = Math.min(viewportWidth, layoutWidth);
+                const visibleHeight = Math.min(viewportHeight, layoutHeight);
+
+                width = visibleWidth ? parseInt(visibleWidth) : width;
+                height = visibleHeight ? parseInt(visibleHeight) : height;
             }
 
             if (width === 0 || height === 0) { 
@@ -4267,18 +4338,16 @@ constructor(ob) {
             }
             var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
             if (iOS && window.devicePixelRatio) {
+                this.#log(logLevelEnums.VERBOSE, "Mobile Mac device detected, adjusting resolution");
                 // ios provides dips, need to multiply
                 width = Math.round(width * window.devicePixelRatio);
                 height = Math.round(height * window.devicePixelRatio);
             }
-            else {
-                if (Math.abs(screen.orientation.angle) === 90) {
-                    // we have landscape orientation
-                    // switch values for all except ios
-                    var temp = width;
-                    width = height;
-                    height = temp;
-                }
+            if (Math.abs(screen.orientation.angle) === 90) {
+                this.#log(logLevelEnums.VERBOSE, "Screen is in landscape mode, adjusting resolution");
+                var temp = width;
+                width = height;
+                height = temp;
             }
             return { width: width, height: height , orientation: screen.orientation.angle };
         };
