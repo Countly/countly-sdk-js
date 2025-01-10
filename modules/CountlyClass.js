@@ -4223,10 +4223,23 @@ constructor(ob) {
                     if (typeof inst[req[arg]] === "function") {
                         inst[req[arg]].apply(inst, req.slice(arg + 1));
                     }
+                    // Add interfaces you add to here for async queue to work
                     else if (req[arg].indexOf("userData.") === 0) {
                         var userdata = req[arg].replace("userData.", "");
                         if (typeof inst.userData[userdata] === "function") {
                             inst.userData[userdata].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (req[arg].indexOf("content.") === 0) {
+                        var contentMethod = req[arg].replace("content.", "");
+                        if (typeof inst.content[contentMethod] === "function") {
+                            inst.content[contentMethod].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (req[arg].indexOf("feedback.") === 0) {
+                        var feedbackMethod = req[arg].replace("feedback.", "");
+                        if (typeof inst.feedback[feedbackMethod] === "function") {
+                            inst.feedback[feedbackMethod].apply(inst, req.slice(arg + 1));
                         }
                     }
                     else if (typeof Countly[req[arg]] === "function") {
