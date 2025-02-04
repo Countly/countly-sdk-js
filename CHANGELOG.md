@@ -1,3 +1,11 @@
+## 25.1.0
+
+* Mitigated an issue where content resizing did not work in certain orientations.
+* Reduced log verbosity.
+* Improved orientation reporting precision.
+* Added a new init time config option for filtering crashes:
+  * `crash_filter_callback`
+
 ## 24.11.4
 
 * Mitigated an issue where `content` and `feedback` interfaces would not work with async multi instances. 

@@ -92,9 +92,13 @@ function initAfterLoadingAPM(conf) {
 * @return {string} serialized value
 * */
 Countly.serialize = function (value) {
-    // Convert object values to JSON
-    if (typeof value === "object") {
-        value = JSON.stringify(value);
+    try {
+        // Convert object values to JSON
+        if (typeof value === "object") {
+            value = JSON.stringify(value);
+        }
+    } catch (error) {
+        // silent fail        
     }
     return value;
 };
@@ -113,10 +117,7 @@ Countly.deserialize = function (data) {
         data = JSON.parse(data);
     }
     catch (e) {
-        if (checkIfLoggingIsOn()) {
-            // eslint-disable-next-line no-console
-            console.warn("[WARNING] [Countly] deserialize, Could not parse the file:[" + data + "], error: " + e);
-        }
+        // silent fail
     }
 
     return data;
