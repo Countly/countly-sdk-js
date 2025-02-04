@@ -1,6 +1,6 @@
 {
   "name": "countly-sdk-js",
-  "version": "24.11.4",
+  "version": "25.1.0",
   "description": "Countly JavaScript SDK",
   "type": "module",
   "main": "Countly.js",

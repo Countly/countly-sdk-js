@@ -93,6 +93,7 @@ class CountlyClass {
     #contentZoneTimer;
     #contentZoneTimerInterval;
     #contentIframeID;
+    #crashFilterCallback;
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
@@ -147,6 +148,7 @@ class CountlyClass {
         this.#inContentZone = false;
         this.#contentZoneTimer = null;
         this.#contentIframeID = "cly-content-iframe";
+        this.#crashFilterCallback = null;
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -218,6 +220,7 @@ class CountlyClass {
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
         this.#contentZoneTimerInterval = getConfig("content_zone_timer_interval", ob, null);
+        this.#crashFilterCallback = getConfig("crash_filter_callback", ob, null);
 
         if (this.#contentZoneTimerInterval) {
             this.#contentTimeInterval = Math.max(this.#contentZoneTimerInterval, 15) * 1000;
@@ -1027,8 +1030,12 @@ class CountlyClass {
                 if (this.enableOrientationTracking) {
                     // report orientation
                     this.#report_orientation();
+                    let orientationTimeout;
                     add_event_listener(window, "resize", () => {
-                        this.#report_orientation();
+                        clearTimeout(orientationTimeout);
+                        orientationTimeout = setTimeout(() => {
+                            this.#report_orientation();
+                        }, 200);
                     });
                 }
                 this.#lastBeat = getTimestamp();
@@ -3647,8 +3654,21 @@ class CountlyClass {
 
             // send userAgent string with the crash object incase it gets removed by a gateway
             var req = {};
-            req.crash = JSON.stringify(obj);
             req.metrics = JSON.stringify({ _ua: metrics._ua });
+            
+            if (this.#crashFilterCallback && typeof this.#crashFilterCallback === "function") {
+                this.#log(logLevelEnums.VERBOSE, "recordError, Applying crash filter to:[" + JSON.stringify(obj)+ "]");
+                obj = this.#crashFilterCallback(obj);
+                this.#log(logLevelEnums.VERBOSE, "recordError, Filtered crash object:[" + JSON.stringify(obj)+ "]");
+            }
+            
+            if (!obj) {
+                this.#log(logLevelEnums.DEBUG, "recordError, Crash object was filtered out");
+                return;
+            }
+
+            // error should be re-truncated incase it was modified by the filter
+            req.crash = JSON.stringify(obj);
 
             this.#toRequestQueue(req);
         }
@@ -3783,6 +3803,8 @@ class CountlyClass {
         try {
             var iframe = document.createElement("iframe");
             iframe.id = this.#contentIframeID;
+            // always https in the future
+            // response.html = response.html.replace(/http:\/\//g, "https://");
             iframe.src = response.html;
             iframe.style.position = "absolute";
             var dimensionToUse = response.geo.p;
@@ -3843,7 +3865,7 @@ class CountlyClass {
         if (resize_me) {
             this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Resizing iframe");
             const resInfo = this.#getResolution(true);
-            if (!resize_me.l || !resize_me.p || !resize_me.l.x || !resize_me.l.y || !resize_me.l.w || !resize_me.l.h || !resize_me.p.x || !resize_me.p.y || !resize_me.p.w || !resize_me.p.h) {
+            if (!resize_me.l || !resize_me.p) {
                 this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid resize object");
                 return;
             }
@@ -4728,7 +4750,7 @@ class CountlyClass {
         try {
             var parsedResponse = JSON.parse(str);
             // check if parsed response is a JSON object or JSON array, if not it is not valid 
-            if ((Object.prototype.toString.call(parsedResponse) !== "[object Object]") && (!Array.isArray(parsedResponse))) {
+            if ((Object.prototype.toString.call(parsedResponse) !== "[object Object]") && (!Array.isArray(parsedResponse)) && parsedResponse !== "No content block found!") {
                 this.#log(logLevelEnums.ERROR, "Http response is not JSON Object nor JSON Array");
                 return false;
             }
@@ -4913,20 +4935,24 @@ class CountlyClass {
             useLocalStorage = this.#lsSupport;
         }
 
-        // Get value
-        if (useLocalStorage) { // Native support
-            data = localStorage.getItem(key);
+        try {
+            // Get value
+            if (useLocalStorage) { // Native support
+                data = localStorage.getItem(key);
+            }
+            else if (this.storage !== "localstorage") { // Use cookie
+                data = this.#readCookie(key);
+            }
+            
+            // we return early without parsing if we are trying to get the device ID. This way we are keeping it as a string incase it was numerical.
+            if (key.endsWith("cly_id")) {
+                return data;
+            }
+            
+            return this.deserialize(data);
+        } catch (error) {
+            
         }
-        else if (this.storage !== "localstorage") { // Use cookie
-            data = this.#readCookie(key);
-        }
-
-        // we return early without parsing if we are trying to get the device ID. This way we are keeping it as a string incase it was numerical.
-        if (key.endsWith("cly_id")) {
-            return data;
-        }
-
-        return this.deserialize(data);
     }
 
     /**
@@ -4952,26 +4978,30 @@ class CountlyClass {
             }
         }
 
-        if (typeof value !== "undefined" && value !== null) {
-            // use dev provided storage if available
-            if (typeof this.storage === "object" && typeof this.storage.setItem === "function") {
-                this.storage.setItem(key, value);
-                return;
+        try {
+            if (typeof value !== "undefined" && value !== null) {
+                // use dev provided storage if available
+                if (typeof this.storage === "object" && typeof this.storage.setItem === "function") {
+                    this.storage.setItem(key, value);
+                    return;
+                }
+                
+                // developer set values takes priority
+                if (useLocalStorage === undefined) {
+                    useLocalStorage = this.#lsSupport;
+                }
+                
+                value = this.serialize(value);
+                // Set the store
+                if (useLocalStorage) { // Native support
+                    localStorage.setItem(key, value);
+                }
+                else if (this.storage !== "localstorage") { // Use Cookie
+                    this.#createCookie(key, value, 30);
+                }
             }
-
-            // developer set values takes priority
-            if (useLocalStorage === undefined) {
-                useLocalStorage = this.#lsSupport;
-            }
-
-            value = this.serialize(value);
-            // Set the store
-            if (useLocalStorage) { // Native support
-                localStorage.setItem(key, value);
-            }
-            else if (this.storage !== "localstorage") { // Use Cookie
-                this.#createCookie(key, value, 30);
-            }
+        } catch (error) {
+            // silent fail   
         }
     }
 
@@ -4997,22 +5027,26 @@ class CountlyClass {
             }
         }
 
-        // use dev provided storage if available
-        if (typeof this.storage === "object" && typeof this.storage.removeItem === "function") {
-            this.storage.removeItem(key);
-            return;
-        }
-
-        // developer set values takes priority
-        if (useLocalStorage === undefined) {
-            useLocalStorage = this.#lsSupport;
-        }
-
-        if (useLocalStorage) { // Native support
-            localStorage.removeItem(key);
-        }
-        else if (this.storage !== "localstorage") { // Use cookie
-            this.#createCookie(key, "", -1);
+        try {
+            // use dev provided storage if available
+            if (typeof this.storage === "object" && typeof this.storage.removeItem === "function") {
+                this.storage.removeItem(key);
+                return;
+            }
+            
+            // developer set values takes priority
+            if (useLocalStorage === undefined) {
+                useLocalStorage = this.#lsSupport;
+            }
+            
+            if (useLocalStorage) { // Native support
+                localStorage.removeItem(key);
+            }
+            else if (this.storage !== "localstorage") { // Use cookie
+                this.#createCookie(key, "", -1);
+            }
+        } catch (error) {
+            // silent fail   
         }
     }
 
