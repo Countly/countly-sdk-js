@@ -44,7 +44,6 @@ class CountlyClass {
     #apiPath;
     #readPath;
     #beatInterval;
-    #queueSize;
     #requestQueue;
     #eventQueue;
     #remoteConfigs;
@@ -62,9 +61,6 @@ class CountlyClass {
     #failTimeoutAmount;
     #inactivityTime;
     #inactivityCounter;
-    #sessionUpdate;
-    #maxEventBatch;
-    #maxCrashLogs;
     #useSessionCookie;
     #sessionCookieTimeout;
     #readyToProcess;
@@ -87,27 +83,45 @@ class CountlyClass {
     #shouldSendHC;
     #consents;
     #generatedRequests;
-    #contentTimeInterval;
     #contentEndPoint;
     #inContentZone;
     #contentZoneTimer;
-    #contentZoneTimerInterval;
     #contentIframeID;
     #crashFilterCallback;
+    #serverConfigCache;
+    #SCNetwork;
+    #SCSizeReqQueue;
+    #SCSizeEventBatch;
+    #SCIntervalSessionUpdate;
+    #SCIntervalContent;
+    #SCInterval;
+    #SCTrackingAll;
+    #SCTrackingSession;
+    #SCTrackingViews; 
+    #SCTrackingCrashes;
+    #SCTrackingEvents;
+    #SCTrackingLocation;
+    #SCEnableContent;
+    #SCEnableConsentRequired;
+    #SCLimitKeyLength;
+    #SCLimitValueSize;
+    #SCLimitSegmentationValues;
+    #SCLimitBreadcrumbCount;
+    #SCLimitStackTraceLinesPerThread;
+    #SCLimitStackTraceLineLength;
+    #initContentSent;
+    #initTimestamp;
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
         this.#sessionStarted = false;
         this.#apiPath = "/i";
         this.#readPath = "/o/sdk";
-        this.#beatInterval = getConfig("interval", ob, configurationDefaultValues.BEAT_INTERVAL);
-        this.#queueSize = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
         this.#requestQueue = [];
         this.#eventQueue = [];
         this.#remoteConfigs = {};
         this.#crashLogs = [];
         this.#timedEvents = {};
-        this.#ignoreReferrers = getConfig("ignore_referrers", ob, []);
         this.#crashSegments = null;
         this.#autoExtend = true;
         this.#lastBeat;
@@ -116,17 +130,9 @@ class CountlyClass {
         this.#lastViewTime = 0;
         this.#lastViewStoredDuration = 0;
         this.#failTimeout = 0;
-        this.#failTimeoutAmount = getConfig("fail_timeout", ob, configurationDefaultValues.FAIL_TIMEOUT_AMOUNT);
-        this.#inactivityTime = getConfig("inactivity_time", ob, configurationDefaultValues.INACTIVITY_TIME);
         this.#inactivityCounter = 0;
-        this.#sessionUpdate = getConfig("session_update", ob, configurationDefaultValues.SESSION_UPDATE);
-        this.#maxEventBatch = getConfig("max_events", ob, configurationDefaultValues.MAX_EVENT_BATCH);
-        this.#maxCrashLogs = getConfig("max_logs", ob, null);
-        this.#useSessionCookie = getConfig("use_session_cookie", ob, true);
-        this.#sessionCookieTimeout = getConfig("session_cookie_timeout", ob, configurationDefaultValues.SESSION_COOKIE_TIMEOUT);
         this.#readyToProcess = true;
         this.#hasPulse = false;
-        this.#offlineMode = getConfig("offline_mode", ob, false);
         this.#lastParams = {};
         this.#trackTime = true;
         this.#startTime = getTimestamp();
@@ -139,16 +145,37 @@ class CountlyClass {
         this.#currentViewId = null; // this is the global variable for tracking the current view's ID. Used in view tracking. Becomes previous view ID at the end.
         this.#previousViewId = null; // this is the global variable for tracking the previous view's ID. Used in view tracking. First view has no previous view ID.
         this.#freshUTMTags = null;
-        this.#sdkName = getConfig("sdk_name", ob, SDK_NAME);
-        this.#sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
         this.#shouldSendHC = false;
         this.#generatedRequests = [];
-        this.#contentTimeInterval = 30000;
         this.#contentEndPoint = "/o/sdk/content";
         this.#inContentZone = false;
         this.#contentZoneTimer = null;
         this.#contentIframeID = "cly-content-iframe";
         this.#crashFilterCallback = null;
+        this.#SCNetwork = true;
+        this.#SCSizeReqQueue = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
+        this.#SCSizeEventBatch = getConfig("max_events", ob, configurationDefaultValues.MAX_EVENT_BATCH);
+        this.#SCIntervalSessionUpdate = getConfig("session_update", ob, configurationDefaultValues.SESSION_UPDATE);
+        this.#SCIntervalContent = Math.max(getConfig("content_zone_timer_interval", ob, 30), 15) * 1000; // min 15 seconds
+        this.#SCInterval = 4; // 4 hours
+        this.#SCTrackingAll = true;
+        this.#SCTrackingSession = true;
+        this.#SCTrackingCrashes = true;
+        this.#SCTrackingViews = true;
+        this.#SCTrackingEvents = true;
+        this.#SCTrackingLocation = true;
+        this.#SCEnableContent = false;
+        this.SCEnableConsentRequired = getConfig("require_consent", ob, false);
+        this.#SCLimitKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
+        this.#SCLimitValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
+        this.#SCLimitSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
+        this.#SCLimitBreadcrumbCount = getConfig("max_breadcrumb_count", ob, configurationDefaultValues.MAX_BREADCRUMB_COUNT);
+        this.#SCLimitStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
+        this.#SCLimitStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
+        this.app_key = getConfig("app_key", ob, null);
+        this.url = stripTrailingSlash(getConfig("url", ob, ""));
+        this.serialize = getConfig("serialize", ob, Countly.serialize);
+        this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -160,6 +187,13 @@ class CountlyClass {
             this.#lsSupport = false;
         }
 
+        this.#serverConfigCache = this.#getValueFromStorage("cly_config");
+        if (!this.#serverConfigCache) {
+            this.#serverConfigCache = getConfig("server_config", ob, {});
+            this.#setValueInStorage("cly_config", JSON.stringify(this.#serverConfigCache));
+        }
+        this.#populateServerConfig(this.#serverConfigCache);
+
         // create object to store consents
         this.#consents = {};
         for (var it = 0; it < Countly.features.length; it++) {
@@ -167,6 +201,133 @@ class CountlyClass {
         }
 
         this.#initialize(ob);
+
+        // start SDK
+        this.#notifyLoaders();
+
+        setTimeout(() => {
+            if (!Countly.noHeartBeat) {
+                this.#heartBeat();
+            } else {
+                this.#log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
+            }
+
+            if (this.remote_config) {
+                this.fetch_remote_config(this.remote_config);
+            }
+        }, 1);
+        if (isBrowser) {
+            document.documentElement.setAttribute("data-countly-useragent", currentUserAgentString());
+        }
+        this.#initTimestamp = getMsTimestamp();
+        // send instant health check request
+        this.#HealthCheck.sendInstantHCRequest(); 
+        if (this.#SCEnableContent) {
+            this.#enterContentZoneInternal();
+            this.#initContentSent = true;
+        }
+        this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
+    };
+
+    #getAndSetServerConfig = () => {
+        this.#log(logLevelEnums.INFO, "server_config, Fetching server config");
+        var params = {};
+        params.app_key = this.app_key;
+        params.device_id = this.device_id;
+        params.sdk_version = this.#sdkVersion;
+        params.sdk_name = this.#sdkName;
+        params.method = "sc";
+        this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
+            if (err) {
+                // error has been logged by the request function
+                return;
+            }
+            try {
+                var config = JSON.parse(responseText);
+                this.#log(logLevelEnums.INFO, "server_config, Config fetched successfully:[" + JSON.stringify(config) + "]");
+                if (config) {
+                    this.#populateServerConfig(config);
+                }
+                this.#setValueInStorage("cly_config", JSON.stringify(config));
+            }
+            catch (ex) {
+                this.#log(logLevelEnums.ERROR, "server_config, Had an issue while parsing the response: " + ex);
+            }
+        }, true, true);
+        setTimeout(() => {
+            this.#getAndSetServerConfig();
+        }, this.#SCInterval * 60 * 60 * 1000);
+    }
+
+    #populateServerConfig = (mainCache) => {
+        if (!mainCache || !mainCache.c || typeof mainCache.c !== "object") {
+            return;
+        }
+        var cache = mainCache.c;
+
+        if (cache && cache.hasOwnProperty("networking")) {
+            this.#SCNetwork = cache.networking;
+        }
+        if (cache && cache.hasOwnProperty("tracking")) {
+            this.#SCTrackingAll = cache.tracking;
+        }
+        if (cache && cache.hasOwnProperty("rqs")) {
+            this.#SCSizeReqQueue = cache.rqs;
+        }
+        if (cache && cache.hasOwnProperty("eqs")) {
+            this.#SCSizeEventBatch = cache.eqs;
+        }
+        if (cache && cache.hasOwnProperty("sui")) {
+            this.#SCIntervalSessionUpdate = cache.sui;
+        }
+        if (cache && cache.hasOwnProperty("czi") && cache.czi > 14) {
+            this.#SCIntervalContent = cache.czi * 1000;
+        }
+        if (cache && cache.hasOwnProperty("ecz")) {
+            this.#SCEnableContent = cache.ecz;
+            if (!this.#initContentSent && this.#SCEnableContent) {
+                this.#enterContentZoneInternal();
+            }
+        }
+        if (cache && cache.hasOwnProperty("cr")) {
+            this.#SCEnableConsentRequired = cache.cr;
+        }
+        if (cache && cache.hasOwnProperty("st")) {
+            this.#SCTrackingSession = cache.st;
+        }
+        if (cache && cache.hasOwnProperty("crt")) {
+            this.#SCTrackingCrashes = cache.crt;
+        }
+        if (cache && cache.hasOwnProperty("vt")) {
+            this.#SCTrackingViews = cache.vt;
+        }
+        if (cache && cache.hasOwnProperty("cet")) {
+            this.#SCTrackingEvents = cache.cet;
+        }
+        if (cache && cache.hasOwnProperty("lkl")) {
+            this.#SCLimitKeyLength = cache.lkl;
+        }
+        if (cache && cache.hasOwnProperty("lvs")) {
+            this.#SCLimitValueSize = cache.lvs;
+        }
+        if (cache && cache.hasOwnProperty("lsv")) {
+            this.#SCLimitSegmentationValues = cache.lsv;
+        }
+        if (cache && cache.hasOwnProperty("lbc")) {
+            this.#SCLimitBreadcrumbCount = cache.lbc;
+        }
+        if (cache && cache.hasOwnProperty("ltlpt")) {
+            this.#SCLimitStackTraceLinesPerThread = cache.ltlpt;
+        }
+        if (cache && cache.hasOwnProperty("ltl")) {
+            this.#SCLimitStackTraceLineLength = cache.ltl;
+        }
+        if (cache && cache.hasOwnProperty("scui")) {
+            this.#SCInterval = Math.max(cache.scui,4);
+        }
+        if (cache && cache.hasOwnProperty("lt")) {
+            this.#SCTrackingLocation = cache.lt;
+        }
     };
 
     /**
@@ -175,15 +336,22 @@ class CountlyClass {
      * @returns 
      */
     #initialize = (ob) => {
-        this.serialize = getConfig("serialize", ob, Countly.serialize);
-        this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
+        this.#ignoreReferrers = getConfig("ignore_referrers", ob, []);
+        this.#failTimeoutAmount = getConfig("fail_timeout", ob, configurationDefaultValues.FAIL_TIMEOUT_AMOUNT);
+        this.#inactivityTime = getConfig("inactivity_time", ob, configurationDefaultValues.INACTIVITY_TIME);
+        this.#useSessionCookie = getConfig("use_session_cookie", ob, true);
+        this.#sessionCookieTimeout = getConfig("session_cookie_timeout", ob, configurationDefaultValues.SESSION_COOKIE_TIMEOUT);
+        this.#offlineMode = getConfig("offline_mode", ob, false);
+        this.#sdkName = getConfig("sdk_name", ob, SDK_NAME);
+        this.#sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
+        this.#beatInterval = getConfig("interval", ob, configurationDefaultValues.BEAT_INTERVAL);
+
         this.getViewName = getConfig("getViewName", ob, Countly.getViewName);
         this.getViewUrl = getConfig("getViewUrl", ob, Countly.getViewUrl);
         this.getSearchQuery = getConfig("getSearchQuery", ob, Countly.getSearchQuery);
         this.DeviceIdType = Countly.DeviceIdType; // it is Countly device Id type Enums for clients to use
         this.namespace = getConfig("namespace", ob, "");
         this.clearStoredId = getConfig("clear_stored_id", ob, false);
-        this.app_key = getConfig("app_key", ob, null);
         this.onload = getConfig("onload", ob, []);
         this.utm = getConfig("utm", ob, { source: true, medium: true, campaign: true, term: true, content: true });
         this.ignore_prefetch = getConfig("ignore_prefetch", ob, true);
@@ -194,7 +362,6 @@ class CountlyClass {
         this.test_mode_eq = getConfig("test_mode_eq", ob, false);
         this.metrics = getConfig("metrics", ob, {});
         this.headers = getConfig("headers", ob, {});
-        this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.app_version = getConfig("app_version", ob, "0.0");
         this.country_code = getConfig("country_code", ob, null);
         this.city = getConfig("city", ob, null);
@@ -203,36 +370,16 @@ class CountlyClass {
         this.force_post = getConfig("force_post", ob, false);
         this.remote_config = getConfig("remote_config", ob, false);
         this.ignore_visitor = getConfig("ignore_visitor", ob, false);
-        this.require_consent = getConfig("require_consent", ob, false);
         this.track_domains = !isBrowser ? undefined : getConfig("track_domains", ob, true);
         this.storage = getConfig("storage", ob, "default");
         this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
-        this.maxKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
-        this.maxValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
-        this.maxSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
-        this.maxBreadcrumbCount = getConfig("max_breadcrumb_count", ob, null);
-        this.maxStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
-        this.maxStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
         this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
         this.salt = getConfig("salt", ob, null);
         this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
-        this.#contentZoneTimerInterval = getConfig("content_zone_timer_interval", ob, null);
         this.#crashFilterCallback = getConfig("crash_filter_callback", ob, null);
-
-        if (this.#contentZoneTimerInterval) {
-            this.#contentTimeInterval = Math.max(this.#contentZoneTimerInterval, 15) * 1000;
-        }
-
-        if (this.#maxCrashLogs && !this.maxBreadcrumbCount) {
-            this.maxBreadcrumbCount = this.#maxCrashLogs;
-            this.#log(logLevelEnums.WARNING, "initialize, 'maxCrashLogs' is deprecated. Use 'maxBreadcrumbCount' instead!");
-        }
-        else if (!this.#maxCrashLogs && !this.maxBreadcrumbCount) {
-            this.maxBreadcrumbCount = 100;
-        }
 
         if (this.storage === "cookie") {
             this.#lsSupport = false;
@@ -350,9 +497,10 @@ class CountlyClass {
         } else {
             this.#log(logLevelEnums.DEBUG, "initialize, SDK name:[" + this.#sdkName + "], version:[" + this.#sdkVersion + "], default name:[" + SDK_NAME + "] and default version:[" + SDK_VERSION + "]");
         }
+        this.#log(logLevelEnums.DEBUG, "initialize, stored server config:[" + JSON.stringify(this.#serverConfigCache) + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, app_key:[" + this.app_key + "], url:[" + this.url + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, device_id:[" + getConfig("device_id", ob, undefined) + "]");
-        this.#log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.require_consent + "]");
+        this.#log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.#SCEnableConsentRequired + "]");
         try {
             this.#log(logLevelEnums.DEBUG, "initialize, metric override:[" + JSON.stringify(this.metrics) + "]");
             this.#log(logLevelEnums.DEBUG, "initialize, header override:[" + JSON.stringify(this.headers) + "]");
@@ -429,37 +577,37 @@ class CountlyClass {
         if (this.#remoteConfigs) {
             this.#log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(this.#remoteConfigs) + "]");
         }
-        if (this.#contentZoneTimerInterval) {
-            this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#contentZoneTimerInterval + "]");
+        if (this.#SCIntervalContent) {
+            this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#SCIntervalContent + "]");
         }
         // functions, if provided, would be printed as true without revealing their content
         this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, 'getSearchQuery' callback override provided:[" + (this.getSearchQuery !== Countly.getSearchQuery) + "]");
 
         // limits are printed here if they were modified 
-        if (this.maxKeyLength !== configurationDefaultValues.MAX_KEY_LENGTH) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxKeyLength set to:[" + this.maxKeyLength + "] characters");
+        if (this.#SCLimitKeyLength !== configurationDefaultValues.MAX_KEY_LENGTH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxKeyLength set to:[" + this.#SCLimitKeyLength + "] characters");
         }
-        if (this.maxValueSize !== configurationDefaultValues.MAX_VALUE_SIZE) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxValueSize set to:[" + this.maxValueSize + "] characters");
+        if (this.#SCLimitValueSize  !== configurationDefaultValues.MAX_VALUE_SIZE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxValueSize set to:[" + this.#SCLimitValueSize  + "] characters");
         }
-        if (this.maxSegmentationValues !== configurationDefaultValues.MAX_SEGMENTATION_VALUES) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxSegmentationValues set to:[" + this.maxSegmentationValues + "] key/value pairs");
+        if (this.#SCLimitSegmentationValues !== configurationDefaultValues.MAX_SEGMENTATION_VALUES) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxSegmentationValues set to:[" + this.#SCLimitSegmentationValues + "] key/value pairs");
         }
-        if (this.maxBreadcrumbCount !== configurationDefaultValues.MAX_BREADCRUMB_COUNT) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxBreadcrumbCount for custom logs set to:[" + this.maxBreadcrumbCount + "] entries");
+        if (this.#SCLimitBreadcrumbCount !== configurationDefaultValues.MAX_BREADCRUMB_COUNT) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxBreadcrumbCount for custom logs set to:[" + this.#SCLimitBreadcrumbCount + "] entries");
         }
-        if (this.maxStackTraceLinesPerThread !== configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLinesPerThread set to:[" + this.maxStackTraceLinesPerThread + "] lines");
+        if (this.#SCLimitStackTraceLinesPerThread !== configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLinesPerThread set to:[" + this.#SCLimitStackTraceLinesPerThread + "] lines");
         }
-        if (this.maxStackTraceLineLength !== configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLineLength set to:[" + this.maxStackTraceLineLength + "] characters");
+        if (this.#SCLimitStackTraceLineLength !== configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLineLength set to:[" + this.#SCLimitStackTraceLineLength + "] characters");
         }
         if (this.#beatInterval !== configurationDefaultValues.BEAT_INTERVAL) {
             this.#log(logLevelEnums.DEBUG, "initialize, interval for heartbeats set to:[" + this.#beatInterval + "] milliseconds");
         }
-        if (this.#queueSize !== configurationDefaultValues.QUEUE_SIZE) {
-            this.#log(logLevelEnums.DEBUG, "initialize, queue_size set to:[" + this.#queueSize + "] items max");
+        if (this.#SCSizeReqQueue !== configurationDefaultValues.QUEUE_SIZE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, queue_size set to:[" + this.#SCSizeReqQueue + "] items max");
         }
         if (this.#failTimeoutAmount !== configurationDefaultValues.FAIL_TIMEOUT_AMOUNT) {
             this.#log(logLevelEnums.DEBUG, "initialize, fail_timeout set to:[" + this.#failTimeoutAmount + "] seconds of wait time after a failed connection to server");
@@ -467,14 +615,11 @@ class CountlyClass {
         if (this.#inactivityTime !== configurationDefaultValues.INACTIVITY_TIME) {
             this.#log(logLevelEnums.DEBUG, "initialize, inactivity_time set to:[" + this.#inactivityTime + "] minutes to consider a user as inactive after no observable action");
         }
-        if (this.#sessionUpdate !== configurationDefaultValues.SESSION_UPDATE) {
-            this.#log(logLevelEnums.DEBUG, "initialize, session_update set to:[" + this.#sessionUpdate + "] seconds to check if extending a session is needed while the user is active");
+        if (this.#SCIntervalSessionUpdate !== configurationDefaultValues.SESSION_UPDATE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, session_update set to:[" + this.#SCIntervalSessionUpdate + "] seconds to check if extending a session is needed while the user is active");
         }
-        if (this.#maxEventBatch !== configurationDefaultValues.MAX_EVENT_BATCH) {
-            this.#log(logLevelEnums.DEBUG, "initialize, max_events set to:[" + this.#maxEventBatch + "] events to send in one batch");
-        }
-        if (this.#maxCrashLogs) {
-            this.#log(logLevelEnums.WARNING, "initialize, max_logs set to:[" + this.#maxCrashLogs + "] breadcrumbs to store for crash logs max, deprecated ");
+        if (this.#SCSizeEventBatch !== configurationDefaultValues.MAX_EVENT_BATCH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, max_events set to:[" + this.#SCSizeEventBatch + "] events to send in one batch");
         }
         if (this.#sessionCookieTimeout !== configurationDefaultValues.SESSION_COOKIE_TIMEOUT) {
             this.#log(logLevelEnums.DEBUG, "initialize, session_cookie_timeout set to:[" + this.#sessionCookieTimeout + "] minutes to expire a cookies session");
@@ -596,25 +741,7 @@ class CountlyClass {
             this.userData.save();
         }
 
-        this.#notifyLoaders();
-
-        setTimeout(() => {
-            if (!Countly.noHeartBeat) {
-                this.#heartBeat();
-            } else {
-                this.#log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
-            }
-
-            if (this.remote_config) {
-                this.fetch_remote_config(this.remote_config);
-            }
-        }, 1);
-        if (isBrowser) {
-            document.documentElement.setAttribute("data-countly-useragent", currentUserAgentString());
-        }
-        // send instant health check request
-        this.#HealthCheck.sendInstantHCRequest();
-        this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
+        this.#getAndSetServerConfig();
     };
 
     #updateConsent = () => {
@@ -655,7 +782,7 @@ class CountlyClass {
         this.#apiPath = "/i";
         this.#readPath = "/o/sdk";
         this.#beatInterval = 500;
-        this.#queueSize = 1000;
+        this.#SCSizeReqQueue = 1000;
         this.#requestQueue = [];
         this.#eventQueue = [];
         this.#remoteConfigs = {};
@@ -672,9 +799,8 @@ class CountlyClass {
         this.#failTimeoutAmount = 60;
         this.#inactivityTime = 20;
         this.#inactivityCounter = 0;
-        this.#sessionUpdate = 60;
-        this.#maxEventBatch = 100;
-        this.#maxCrashLogs = null;
+        this.#SCIntervalSessionUpdate = 60;
+        this.#SCSizeEventBatch = 100;
         this.#useSessionCookie = true;
         this.#sessionCookieTimeout = 30;
         this.#readyToProcess = true;
@@ -749,17 +875,17 @@ class CountlyClass {
         this.useExplicitRcApi = undefined;
         this.remote_config = undefined;
         this.ignore_visitor = undefined;
-        this.require_consent = undefined;
+        this.#SCEnableConsentRequired = undefined;
         this.track_domains = undefined;
         this.storage = undefined;
         this.enableOrientationTracking = undefined;
         this.salt = undefined;
-        this.maxKeyLength = undefined;
-        this.maxValueSize = undefined;
-        this.maxSegmentationValues = undefined;
-        this.maxBreadcrumbCount = undefined;
-        this.maxStackTraceLinesPerThread = undefined;
-        this.maxStackTraceLineLength = undefined;
+        this.#SCLimitKeyLength = undefined;
+        this.#SCLimitValueSize  = undefined;
+        this.#SCLimitSegmentationValues = undefined;
+        this.#SCLimitBreadcrumbCount = undefined;
+        this.#SCLimitStackTraceLinesPerThread = undefined;
+        this.#SCLimitStackTraceLineLength = undefined;
     };
 
     /**
@@ -809,7 +935,7 @@ class CountlyClass {
     */
     check_consent = (feature) => {
         this.#log(logLevelEnums.INFO, "check_consent, Checking if consent is given for specific feature:[" + feature + "]");
-        if (!this.require_consent) {
+        if (!this.#SCEnableConsentRequired) {
             // we don't need to have specific consents
             this.#log(logLevelEnums.INFO, "check_consent, require_consent is off, no consent is necessary");
             return true;
@@ -861,7 +987,7 @@ class CountlyClass {
     */
     check_any_consent = () => {
         this.#log(logLevelEnums.INFO, "check_any_consent, Checking if any consent is given");
-        if (!this.require_consent) {
+        if (!this.#SCEnableConsentRequired) {
             // we don't need to have consents
             this.#log(logLevelEnums.INFO, "check_any_consent, require_consent is off, no consent is necessary");
             return true;
@@ -965,6 +1091,7 @@ class CountlyClass {
         // clear consents
         this.remove_consent_internal(Countly.features, false);
         this.#offlineMode = true;
+        this.#exitContentZoneInternal();
         this.device_id = "[CLY]_temp_id";
         this.#deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
     };
@@ -1010,6 +1137,11 @@ class CountlyClass {
             this.#HealthCheck.sendInstantHCRequest();
             this.#shouldSendHC = false;
         }
+        this.#getAndSetServerConfig();
+        if (this.#SCEnableContent) {
+            this.#enterContentZoneInternal();
+            this.#initContentSent = true;
+        }
     };
 
     /**
@@ -1018,6 +1150,10 @@ class CountlyClass {
     * @param {bool} force - force begin session request even if session cookie is enabled
     */
     begin_session = (noHeartBeat, force) => {
+        if (!this.#SCTrackingSession) {
+            this.#log(logLevelEnums.INFO, "begin_session, Session tracking is disabled by server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "begin_session, Starting the session. There was an ongoing session: [" + this.#sessionStarted + "]");
         if (noHeartBeat) {
             this.#log(logLevelEnums.INFO, "begin_session, Heartbeats are disabled");
@@ -1066,6 +1202,10 @@ class CountlyClass {
     * @param {int} sec - amount of seconds to report for current session
     */
     session_duration = (sec) => {
+        if (!this.#SCTrackingSession) {
+            this.#log(logLevelEnums.INFO, "session_duration, Session tracking is disabled by server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "session_duration, Reporting session duration: [" + sec + "]");
         if (!this.check_consent(featureEnums.SESSIONS)) {
             return;
@@ -1087,6 +1227,10 @@ class CountlyClass {
     * @param {bool} force - force end session request even if session cookie is enabled
     */
     end_session = (sec, force) => {
+        if (!this.#SCTrackingSession && !force) {
+            this.#log(logLevelEnums.INFO, "end_session, Session tracking is disabled by server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "end_session, Ending the current session. There was an on going session:[" + this.#sessionStarted + "]");
         if (this.check_consent(featureEnums.SESSIONS)) {
             if (this.#sessionStarted) {
@@ -1213,7 +1357,7 @@ class CountlyClass {
                 respectiveConsent = this.check_consent(featureEnums.CLICKS) || this.check_consent(featureEnums.SCROLLS);
                 break;
             default:
-                respectiveConsent = this.check_consent(featureEnums.EVENTS);
+                respectiveConsent = this.#SCTrackingEvents ? this.check_consent(featureEnums.EVENTS) : false;
         }
         // if consent is given adds event to the queue
         if (respectiveConsent) {
@@ -1229,8 +1373,8 @@ class CountlyClass {
      */
     #add_cly_events = (event, eventIdOverride) => {
         // ignore bots
-        if (this.ignore_visitor) {
-            this.#log(logLevelEnums.ERROR, "Adding event failed. Possible bot or user opt out");
+        if (this.ignore_visitor || !this.#SCTrackingAll) {
+            this.#log(logLevelEnums.WARNING, "Not adding the event. Tracking is disabled by the server config:[" + !this.#SCTrackingAll + "] or ignore_visitor is:[" + this.ignore_visitor + "]");
             return;
         }
 
@@ -1245,9 +1389,9 @@ class CountlyClass {
         // we omit the internal event keys from truncation. TODO: This is not perfect as it would omit a key that includes an internal event key and more too. But that possibility seems negligible. 
         if (!internalEventKeyEnumsArray.includes(event.key)) {
             // truncate event name and segmentation to internal limits
-            event.key = truncateSingleValue(event.key, this.maxKeyLength, "add_cly_event", this.#log);
+            event.key = truncateSingleValue(event.key, this.#SCLimitKeyLength, "add_cly_event", this.#log);
         }
-        event.segmentation = truncateObject(event.segmentation, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "add_cly_event", this.#log);
+        event.segmentation = truncateObject(event.segmentation, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "add_cly_event", this.#log);
         var props = ["key", "count", "sum", "dur", "segmentation"];
         var e = createNewObjectFromProperties(event, props);
         e.timestamp = getMsTimestamp();
@@ -1278,7 +1422,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "start_event, Starting timed event with key: [" + key + "]");
         // truncate event name to internal limits
-        key = truncateSingleValue(key, this.maxKeyLength, "start_event", this.#log);
+        key = truncateSingleValue(key, this.#SCLimitKeyLength, "start_event", this.#log);
         if (this.#timedEvents[key]) {
             this.#log(logLevelEnums.WARNING, "start_event, Timed event with key: [" + key + "] already started");
             return;
@@ -1298,7 +1442,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "cancel_event, Canceling timed event with key: [" + key + "]");
         // truncate event name to internal limits. This is done incase start_event key was truncated.
-        key = truncateSingleValue(key, this.maxKeyLength, "cancel_event", this.#log);
+        key = truncateSingleValue(key, this.#SCLimitKeyLength, "cancel_event", this.#log);
         if (this.#timedEvents[key]) {
             delete this.#timedEvents[key];
             this.#log(logLevelEnums.INFO, "cancel_event, Timed event with key: [" + key + "] is canceled");
@@ -1320,7 +1464,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "end_event, Ending timed event");
         if (typeof event === "string") {
             // truncate event name to internal limits. This is done incase start_event key was truncated.
-            event = truncateSingleValue(event, this.maxKeyLength, "end_event", this.#log);
+            event = truncateSingleValue(event, this.#SCLimitKeyLength, "end_event", this.#log);
             event = { key: event };
         }
         if (!event.key) {
@@ -1405,15 +1549,15 @@ class CountlyClass {
             this.#sendEventsForced();
             this.#log(logLevelEnums.INFO, "user_details, flushed the event queue");
             // truncating user values and custom object key value pairs
-            user.name = truncateSingleValue(user.name, this.maxValueSize, "user_details", this.#log);
-            user.username = truncateSingleValue(user.username, this.maxValueSize, "user_details", this.#log);
-            user.email = truncateSingleValue(user.email, this.maxValueSize, "user_details", this.#log);
-            user.organization = truncateSingleValue(user.organization, this.maxValueSize, "user_details", this.#log);
-            user.phone = truncateSingleValue(user.phone, this.maxValueSize, "user_details", this.#log);
+            user.name = truncateSingleValue(user.name, this.#SCLimitValueSize , "user_details", this.#log);
+            user.username = truncateSingleValue(user.username, this.#SCLimitValueSize , "user_details", this.#log);
+            user.email = truncateSingleValue(user.email, this.#SCLimitValueSize , "user_details", this.#log);
+            user.organization = truncateSingleValue(user.organization, this.#SCLimitValueSize , "user_details", this.#log);
+            user.phone = truncateSingleValue(user.phone, this.#SCLimitValueSize , "user_details", this.#log);
             user.picture = truncateSingleValue(user.picture, 4096, "user_details", this.#log);
-            user.gender = truncateSingleValue(user.gender, this.maxValueSize, "user_details", this.#log);
-            user.byear = truncateSingleValue(user.byear, this.maxValueSize, "user_details", this.#log);
-            user.custom = truncateObject(user.custom, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "user_details", this.#log);
+            user.gender = truncateSingleValue(user.gender, this.#SCLimitValueSize , "user_details", this.#log);
+            user.byear = truncateSingleValue(user.byear, this.#SCLimitValueSize , "user_details", this.#log);
+            user.custom = truncateObject(user.custom, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "user_details", this.#log);
             var props = ["name", "username", "email", "organization", "phone", "picture", "gender", "byear", "custom"];
             this.#toRequestQueue({ user_details: JSON.stringify(createNewObjectFromProperties(user, props)) });
         }
@@ -1473,8 +1617,8 @@ class CountlyClass {
         set: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] set, Setting user's custom property value: [" + value + "] under the key: [" + key + "]");
             // truncate user's custom property value to internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData set", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData set", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set", this.#log);
             this.#customData[key] = value;
         },
         /**
@@ -1495,8 +1639,8 @@ class CountlyClass {
         set_once: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] set_once, Setting user's unique custom property value: [" + value + "] under the key: [" + key + "] ");
             // truncate user's custom property value to internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData set_once", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData set_once", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set_once", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set_once", this.#log);
             this.#change_custom_property(key, value, "$setOnce");
         },
         /**
@@ -1507,7 +1651,7 @@ class CountlyClass {
         increment: (key) => {
             this.#log(logLevelEnums.INFO, "[userData] increment, Increasing user's custom property value under the key: [" + key + "] by one");
             // truncate property name wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData increment", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment", this.#log);
             this.#change_custom_property(key, 1, "$inc");
         },
         /**
@@ -1519,8 +1663,8 @@ class CountlyClass {
         increment_by: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] increment_by, Increasing user's custom property value under the key: [" + key + "] by: [" + value + "]");
             // truncate property name and value wrt internal limits 
-            key = truncateSingleValue(key, this.maxKeyLength, "userData increment_by", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData increment_by", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment_by", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData increment_by", this.#log);
             this.#change_custom_property(key, value, "$inc");
         },
         /**
@@ -1532,8 +1676,8 @@ class CountlyClass {
         multiply: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] multiply, Multiplying user's custom property value under the key: [" + key + "] by: [" + value + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData multiply", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData multiply", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData multiply", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData multiply", this.#log);
             this.#change_custom_property(key, value, "$mul");
         },
         /**
@@ -1545,8 +1689,8 @@ class CountlyClass {
         max: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] max, Saving user's maximum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData max", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData max", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData max", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData max", this.#log);
             this.#change_custom_property(key, value, "$max");
         },
         /**
@@ -1558,8 +1702,8 @@ class CountlyClass {
         min: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] min, Saving user's minimum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData min", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData min", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData min", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData min", this.#log);
             this.#change_custom_property(key, value, "$min");
         },
         /**
@@ -1571,8 +1715,8 @@ class CountlyClass {
         push: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] push, Pushing a value: [" + value + "] under the key: [" + key + "] to user's custom property array");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData push", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData push", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push", this.#log);
             this.#change_custom_property(key, value, "$push");
         },
         /**
@@ -1584,8 +1728,8 @@ class CountlyClass {
         push_unique: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] push_unique, Pushing a unique value: [" + value + "] under the key: [" + key + "] to user's custom property array");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData push_unique", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData push_unique", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push_unique", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push_unique", this.#log);
             this.#change_custom_property(key, value, "$addToSet");
         },
         /**
@@ -1637,8 +1781,8 @@ class CountlyClass {
                 }
             }
             // truncate trace name and metrics wrt internal limits
-            trace.name = truncateSingleValue(trace.name, this.maxKeyLength, "report_trace", this.#log);
-            trace.app_metrics = truncateObject(trace.app_metrics, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "report_trace", this.#log);
+            trace.name = truncateSingleValue(trace.name, this.#SCLimitKeyLength, "report_trace", this.#log);
+            trace.app_metrics = truncateObject(trace.app_metrics, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "report_trace", this.#log);
             var e = createNewObjectFromProperties(trace, props);
             e.timestamp = trace.stz;
             var date = new Date();
@@ -1658,6 +1802,10 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "track_errors, window object is not available. Not tracking errors.");
             return;
         }
+        if (!this.#SCTrackingCrashes) {
+            this.#log(logLevelEnums.WARNING, "track_errors, Crash tracking is disabled by the server config. Not tracking errors.");
+            return
+        }
         this.#log(logLevelEnums.INFO, "track_errors, Started tracking errors");
         // Indicated that for this instance of the countly error tracking is enabled
         Countly.i[this.app_key].tracking_crashes = true;
@@ -1665,6 +1813,7 @@ class CountlyClass {
             window.cly_crashes = true;
             this.#crashSegments = segments;
             // override global 'uncaught error' handler
+            change this to eventlisterner
             window.onerror = function errorBundler(msg, url, line, col, err) {
                 // old browsers like IE 10 and Safari 9 won't give this value 'err' to us, but if it is provided we can trigger error recording immediately
                 if (err !== undefined && err !== null) {
@@ -1735,8 +1884,8 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "add_log, Adding a new log of breadcrumbs: [ " + record + " ]");
         if (this.check_consent(featureEnums.CRASHES)) {
             // truncate description wrt internal limits
-            record = truncateSingleValue(record, this.maxValueSize, "add_log", this.#log);
-            while (this.#crashLogs.length >= this.maxBreadcrumbCount) {
+            record = truncateSingleValue(record, this.#SCLimitValueSize , "add_log", this.#log);
+            while (this.#crashLogs.length >= this.#SCLimitBreadcrumbCount) {
                 this.#crashLogs.shift();
                 this.#log(logLevelEnums.WARNING, "add_log, Reached maximum crashLogs size. Will erase the oldest one.");
             }
@@ -2044,7 +2193,11 @@ class CountlyClass {
     * */
     track_pageview = (page, ignoreList, viewSegments) => {
         if (!isBrowser && !page) {
-            this.#log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views is page is not provided.");
+            this.#log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views as page name is not provided.");
+            return;
+        }
+        if (!this.#SCTrackingViews) {
+            this.#log(logLevelEnums.WARNING, "track_pageview, View tracking is disabled by the server config. Not tracking page views.");
             return;
         }
         this.#log(logLevelEnums.INFO, "track_pageview, Tracking page views");
@@ -2059,7 +2212,7 @@ class CountlyClass {
         this.#previousViewId = this.#currentViewId;
         this.#currentViewId = secureRandom();
         // truncate page name and segmentation wrt internal limits
-        page = truncateSingleValue(page, this.maxKeyLength, "track_pageview", this.#log);
+        page = truncateSingleValue(page, this.#SCLimitKeyLength, "track_pageview", this.#log);
         // if the first parameter we got is an array we got the ignoreList first, assign it here
         if (page && Array.isArray(page)) {
             ignoreList = page;
@@ -2098,7 +2251,7 @@ class CountlyClass {
             view: this.getViewUrl()
         };
         // truncate new segment
-        segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "track_pageview", this.#log);
+        segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "track_pageview", this.#log);
         if (this.track_domains) {
             segments.domain = window.location.hostname;
         }
@@ -2147,7 +2300,7 @@ class CountlyClass {
         }
 
         if (viewSegments) {
-            viewSegments = truncateObject(viewSegments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "track_pageview", this.#log);
+            viewSegments = truncateObject(viewSegments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "track_pageview", this.#log);
 
             for (var key in viewSegments) {
                 if (typeof segments[key] === "undefined") {
@@ -2222,7 +2375,7 @@ class CountlyClass {
                             view: this.getViewUrl()
                         };
                         // truncate new segment
-                        segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "processClick", this.#log);
+                        segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "processClick", this.#log);
                         if (this.track_domains) {
                             segments.domain = window.location.hostname;
                         }
@@ -3559,6 +3712,10 @@ class CountlyClass {
      *  @param {Object} segments - custom crash segments
      */
     recordError = (err, nonfatal, segments) => {
+        if (!this.#SCTrackingCrashes) {
+            this.#log(logLevelEnums.WARNING, "recordError, Crash tracking is disabled by the server config. Not tracking errors.");
+            return
+        }
         this.#log(logLevelEnums.INFO, "recordError, Recording error");
         if (this.check_consent(featureEnums.CRASHES) && err) {
             // crashSegments, if not null, was set while enabling error tracking
@@ -3590,18 +3747,18 @@ class CountlyClass {
                 error = err + "";
             }
             // character limit check
-            if (error.length > (this.maxStackTraceLineLength * this.maxStackTraceLinesPerThread)) {
+            if (error.length > (this.#SCLimitStackTraceLineLength * this.#SCLimitStackTraceLinesPerThread)) {
                 this.#log(logLevelEnums.DEBUG, "record_error, Error stack is too long will be truncated");
                 // convert error into an array split from each newline 
                 var splittedError = error.split("\n");
                 // trim the array if it is too long
-                if (splittedError.length > this.maxStackTraceLinesPerThread) {
-                    splittedError = splittedError.splice(0, this.maxStackTraceLinesPerThread);
+                if (splittedError.length > this.#SCLimitStackTraceLinesPerThread) {
+                    splittedError = splittedError.splice(0, this.#SCLimitStackTraceLinesPerThread);
                 }
                 // trim each line to a given limit
                 for (var i = 0, len = splittedError.length; i < len; i++) {
-                    if (splittedError[i].length > this.maxStackTraceLineLength) {
-                        splittedError[i] = splittedError[i].substring(0, this.maxStackTraceLineLength);
+                    if (splittedError[i].length > this.#SCLimitStackTraceLineLength) {
+                        splittedError[i] = splittedError[i].substring(0, this.#SCLimitStackTraceLineLength);
                     }
                 }
                 // turn modified array back into error string
@@ -3639,7 +3796,7 @@ class CountlyClass {
 
             if (typeof segments !== "undefined") {
                 // truncate custom crash segment's key value pairs
-                segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "record_error", this.#log);
+                segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "record_error", this.#log);
                 obj._custom = segments;
             }
 
@@ -3694,16 +3851,7 @@ class CountlyClass {
             this.#enterContentZoneInternal();
         },
         exitContentZone: () => {
-            if (!this.#inContentZone) {
-                this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
-                return;
-            }
-            this.#log(logLevelEnums.INFO, "content.exitContentZone, Exiting content zone");
-            this.#inContentZone = false;
-            if (this.#contentZoneTimer) {
-                clearInterval(this.#contentZoneTimer);
-                this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
-            }
+            this.#exitContentZoneInternal();
         },
     };
 
@@ -3716,6 +3864,14 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Already in content zone");
             return;
         }
+        if (!this.#initTimestamp || (getMsTimestamp() - this.#initTimestamp) < 4000 ) {
+            // settimeout
+            this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Not enough time passed since initialization");
+            setTimeout(() => {
+                this.#enterContentZoneInternal();
+            }, 4001);
+            return;
+        }
         this.#log(logLevelEnums.INFO, "content.enterContentZone, Entering content zone");
         this.#inContentZone = true;
         if (!forced) {
@@ -3723,8 +3879,21 @@ class CountlyClass {
         }
         this.#contentZoneTimer = setInterval(() => {
             this.#sendContentRequest();
-        }, this.#contentTimeInterval);
+        }, this.#SCIntervalContent);
     };
+
+    #exitContentZoneInternal = () => {
+        if (!this.#inContentZone) {
+            this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "content.exitContentZone, Exiting content zone");
+        this.#inContentZone = false;
+        if (this.#contentZoneTimer) {
+            clearInterval(this.#contentZoneTimer);
+            this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
+        }
+    }
 
     #prepareContentRequest = () => {
         this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
@@ -3745,6 +3914,7 @@ class CountlyClass {
             resolution: JSON.stringify(resToSend),
             cly_ws: 1,
             cly_origin: window.location.origin,
+            dt: userAgentDeviceDetection(),
         };
 
         this.#prepareRequest(params);
@@ -4022,6 +4192,10 @@ class CountlyClass {
             this.#log(logLevelEnums.INFO, "reportViewDuration, No last view, will not report view duration");
             return;
         }
+        if (!this.#SCTrackingViews) {
+            this.#log(logLevelEnums.INFO, "reportViewDuration, View tracking is disabled by the server config. Not tracking view duration");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "reportViewDuration, Reporting view duration for: [" + this.#lastView + "]");
         var segments = {
             name: this.#lastView
@@ -4091,7 +4265,7 @@ class CountlyClass {
             }
         }
 
-        if (this.check_consent(featureEnums.LOCATION)) {
+        if (this.check_consent(featureEnums.LOCATION) && this.#SCTrackingLocation) {
             if (this.country_code) {
                 request.country_code = this.country_code;
             }
@@ -4122,7 +4296,12 @@ class CountlyClass {
      */
     #toRequestQueue = (request) => {
         if (this.ignore_visitor) {
-            this.#log(logLevelEnums.WARNING, "User is opt_out will ignore the request: " + request);
+            this.#log(logLevelEnums.DEBUG, "User is opt_out will ignore the request: " + request);
+            return;
+        }
+
+        if (!this.#SCTrackingAll) {
+            this.#log(logLevelEnums.DEBUG, "Tracking is disabled by server config, will not track the request: " + JSON.stringify(request));
             return;
         }
 
@@ -4133,7 +4312,7 @@ class CountlyClass {
 
         this.#prepareRequest(request);
 
-        if (this.#requestQueue.length > this.#queueSize) {
+        if (this.#requestQueue.length > this.#SCSizeReqQueue) {
             this.#requestQueue.shift();
         }
 
@@ -4152,7 +4331,7 @@ class CountlyClass {
         // ignore bots
         if (this.ignore_visitor) {
             this.#hasPulse = false;
-            this.#log(logLevelEnums.WARNING, "User opt_out, no heartbeat");
+            this.#log(logLevelEnums.WARNING, "User opt_out:[" + this.ignore_visitor + "], no heartbeat");
             return;
         }
 
@@ -4165,7 +4344,7 @@ class CountlyClass {
         // extend session if needed
         if (this.#sessionStarted && this.#autoExtend && this.#trackTime) {
             var last = getTimestamp();
-            if (last - this.#lastBeat > this.#sessionUpdate) {
+            if (last - this.#lastBeat > this.#SCIntervalSessionUpdate) {
                 this.session_duration(last - this.#lastBeat);
                 this.#lastBeat = last;
                 // save health check logging counters if there are any
@@ -4180,12 +4359,12 @@ class CountlyClass {
 
         // process event queue
         if (this.#eventQueue.length > 0 && !this.test_mode_eq) {
-            if (this.#eventQueue.length <= this.#maxEventBatch) {
+            if (this.#eventQueue.length <= this.#SCSizeEventBatch) {
                 this.#toRequestQueue({ events: JSON.stringify(this.#eventQueue) });
                 this.#eventQueue = [];
             }
             else {
-                var events = this.#eventQueue.splice(0, this.#maxEventBatch);
+                var events = this.#eventQueue.splice(0, this.#SCSizeEventBatch);
                 this.#toRequestQueue({ events: JSON.stringify(events) });
             }
             this.#setValueInStorage("cly_event", this.#eventQueue);
@@ -4399,13 +4578,7 @@ class CountlyClass {
             width = Math.round(width * window.devicePixelRatio);
             height = Math.round(height * window.devicePixelRatio);
         }
-        if (Math.abs(screen.orientation.angle) === 90) {
-            this.#log(logLevelEnums.VERBOSE, "Screen is in landscape mode, adjusting resolution");
-            var temp = width;
-            width = height;
-            height = temp;
-        }
-        return { width: width, height: height, orientation: screen.orientation.angle };
+        return { width: width, height: height };
     };
 
     /**
@@ -4523,8 +4696,13 @@ class CountlyClass {
      *  @param {Object} params - key value object with URL params
      *  @param {Function} callback - callback when request finished or failed
      *  @param {Boolean} useBroadResponseValidator - if true that means the expected response is either a JSON object or a JSON array, if false only JSON 
+     *  @param {Boolean} forced - if true that means the request is forced and should be made regardless of the networking config
      */
-    #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator) => {
+    #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator, forced) => {
+        if (!this.#SCNetwork && !forced) {
+            this.#log(logLevelEnums.DEBUG, "Network request is disabled by the SCNetwork");
+            return;
+        }
         this.#generatedRequests.push({ functionName: functionName, url: url, params: params });
         if (!isBrowser) {
             this.#sendFetchRequest(functionName, url, params, callback, useBroadResponseValidator);
@@ -4802,7 +4980,7 @@ class CountlyClass {
                     view: this.getViewUrl()
                 };
                 // truncate new segment
-                segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "processScrollView", this.#log);
+                segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "processScrollView", this.#log);
                 if (this.track_domains) {
                     segments.domain = window.location.hostname;
                 }
@@ -4925,7 +5103,7 @@ class CountlyClass {
 
         var data;
         // use dev provided storage if available
-        if (typeof this.storage === "object" && typeof this.storage.getItem === "function") {
+        if (this.storage && typeof this.storage === "object" && typeof this.storage.getItem === "function") {
             data = this.storage.getItem(key);
             return key.endsWith("cly_id") ? data : this.deserialize(data);
         }
@@ -5111,6 +5289,10 @@ class CountlyClass {
                 break;
             case "cly_ignore":
                 this.ignore_visitor = this.deserialize(newValue);
+                break;
+            case "cly_config":
+                this.#serverConfigCache = this.deserialize(newValue || "{}");
+                this.#populateServerConfig(this.#serverConfigCache);
                 break;
             case "cly_id":
                 this.device_id = newValue;

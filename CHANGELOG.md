@@ -1,3 +1,10 @@
+## 25.3.0
+
+* `max_logs` config option value will not be used anymore (use `max_breadcrumb_count` instead)
+* Added Server Config support
+* Improved init time content zone logic
+* Mitigated an issue about orientation detection in Safari
+
 ## 25.1.0
 
 * Mitigated an issue where content resizing did not work in certain orientations.
