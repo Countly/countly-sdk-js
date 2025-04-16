@@ -1,3 +1,7 @@
+## X.X.X
+
+* Improved survey and nps widget wrapper
+
 ## 25.1.0
 
 * Mitigated an issue where content resizing did not work in certain orientations.
