@@ -3319,7 +3319,8 @@ class CountlyClass {
             }
 
             wrapper = document.createElement("div");
-            wrapper.className = "countly-" + feedbackWidgetFamily + "-wrapper";
+            var wrapperClass = "countly-" + feedbackWidgetFamily + "-wrapper";
+            wrapper.className = wrapperClass + " " + wrapperClass + "--" + presentableFeedback.type;
             wrapper.id = "countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id;
 
             if (presentableFeedback.type === "survey") {
