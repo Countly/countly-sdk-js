@@ -1,3 +1,7 @@
+## X.X.X
+
+* added content whitelist
+
 ## 25.1.0
 
 * Mitigated an issue where content resizing did not work in certain orientations.
