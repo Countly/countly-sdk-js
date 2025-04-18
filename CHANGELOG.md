@@ -9,6 +9,7 @@
 
 * Added `refreshContentZone` method to Content interface for refreshing Content Zone requests
 * Added `behavior_settings` init time method for providing server configuration during first initialization
+* Added `content_whitelist` init time method that lets you whitelist your other domains for diplaying Content
 
 * `max_logs` config option value will not be used anymore (use `max_breadcrumb_count` instead)
 

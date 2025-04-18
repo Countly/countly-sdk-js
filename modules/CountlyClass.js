@@ -390,6 +390,7 @@ class CountlyClass {
         this.storage = getConfig("storage", ob, "default");
         this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
         this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
+        this.contentWhitelist = getConfig("content_whitelist", ob, []);
         this.salt = getConfig("salt", ob, null);
         this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
@@ -437,6 +438,14 @@ class CountlyClass {
                     this.#log(logLevelEnums.ERROR, "initialize, Could not parse hash: " + location.hash + ", error: " + ex);
                 }
             }
+        }
+
+        if (Array.isArray(this.contentWhitelist)) {
+            this.contentWhitelist.push(this.url);
+            this.contentWhitelist = this.contentWhitelist.map((e) => {
+                // remove trailing slashes from the entries
+                return stripTrailingSlash(e);
+            });
         }
 
         if ((this.passed_data && this.passed_data.app_key && this.passed_data.app_key === this.app_key) || (this.passed_data && !this.passed_data.app_key && this.#global)) {
@@ -4012,7 +4021,7 @@ class CountlyClass {
     };
 
     #interpretContentMessage = (messageEvent) => {
-        if (messageEvent.origin !== this.url) {
+        if (this.contentWhitelist.indexOf(messageEvent.origin) === -1) {
             // this.#log(logLevelEnums.ERROR, "interpretContentMessage, Received message from invalid origin");
             // silent ignore
             return;
