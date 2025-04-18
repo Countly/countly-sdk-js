@@ -28,10 +28,11 @@ describe("Remaining requests tests ", () => {
                 expect(JSON.parse(queues.requestQ[2]["events"])[0].key).to.equal("[CLY]_orientation");
                 
                 var requests = Countly._internals.testingGetRequests();
-                expect(requests.length).to.equal(2);
+                expect(requests.length).to.equal(3);
                 expect(requests[0].params["rr"]).to.equal(undefined);
-                expect(requests[1].params["rr"]).to.equal(3);
-                expect(requests[1].params["av"]).to.equal(av);
+                expect(requests[1].params["rr"]).to.equal(undefined);
+                expect(requests[2].params["rr"]).to.equal(3);
+                expect(requests[2].params["av"]).to.equal(av);
             });
         });
     });
