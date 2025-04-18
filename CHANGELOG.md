@@ -6,6 +6,7 @@
 
 * Improved init time Content Zone logic
 * Improved error handler to include script loading issues
+* Improved the wrapper of Feedback Widgets
 
 * Added `refreshContentZone` method to Content interface for refreshing Content Zone requests
 * Added `behavior_settings` init time method for providing server configuration during first initialization
