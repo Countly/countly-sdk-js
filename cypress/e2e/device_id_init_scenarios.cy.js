@@ -115,14 +115,19 @@ function checkRequestsForT(queue, expectedInternalType) {
         expect(queue[i].t).to.eq(expectedInternalType);
     }
 }
-function checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, temp) {
+function checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, temp, afterOffline) {
     var directReqs = Countly._internals.testingGetRequests(); // get direct requests
     cy.log("Requests: " + JSON.stringify(directReqs));
 
-    expect(directReqs.length).to.eq(temp ? 0 : 2);
+    expect(directReqs.length).to.eq(temp ? 0 : afterOffline?4:3);
     for (var i = 0; i < directReqs.length; i++) {
-        expect(directReqs[i].params.device_id).to.eq(afterInitDeviceId);
-        expect(directReqs[i].params.t).to.eq(afterInitDeviceIdType);
+        if (afterOffline && directReqs[i].functionName == "server_config" && i == directReqs.length - 1) {
+            expect(directReqs[i].params.device_id).to.be.oneOf(["id_2", "storedID", "newID"]);
+            expect(directReqs[i].params.t).to.eq(DeviceIdTypeInternalEnumsTest.DEVELOPER_SUPPLIED);
+        } else {
+            expect(directReqs[i].params.device_id).to.eq(afterInitDeviceId);
+            expect(directReqs[i].params.t).to.eq(afterInitDeviceIdType);
+        }
     }
 }
 function checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType) {
@@ -253,7 +258,7 @@ function changeIDTests(afterInitDeviceId, afterInitDeviceIdType, afterOffline) {
         // wait for things to resolve
         cy.wait(550).then(() => {
             // direct requests would have the old device id (hc and session)
-            checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+            checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
             // after ID events
             checkStoredReqQueueAfterIDChange(changedID2, changedIDType2, afterOffline? 3 : 2); // no end and begin session in offline mode => device id change scenario
@@ -459,7 +464,7 @@ describe("Device Id tests during first init", ()=>{
                 // wait for things to resolve
                 cy.wait(550).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true); // no end and begin session in offline mode => device id change scenario
@@ -535,7 +540,7 @@ describe("Device Id tests during first init", ()=>{
                 // wait for things to resolve
                 cy.wait(550).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
@@ -687,7 +692,7 @@ describe("Device Id tests during first init", ()=>{
                 // wait for things to resolve
                 cy.wait(550).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
@@ -1756,7 +1761,7 @@ describe("Device Id tests during first init", ()=>{
                 // wait for things to resolve
                 cy.wait(550).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true); // no end and begin session in offline mode => device id change scenario
@@ -1832,7 +1837,7 @@ describe("Device Id tests during first init", ()=>{
                 // wait for things to resolve
                 cy.wait(550).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
@@ -1984,7 +1989,7 @@ describe("Device Id tests during first init", ()=>{
                 // wait for things to resolve
                 cy.wait(550).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);

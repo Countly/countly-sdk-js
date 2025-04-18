@@ -103,6 +103,7 @@ class CountlyClass {
     #SCTrackingLocation;
     #SCEnableContent;
     #SCEnableConsentRequired;
+    #SCEnableRefreshContentZone;
     #SCLimitKeyLength;
     #SCLimitValueSize;
     #SCLimitSegmentationValues;
@@ -165,7 +166,8 @@ class CountlyClass {
         this.#SCTrackingEvents = true;
         this.#SCTrackingLocation = true;
         this.#SCEnableContent = false;
-        this.SCEnableConsentRequired = getConfig("require_consent", ob, false);
+        this.#SCEnableRefreshContentZone = true;    
+        this.#SCEnableConsentRequired = getConfig("require_consent", ob, false);
         this.#SCLimitKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
         this.#SCLimitValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
         this.#SCLimitSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
@@ -189,7 +191,7 @@ class CountlyClass {
 
         this.#serverConfigCache = this.#getValueFromStorage("cly_config");
         if (!this.#serverConfigCache) {
-            this.#serverConfigCache = getConfig("server_config", ob, {});
+            this.#serverConfigCache = getConfig("behavior_settings", ob, {});
             this.#setValueInStorage("cly_config", JSON.stringify(this.#serverConfigCache));
         }
         this.#populateServerConfig(this.#serverConfigCache);
@@ -230,12 +232,22 @@ class CountlyClass {
     };
 
     #getAndSetServerConfig = () => {
+        if (this.device_id === "[CLY]_temp_id") {
+            this.#log(logLevelEnums.INFO, "server_config, Device ID is temporary, not fetching server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "server_config, Fetching server config");
         var params = {};
         params.app_key = this.app_key;
         params.device_id = this.device_id;
         params.sdk_version = this.#sdkVersion;
         params.sdk_name = this.#sdkName;
+        params.t = this.#deviceIdType;
+        params.timestamp = getMsTimestamp();
+        var date = new Date();
+        params.hour = date.getHours();
+        params.dow = date.getDay();
+        params.av = this.app_version;
         params.method = "sc";
         this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
             if (err) {
@@ -327,6 +339,10 @@ class CountlyClass {
         }
         if (cache && cache.hasOwnProperty("lt")) {
             this.#SCTrackingLocation = cache.lt;
+        }
+        // web does not have support for 'dort' parameter
+        if (cache && cache.hasOwnProperty("rcz")) {
+            this.#SCEnableRefreshContentZone = cache.rcz;
         }
     };
 
@@ -1813,49 +1829,33 @@ class CountlyClass {
             window.cly_crashes = true;
             this.#crashSegments = segments;
             // override global 'uncaught error' handler
-            change this to eventlisterner
-            window.onerror = function errorBundler(msg, url, line, col, err) {
-                // old browsers like IE 10 and Safari 9 won't give this value 'err' to us, but if it is provided we can trigger error recording immediately
-                if (err !== undefined && err !== null) {
-                    // false indicates fatal error (as in non_fatal:false)
-                    dispatchErrors(err, false);
-                }
-                // fallback if no error object is present for older browsers, we create it instead
-                else {
-                    col = col || (window.event && window.event.errorCharacter);
-                    var error = "";
-                    if (typeof msg !== "undefined") {
-                        error += msg + "\n";
-                    }
-                    if (typeof url !== "undefined") {
-                        error += "at " + url;
-                    }
-                    if (typeof line !== "undefined") {
-                        error += ":" + line;
-                    }
-                    if (typeof col !== "undefined") {
-                        error += ":" + col;
-                    }
+            window.addEventListener("error", (event) => {
+                if (event.error) {
+                    dispatchErrors(event.error, false); // false indicates fatal error
+                } else {
+                    // For older browsers that don't provide error object, construct an error message
+                    var errorMsg = event.message || "Unknown error";
+                    var url = event.filename || "";
+                    var line = event.lineno || 0;
+                    var col = event.colno || 0;
+
+                    var error = errorMsg + "\n";
+                    if (url) error += "at " + url;
+                    if (line) error += ":" + line;
+                    if (col) error += ":" + col;
                     error += "\n";
 
                     try {
                         var stack = [];
-                        // deprecated, must be changed 
-                        // eslint-disable-next-line no-caller
-                        var f = errorBundler.caller;
-                        while (f) {
-                            stack.push(f.name);
-                            f = f.caller;
-                        }
+                        // We don't have caller info in this case, so we skip that part
                         error += stack.join("\n");
-                    }
-                    catch (ex) {
+                    } catch (ex) {
                         // silent error
                     }
                     // false indicates fatal error (as in non_fatal:false)
                     dispatchErrors(error, false);
                 }
-            };
+            });
 
             // error handling for 'uncaught rejections'
             window.addEventListener("unhandledrejection", (event) => {
@@ -3850,6 +3850,9 @@ class CountlyClass {
         enterContentZone: () => {
             this.#enterContentZoneInternal();
         },
+        refreshContentZone: () => {
+            this.#refreshContentZoneInternal();
+        },
         exitContentZone: () => {
             this.#exitContentZoneInternal();
         },
@@ -3880,6 +3883,20 @@ class CountlyClass {
         this.#contentZoneTimer = setInterval(() => {
             this.#sendContentRequest();
         }, this.#SCIntervalContent);
+    };
+
+    #refreshContentZoneInternal = () => {
+        if (!this.#SCEnableRefreshContentZone) {
+            this.#log(logLevelEnums.DEBUG, "content.refreshContentZone, Refresh content zone is disabled");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "content.refreshContentZone, Refreshing content zone");
+        this.#exitContentZoneInternal();
+        this.#processAsyncQueue();
+        this.#sendEventsForced();
+        setTimeout(() => {
+            this.#enterContentZoneInternal();
+        }, 1000);
     };
 
     #exitContentZoneInternal = () => {
@@ -4499,7 +4516,10 @@ class CountlyClass {
      *  @returns {string} returns userAgent string
      */
     #getUA = () => {
-        return this.metrics._ua || currentUserAgentString();
+        if (this.metrics && this.metrics._ua) {
+            return this.metrics._ua;
+        }
+        return currentUserAgentString();
     }
 
     /**
