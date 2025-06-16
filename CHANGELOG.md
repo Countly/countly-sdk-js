@@ -1,3 +1,10 @@
+## 25.4.1
+
+* Added automatic backoff mechanism which delays sending requests if server seems busy
+* Added `disable_sdk_behavior_settings_updates` init method for disabling Server Configuration sync requests
+* Added `disable_backoff_mechanism` init method for disabling backoff mechanism
+* Added timezone support for server
+
 ## 25.4.0
 
 * ! Minor Breaking Change ! SDK now has Server Configuration feature and it is enabled by default. Changes made on SDK Manager > SDK Configuration on your server will affect SDK behavior directly.
@@ -10,7 +17,7 @@
 
 * Added `refreshContentZone` method to Content interface for refreshing Content Zone requests
 * Added `behavior_settings` init time method for providing server configuration during first initialization
-* Added `content_whitelist` init time method that lets you whitelist your other domains for diplaying Content
+* Added `content_whitelist` init time method that lets you whitelist your other domains for displaying Content
 
 * `max_logs` config option value will not be used anymore (use `max_breadcrumb_count` instead)
 
