@@ -102,9 +102,11 @@ var healthCheckCounterEnum = Object.freeze({
     warningCount: "cly_hc_warning_count",
     statusCode: "cly_hc_status_code",
     errorMessage: "cly_hc_error_message",
+    backoffCount: "cly_hc_backoff_count",
+    consecutiveBackoffCount: "cly_hc_consecutive_backoff_count",
 });
 
-var SDK_VERSION = "25.4.0";
+var SDK_VERSION = "25.4.1";
 var SDK_NAME = "javascript_native_web";
 
 // Using this on document.referrer would return an array with 17 elements in it. The 12th element (array[11]) would be the path we are looking for. Others would be things like password and such (use https://regex101.com/ to check more)

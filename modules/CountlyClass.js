@@ -110,8 +110,21 @@ class CountlyClass {
     #SCLimitBreadcrumbCount;
     #SCLimitStackTraceLinesPerThread;
     #SCLimitStackTraceLineLength;
+    #SCBackoffMechanismEnabled;
+    #SCBackoffAcceptedTimeout;
+    #SCBackoffRQPercentage;
+    #SCBackoffRequestAge;
+    #SCBackoffDuration;
     #initContentSent;
     #initTimestamp;
+    #isSCDisabled;
+    #lastRequestDuration;
+    #backoffEndTime;
+    #isInBackoff;
+    #backOffLogShown;
+    #lastRequestWasBackoff;
+    #testModeTime;
+    #requestTimeoutDuration;
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
@@ -133,6 +146,9 @@ class CountlyClass {
         this.#failTimeout = 0;
         this.#inactivityCounter = 0;
         this.#readyToProcess = true;
+        this.#lastRequestDuration = 0;
+        this.#backoffEndTime = 0;
+        this.#isInBackoff = false;
         this.#hasPulse = false;
         this.#lastParams = {};
         this.#trackTime = true;
@@ -174,11 +190,19 @@ class CountlyClass {
         this.#SCLimitBreadcrumbCount = getConfig("max_breadcrumb_count", ob, configurationDefaultValues.MAX_BREADCRUMB_COUNT);
         this.#SCLimitStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
         this.#SCLimitStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
+        this.#SCBackoffMechanismEnabled = !getConfig("disable_backoff_mechanism", ob, false);
+        this.#SCBackoffAcceptedTimeout = 10; // 10 seconds
+        this.#SCBackoffRQPercentage = 0.5; // 50% of the request queue
+        this.#SCBackoffRequestAge = 24; // 24 hours
+        this.#SCBackoffDuration = 60; // 60 seconds
+        this.#requestTimeoutDuration = 30000; // 30 seconds
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
         this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
-
+        this.#isSCDisabled = getConfig("disable_sdk_behavior_settings_updates", ob, false);
+        this.#backOffLogShown = false;
+        this.#testModeTime = getConfig("test_mode_time", ob, 0); 
         try {
             localStorage.setItem("cly_testLocal", true);
             // clean up test
@@ -236,6 +260,10 @@ class CountlyClass {
             this.#log(logLevelEnums.INFO, "server_config, Device ID is temporary, not fetching server config");
             return;
         }
+        if (this.#isSCDisabled) {
+            this.#log(logLevelEnums.INFO, "server_config, SDK behavior sync is disabled, not fetching server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "server_config, Fetching server config");
         var params = {};
         params.app_key = this.app_key;
@@ -277,72 +305,87 @@ class CountlyClass {
         }
         var cache = mainCache.c;
 
-        if (cache && cache.hasOwnProperty("networking")) {
+        if (cache.hasOwnProperty("networking")) {
             this.#SCNetwork = cache.networking;
         }
-        if (cache && cache.hasOwnProperty("tracking")) {
+        if (cache.hasOwnProperty("tracking")) {
             this.#SCTrackingAll = cache.tracking;
         }
-        if (cache && cache.hasOwnProperty("rqs")) {
+        if (cache.hasOwnProperty("rqs")) {
             this.#SCSizeReqQueue = cache.rqs;
         }
-        if (cache && cache.hasOwnProperty("eqs")) {
+        if (cache.hasOwnProperty("eqs")) {
             this.#SCSizeEventBatch = cache.eqs;
         }
-        if (cache && cache.hasOwnProperty("sui")) {
+        if (cache.hasOwnProperty("sui")) {
             this.#SCIntervalSessionUpdate = cache.sui;
         }
-        if (cache && cache.hasOwnProperty("czi") && cache.czi > 14) {
+        if (cache.hasOwnProperty("czi") && cache.czi > 14) {
             this.#SCIntervalContent = cache.czi * 1000;
         }
-        if (cache && cache.hasOwnProperty("ecz")) {
+        if (cache.hasOwnProperty("ecz")) {
             this.#SCEnableContent = cache.ecz;
             if (!this.#initContentSent && this.#SCEnableContent) {
                 this.#enterContentZoneInternal();
             }
         }
-        if (cache && cache.hasOwnProperty("cr")) {
+        if (cache.hasOwnProperty("cr")) {
             this.#SCEnableConsentRequired = cache.cr;
         }
-        if (cache && cache.hasOwnProperty("st")) {
+        if (cache.hasOwnProperty("st")) {
             this.#SCTrackingSession = cache.st;
         }
-        if (cache && cache.hasOwnProperty("crt")) {
+        if (cache.hasOwnProperty("crt")) {
             this.#SCTrackingCrashes = cache.crt;
         }
-        if (cache && cache.hasOwnProperty("vt")) {
+        if (cache.hasOwnProperty("vt")) {
             this.#SCTrackingViews = cache.vt;
         }
-        if (cache && cache.hasOwnProperty("cet")) {
+        if (cache.hasOwnProperty("cet")) {
             this.#SCTrackingEvents = cache.cet;
         }
-        if (cache && cache.hasOwnProperty("lkl")) {
+        if (cache.hasOwnProperty("lkl")) {
             this.#SCLimitKeyLength = cache.lkl;
         }
-        if (cache && cache.hasOwnProperty("lvs")) {
+        if (cache.hasOwnProperty("lvs")) {
             this.#SCLimitValueSize = cache.lvs;
         }
-        if (cache && cache.hasOwnProperty("lsv")) {
+        if (cache.hasOwnProperty("lsv")) {
             this.#SCLimitSegmentationValues = cache.lsv;
         }
-        if (cache && cache.hasOwnProperty("lbc")) {
+        if (cache.hasOwnProperty("lbc")) {
             this.#SCLimitBreadcrumbCount = cache.lbc;
         }
-        if (cache && cache.hasOwnProperty("ltlpt")) {
+        if (cache.hasOwnProperty("ltlpt")) {
             this.#SCLimitStackTraceLinesPerThread = cache.ltlpt;
         }
-        if (cache && cache.hasOwnProperty("ltl")) {
+        if (cache.hasOwnProperty("ltl")) {
             this.#SCLimitStackTraceLineLength = cache.ltl;
         }
-        if (cache && cache.hasOwnProperty("scui")) {
+        if (cache.hasOwnProperty("scui")) {
             this.#SCInterval = Math.max(cache.scui,4);
         }
-        if (cache && cache.hasOwnProperty("lt")) {
+        if (cache.hasOwnProperty("lt")) {
             this.#SCTrackingLocation = cache.lt;
         }
         // web does not have support for 'dort' parameter
-        if (cache && cache.hasOwnProperty("rcz")) {
+        if (cache.hasOwnProperty("rcz")) {
             this.#SCEnableRefreshContentZone = cache.rcz;
+        }
+        if (cache.hasOwnProperty("bom")) {
+            this.#SCBackoffMechanismEnabled = cache.bom;
+        }
+        if (cache.hasOwnProperty("bom_at")) {
+            this.#SCBackoffAcceptedTimeout = cache.bom_at;
+        }
+        if (cache.hasOwnProperty("bom_rqp")) {
+            this.#SCBackoffRQPercentage = cache.bom_rqp;
+        }
+        if (cache.hasOwnProperty("bom_ra")) {
+            this.#SCBackoffRequestAge = cache.bom_ra;
+        }
+        if (cache.hasOwnProperty("bom_d")) {
+            this.#SCBackoffDuration = cache.bom_d;
         }
     };
 
@@ -396,6 +439,9 @@ class CountlyClass {
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
+        this.hcBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.backoffCount) || 0;
+        this.hcConsecutiveBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.consecutiveBackoffCount) || 0;
+        this.#lastRequestWasBackoff = false; // Track if the previous request resulted in a backoff
         this.#crashFilterCallback = getConfig("crash_filter_callback", ob, null);
 
         if (this.storage === "cookie") {
@@ -865,6 +911,8 @@ class CountlyClass {
             localStorage.removeItem("cly_hc_warning_count");
             localStorage.removeItem("cly_hc_status_code");
             localStorage.removeItem("cly_hc_error_message");
+            localStorage.removeItem("cly_hc_backoff_count");
+            localStorage.removeItem("cly_hc_consecutive_backoff_count");
         }
         catch (e) {
             this.#log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
@@ -1388,6 +1436,26 @@ class CountlyClass {
         if (respectiveConsent) {
             this.#add_cly_events(event);
         }
+    };
+
+    /**
+     * Attempt to send stored requests
+     * 
+     */
+    attempt_to_send_stored_requests = () => {
+        this.#log(logLevelEnums.INFO, "attemptToSendStoredRequests, Attempting to send stored requests");
+        this.#processAsyncQueue();
+        this.#sendEventsForced();
+    };
+
+    /**
+     * FOR TESTING PURPOSES ONLY
+     * Set test mode for request queue
+     * @param {Boolean} value 
+     */
+    test_mode_rq = (value) => {
+        this.#log(logLevelEnums.INFO, "test_mode_rq, Setting test mode to: [" + value + "]");
+        this.test_mode = value;
     };
 
     /**
@@ -4310,10 +4378,15 @@ class CountlyClass {
         }
 
         request.timestamp = getMsTimestamp();
+        if (this.#testModeTime) {
+            this.#log(logLevelEnums.DEBUG, "prepareRequest, testing timestamp is set to: " + this.#testModeTime);
+            request.timestamp = this.#testModeTime;
+        }
 
         var date = new Date();
         request.hour = date.getHours();
         request.dow = date.getDay();
+        request.tz = -date.getTimezoneOffset(); // to match android and iOS SDKs its negative value
     }
 
     /**
@@ -4397,8 +4470,27 @@ class CountlyClass {
             this.#setValueInStorage("cly_event", this.#eventQueue);
         }
 
-        // process request queue with event queue
-        if (!this.#offlineMode && this.#requestQueue.length > 0 && this.#readyToProcess && getTimestamp() > this.#failTimeout) {
+        // Check if we're in back-off period and update status
+        var currentTime = getTimestamp();
+        var skipRequestProcessing = false;
+        
+        if (this.#isInBackoff && currentTime < this.#backoffEndTime) {
+            skipRequestProcessing = true;
+            if (!this.#backOffLogShown) {
+                this.#log(logLevelEnums.VERBOSE, "Request back-off active, suspending requests until: " + this.#backoffEndTime + ", current time: " + currentTime);
+                this.#backOffLogShown = true;
+            }
+        }
+        else if (this.#isInBackoff && currentTime >= this.#backoffEndTime) {
+            this.#log(logLevelEnums.INFO, "Request back-off period ended, resuming normal request processing");
+            this.#isInBackoff = false;
+            this.#backoffEndTime = 0;
+            skipRequestProcessing = false;
+            this.#backOffLogShown = false;
+        }
+
+        // process request queue with event queue (skip if in back-off)
+        if (!skipRequestProcessing && !this.#offlineMode && this.#requestQueue.length > 0 && this.#readyToProcess && getTimestamp() > this.#failTimeout) {
             this.#readyToProcess = false;
             var params = this.#requestQueue[0];
             params.rr = this.#requestQueue.length; // added at 23.2.3. It would give the current length of the queue. That includes the current request.
@@ -4413,6 +4505,9 @@ class CountlyClass {
                     else {
                         // remove first item from queue
                         this.#requestQueue.shift();
+                        
+                        // Check back-off conditions after successful request
+                        this.#checkBackoffConditions(parameters);
                     }
                     this.#setValueInStorage("cly_queue", this.#requestQueue, true);
                     this.#readyToProcess = true;
@@ -4425,6 +4520,45 @@ class CountlyClass {
             this.#heartBeat();
         }, this.#beatInterval);
     }
+
+    /**
+     * Check if back-off conditions are met and activate back-off if necessary
+     * @param {Object} parameters - Request parameters to check timestamp
+     */
+    #checkBackoffConditions = (parameters) => {
+        if (!this.#SCBackoffMechanismEnabled) {
+            return; // Back-off is disabled, skip checks
+        }
+        if (this.#isInBackoff) {
+            return;
+        }
+
+        var responseTimeExceeded = this.#lastRequestDuration > this.#SCBackoffAcceptedTimeout;
+        if (!responseTimeExceeded) {
+            return; // No need to check further if response time is acceptable
+        }
+        
+        var queueNotHalfFull = this.#requestQueue.length < (this.#SCSizeReqQueue * this.#SCBackoffRQPercentage);
+        
+        var currentTime = getTimestamp();
+        var requestTimestamp = parameters && parameters.timestamp ? parameters.timestamp : currentTime;
+        var requestAge = currentTime - (requestTimestamp);
+        var requestIsYoung = requestAge < (this.#SCBackoffRequestAge * 60 * 60); // 24 hours in seconds
+        
+        if (responseTimeExceeded && queueNotHalfFull && requestIsYoung) {
+            this.#log(logLevelEnums.INFO, "Activating request back-off: response time [" + this.#lastRequestDuration + "s], queue size [" + this.#requestQueue.length + "/" + this.#SCSizeReqQueue + "], request age [" + requestAge + "s]");
+            
+            this.#isInBackoff = true;
+            this.#backoffEndTime = currentTime + this.#SCBackoffDuration; // 60 seconds from now
+            
+            this.#HealthCheck.incrementBackoffCount();
+            
+            this.#log(logLevelEnums.INFO, "Request back-off activated until: " + this.#backoffEndTime);
+        } else {
+            this.#log(logLevelEnums.DEBUG, "No back-off conditions met: response time [" + this.#lastRequestDuration + "s], queue size [" + this.#requestQueue.length + "/" + this.#SCSizeReqQueue + "], request age [" + requestAge + "s]");
+            this.#HealthCheck.resetLastRequestBackoffStatus();
+        }
+    };
 
     /**
      * Returns generated requests for the instance for testing purposes
@@ -4756,6 +4890,13 @@ class CountlyClass {
         try {
             this.#log(logLevelEnums.DEBUG, "Sending XML HTTP request");
             var xhr = new XMLHttpRequest();
+            xhr.timeout = this.#requestTimeoutDuration;
+            xhr.ontimeout = () => {
+                this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
+                if (typeof callback === "function") {
+                    callback(true, params, 'timeout');
+                }
+            };
             params = params || {};
             prepareParams(params, this.salt).then(saltedData => {
                 var method = "POST";
@@ -4772,10 +4913,19 @@ class CountlyClass {
                 for (var header in this.headers) {
                     xhr.setRequestHeader(header, this.headers[header]);
                 }
+                
+                // Track request start time for back-off mechanism
+                var requestStartTime = getTimestamp();
+                
                 // fallback on error
                 xhr.onreadystatechange = () => {
                     if (xhr.readyState === 4) {
-                        this.#log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + xhr.status + "] and response: [" + xhr.responseText + "]");
+                        // Calculate request duration for back-off mechanism
+                        var requestEndTime = getTimestamp();
+                        var requestDuration = requestEndTime - requestStartTime;
+                        this.#lastRequestDuration = requestDuration;
+
+                        this.#log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + xhr.status + "] and response: [" + xhr.responseText + "], duration: [" + requestDuration + "] seconds");
                         // response validation function will be selected to also accept JSON arrays if useBroadResponseValidator is true
                         var isResponseValidated;
                         if (useBroadResponseValidator) {
@@ -4855,16 +5005,29 @@ class CountlyClass {
                     headers[header] = this.headers[header];
                 }
 
+                // Track request start time for back-off mechanism
+                var requestStartTime = getTimestamp();
+
+                const controller = new AbortController();
+                const signal = controller.signal;
+                const timeoutId = setTimeout(() => controller.abort(), this.#requestTimeoutDuration);
+
                 // Make the fetch request
                 fetch(url, {
                     method: method,
                     headers: headers,
                     body: body,
+                    signal: signal
                 }).then((res) => {
+                    clearTimeout(timeoutId);
                     response = res;
                     return response.text();
                 }).then((data) => {
-                    this.#log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
+                    var requestEndTime = getTimestamp();
+                    var requestDuration = requestEndTime - requestStartTime;
+                    this.#lastRequestDuration = requestDuration;
+                    
+                    this.#log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "], duration: [" + requestDuration + "] seconds");
                     var isResponseValidated;
                     if (useBroadResponseValidator) {
                         isResponseValidated = this.#isResponseValidBroad(response.status, data);
@@ -4888,9 +5051,18 @@ class CountlyClass {
                         }
                     }
                 }).catch((error) => {
-                    this.#log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
-                    if (typeof callback === "function") {
-                        callback(true, params);
+                    clearTimeout(timeoutId);
+                    if (error.name === 'AbortError') {
+                        this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
+                        if (typeof callback === "function") {
+                            callback(true, params, 'timeout');
+                        }
+                    }
+                    else {
+                        this.#log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
+                        if (typeof callback === "function") {
+                            callback(true, params);
+                        }
                     }
                 });
             });
@@ -5427,10 +5599,12 @@ class CountlyClass {
     /**
      * Health Check Interface:
      * {sendInstantHCRequest} Sends instant health check request
-     * {resetAndSaveCounters} Resets and saves health check counters
+     * {resetAndSaveCounters} Resets and saves health check counters (including backoff counters)
      * {incrementErrorCount} Increments health check error count
      * {incrementWarningCount} Increments health check warning count
-     * {resetCounters} Resets health check counters
+     * {incrementBackoffCount} Increments health check backoff count and consecutive backoff count
+     * {resetConsecutiveBackoffCount} Resets consecutive backoff tracking flag (not the counter value)
+     * {resetCounters} Resets health check counters (excluding backoff counters)
      * {saveRequestCounters} Saves health check request counters
      */
     #HealthCheck = {
@@ -5451,7 +5625,9 @@ class CountlyClass {
                 el: this.hcErrorCount,
                 wl: this.hcWarningCount,
                 sc: this.hcStatusCode,
-                em: curbedMessage
+                em: curbedMessage,
+                bom: this.hcBackoffCount,
+                cbom: this.hcConsecutiveBackoffCount
             };
             // prepare request
             var request = {
@@ -5475,6 +5651,8 @@ class CountlyClass {
             this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
             this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
             this.#setValueInStorage(healthCheckCounterEnum.errorMessage, this.hcErrorMessage);
+            this.#setValueInStorage(healthCheckCounterEnum.backoffCount, this.hcBackoffCount);
+            this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount);
         },
         incrementErrorCount: () => {
             this.hcErrorCount++;
@@ -5482,11 +5660,25 @@ class CountlyClass {
         incrementWarningCount: () => {
             this.hcWarningCount++;
         },
+        incrementBackoffCount: () => {
+            this.hcBackoffCount++;
+            if (this.#lastRequestWasBackoff) {
+                this.hcConsecutiveBackoffCount++;
+            }
+            this.#lastRequestWasBackoff = true;
+            this.#setValueInStorage(healthCheckCounterEnum.backoffCount, this.hcBackoffCount);
+            this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount);
+        },
+        resetLastRequestBackoffStatus: () => {
+            this.#lastRequestWasBackoff = false;
+        },
         resetCounters: () => {
             this.hcErrorCount = 0;
             this.hcWarningCount = 0;
             this.hcStatusCode = -1;
             this.hcErrorMessage = "";
+            this.hcBackoffCount = 0;
+            this.hcConsecutiveBackoffCount = 0;
         },
         saveRequestCounters: (status, responseText) => {
             this.hcStatusCode = status;
