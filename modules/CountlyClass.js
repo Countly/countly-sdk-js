@@ -3388,8 +3388,7 @@ class CountlyClass {
             return;
         }
 
-        this.#makeNetworkRequest("getFeedbackWidgetData,", url, data, responseCallback, true);
-
+        
         /**
          *  Server response would be evaluated here
          * @param {*} err - error object
@@ -3404,7 +3403,7 @@ class CountlyClass {
                 }
                 return;
             }
-
+            
             try {
                 var response = JSON.parse(responseText);
                 // return parsed response
@@ -3419,6 +3418,7 @@ class CountlyClass {
                 }
             }
         }
+        this.#makeNetworkRequest("getFeedbackWidgetData,", url, data, responseCallback, true);
     };
 
     /**

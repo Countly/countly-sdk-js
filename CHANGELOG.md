@@ -1,3 +1,7 @@
+## X.X.X
+
+* Mitigated an issue where manual feedback reporting could have failed
+
 ## 25.4.1
 
 * Added automatic backoff mechanism which delays sending requests if server seems busy
