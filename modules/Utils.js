@@ -132,13 +132,16 @@ function dispatchErrors(error, fatality, segments) {
  */
 function prepareParams(params, salt) {
     var str = [];
-    for (var i in params) {
+    // deterministic ordering for checksum stability
+    var keys = Object.keys(params || {}).sort();
+    for (var k = 0; k < keys.length; k++) {
+        var i = keys[k];
         str.push(i + "=" + encodeURIComponent(params[i]));
     }
     var data = str.join("&");
     if (salt) {
         return calculateChecksum(data, salt).then(checksum => {
-            data += "&checksum256=" + checksum;
+            data += "&checksum256=" + checksum.toUpperCase();
             return data;
         });
     }
@@ -271,8 +274,8 @@ function calculateChecksum(data, salt) {
         const hashArray = Array.from(new Uint8Array(hashBuffer)); // convert buffer to byte array
         const hashHex = hashArray
         .map((b) => b.toString(16).padStart(2, "0"))
-        .join(""); // convert bytes to hex string
-        return hashHex;
+        .join(""); // convert bytes to hex string (lowercase)
+        return hashHex.toUpperCase();
     }); 
 }
 
