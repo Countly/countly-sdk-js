@@ -426,7 +426,7 @@ class CountlyClass {
         this.city = getConfig("city", ob, null);
         this.ip_address = getConfig("ip_address", ob, null);
         this.ignore_bots = getConfig("ignore_bots", ob, true);
-        this.force_post = getConfig("force_post", ob, false);
+        this.force_post = getConfig("force_post", ob, true);
         this.remote_config = getConfig("remote_config", ob, false);
         this.ignore_visitor = getConfig("ignore_visitor", ob, false);
         this.track_domains = !isBrowser ? undefined : getConfig("track_domains", ob, true);
@@ -2535,6 +2535,53 @@ class CountlyClass {
 
         // add any events you want
         add_event_listener(parent, "click", processClick);
+    };
+
+    /**
+    * Upload user profile picture (image) to the server.
+    * @param {File|Blob} imageFile - The image file to upload
+    */
+    uploadUserProfilePicture = (imageFile) => {
+        if (!isBrowser) {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Browser environment required.");
+            return;
+        }
+        if (!imageFile || typeof imageFile !== "object" || !imageFile.type || imageFile.type.indexOf("image") !== 0) {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Provided file is not an image.");
+            return;
+        }
+        if (typeof FileReader === "undefined") {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: FileReader is not available in this environment.");
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onerror = () => {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Failed to read the provided image file.");
+        };
+        reader.onload = () => {
+            const result = reader.result;
+            if (typeof result !== "string") {
+                this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Unable to process the selected image.");
+                return;
+            }
+            const commaIndex = result.indexOf(",");
+            const base64Data = commaIndex === -1 ? result : result.substring(commaIndex + 1);
+            if (!base64Data) {
+                this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Invalid image data received.");
+                return;
+            }
+
+            this.#toRequestQueue({
+                __imageUpload: true,
+                imageData: base64Data,
+                imageName: imageFile.name || "avatar",
+                imageType: imageFile.type || "application/octet-stream",
+                user_details: "{}"
+            });
+            this.#log(logLevelEnums.INFO, "uploadUserProfilePicture: Image upload request queued.");
+        };
+        reader.readAsDataURL(imageFile);
     };
 
     /**
@@ -4890,7 +4937,6 @@ class CountlyClass {
         try {
             this.#log(logLevelEnums.DEBUG, "Sending XML HTTP request");
             var xhr = new XMLHttpRequest();
-            xhr.timeout = this.#requestTimeoutDuration;
             xhr.ontimeout = () => {
                 this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
                 if (typeof callback === "function") {
@@ -4898,19 +4944,53 @@ class CountlyClass {
                 }
             };
             params = params || {};
-            prepareParams(params, this.salt).then(saltedData => {
+            var isImage = params._forceImageUpload || (params.__imageUpload === true) || (params.imageData && (params.imageName || params.imageType));
+            var paramSource = params;
+            if (isImage) {
+                // filter out binary-only keys from salted params
+                var filtered = {};
+                for (var fk in params) {
+                    if (!Object.prototype.hasOwnProperty.call(params, fk)) {
+                        continue; 
+                    }
+                    if (fk === "__imageUpload" || fk === "imageData" || fk === "imageName" || fk === "imageType" || fk === "type") {
+                        continue; 
+                    }
+                    filtered[fk] = params[fk];
+                }
+                paramSource = filtered;
+            }
+            prepareParams(paramSource, this.salt).then(saltedData => {
                 var method = "POST";
                 if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
                 }
-                if (method === "GET") {
+                if (isImage) {
+                    xhr.open("POST", url, true);
+                }
+                else if (method === "GET") {
                     xhr.open("GET", url + "?" + saltedData, true);
                 }
                 else {
                     xhr.open("POST", url, true);
                     xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
                 }
+                try {
+                    if ('timeout' in xhr) {
+                        xhr.timeout = this.#requestTimeoutDuration;
+                    }
+                }
+                catch (ex) {
+                    // for IE11 InvalidStateError
+                    this.#log(logLevelEnums.DEBUG, functionName + " could not set xhr.timeout: " + ex);
+                }
                 for (var header in this.headers) {
+                    if (!Object.prototype.hasOwnProperty.call(this.headers, header)) {
+                        continue;
+                    }
+                    if (isImage && header.toLowerCase() === "content-type") {
+                        continue;
+                    }
                     xhr.setRequestHeader(header, this.headers[header]);
                 }
                 
@@ -4952,7 +5032,15 @@ class CountlyClass {
                         }
                     }
                 };
-                if (method === "GET") {
+                if (isImage) {
+                    var formData = this.#prepareImageUploadFormData(params, saltedData);
+                    if (!formData) {
+                        if (typeof callback === "function") { callback(true, params, 'invalid_formdata'); }
+                        return;
+                    }
+                    xhr.send(formData);
+                }
+                else if (method === "GET") {
                     xhr.send();
                 }
                 else {
@@ -4967,6 +5055,73 @@ class CountlyClass {
                 callback(true, params);
             }
         }
+    }
+
+
+    #createBlobFromBase64 = (base64Data, mimeType) => {
+        if (!base64Data) {
+            return null;
+        }
+        try {
+            if (typeof atob === "function") {
+                var binaryString = atob(base64Data);
+                var len = binaryString.length;
+                var bytes = new Uint8Array(len);
+                for (var i = 0; i < len; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                if (typeof Blob !== "undefined") {
+                    return new Blob([bytes], { type: mimeType || "application/octet-stream" });
+                }
+                if (typeof File !== "undefined") {
+                    try {
+                        return new File([bytes], "avatar", { type: mimeType || "application/octet-stream" });
+                    }
+                    catch (fileError) {
+                        this.#log(logLevelEnums.DEBUG, "createBlobFromBase64: Unable to create File instance: " + fileError);
+                    }
+                }
+                return null;
+            }
+            else if (typeof Buffer !== "undefined") {
+                var buffer = Buffer.from(base64Data, "base64");
+                if (typeof Blob !== "undefined") {
+                    return new Blob([buffer], { type: mimeType || "application/octet-stream" });
+                }
+                if (typeof File !== "undefined") {
+                    try {
+                        return new File([buffer], "avatar", { type: mimeType || "application/octet-stream" });
+                    }
+                    catch (fileError) {
+                        this.#log(logLevelEnums.DEBUG, "createBlobFromBase64: Unable to create File instance from buffer: " + fileError);
+                    }
+                }
+                return null;
+            }
+        }
+        catch (error) {
+            this.#log(logLevelEnums.ERROR, "createBlobFromBase64 failed: " + error);
+        }
+        return null;
+    }
+    #prepareImageUploadFormData = (params, saltedData) => {
+        if (!params || !params.imageData) { return null; }
+        var blob = this.#createBlobFromBase64(params.imageData, params.imageType);
+        if (!blob || typeof FormData === 'undefined') { return null; }
+        var fd = new FormData();
+        fd.append('user_details[picture]', blob, params.imageName || 'avatar');
+        if (saltedData && typeof saltedData === 'string') {
+            var pairs = saltedData.split('&');
+            for (var i = 0; i < pairs.length; i++) {
+                var pair = pairs[i];
+                if (!pair) { continue; }
+                var idx = pair.indexOf('=');
+                var key = idx >= 0 ? pair.substring(0, idx) : pair;
+                var val = idx >= 0 ? pair.substring(idx + 1) : '';
+                fd.append(key, val);
+            }
+        }
+        return fd;
     }
 
     /**
@@ -4991,7 +5146,18 @@ class CountlyClass {
             var body = null;
 
             params = params || {};
-            prepareParams(params, this.salt).then(saltedData => {
+            var isImage = params._forceImageUpload || (params.__imageUpload === true) || (params.imageData && (params.imageName || params.imageType));
+            var paramSource = params;
+            if (isImage) {
+                var filtered = {};
+                for (var pk in params) {
+                    if (!Object.prototype.hasOwnProperty.call(params, pk)) { continue; }
+                    if (pk === '__imageUpload' || pk === 'imageData' || pk === 'imageName' || pk === 'imageType' || pk === 'type') { continue; }
+                    filtered[pk] = params[pk];
+                }
+                paramSource = filtered;
+            }
+            prepareParams(paramSource, this.salt).then(saltedData => {
                 if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
                     body = saltedData;
@@ -5013,10 +5179,26 @@ class CountlyClass {
                 const timeoutId = setTimeout(() => controller.abort(), this.#requestTimeoutDuration);
 
                 // Make the fetch request
-                fetch(url, {
+                var fetchBody = body;
+                var fetchUrl = url;
+                if (isImage) {
+                    var formData = this.#prepareImageUploadFormData(params, saltedData);
+                    if (!formData) {
+                        clearTimeout(timeoutId);
+                        if (typeof callback === 'function') { callback(true, params, 'invalid_formdata'); }
+                        return;
+                    }
+                    // remove explicit content-type so browser sets boundary
+                    if (headers['Content-type']) {
+                        delete headers['Content-type']; 
+                    }
+                    fetchBody = formData;
+                    fetchUrl = url.split('?')[0];
+                }
+                fetch(fetchUrl, {
                     method: method,
                     headers: headers,
-                    body: body,
+                    body: fetchBody,
                     signal: signal
                 }).then((res) => {
                     clearTimeout(timeoutId);
@@ -5027,7 +5209,12 @@ class CountlyClass {
                     var requestDuration = requestEndTime - requestStartTime;
                     this.#lastRequestDuration = requestDuration;
                     
-                    this.#log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "], duration: [" + requestDuration + "] seconds");
+                    if (isImage) {
+                        this.#log(logLevelEnums.DEBUG, functionName + " image Fetch upload completed with status code: [" + response.status + "] and response: [" + data + "], duration: [" + requestDuration + "] seconds");
+                    }
+                    else {
+                        this.#log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "], duration: [" + requestDuration + "] seconds");
+                    }
                     var isResponseValidated;
                     if (useBroadResponseValidator) {
                         isResponseValidated = this.#isResponseValidBroad(response.status, data);
