@@ -1,4 +1,9 @@
-## X.X.X
+## XX.XX.XX
+
+* Added a new init time config option for filtering contents:
+  * `content_filter_callback`
+
+## 25.4.2
 
 * Mitigated an issue where manual feedback reporting could have failed
 * Mitigated a possible issue with request timeouts in IE11

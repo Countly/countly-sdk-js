@@ -88,6 +88,7 @@ class CountlyClass {
     #contentZoneTimer;
     #contentIframeID;
     #crashFilterCallback;
+    #contentFilterCallback;
     #serverConfigCache;
     #SCNetwork;
     #SCSizeReqQueue;
@@ -169,6 +170,7 @@ class CountlyClass {
         this.#contentZoneTimer = null;
         this.#contentIframeID = "cly-content-iframe";
         this.#crashFilterCallback = null;
+        this.#contentFilterCallback = null;
         this.#SCNetwork = true;
         this.#SCSizeReqQueue = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
         this.#SCSizeEventBatch = getConfig("max_events", ob, configurationDefaultValues.MAX_EVENT_BATCH);
@@ -443,6 +445,7 @@ class CountlyClass {
         this.hcConsecutiveBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.consecutiveBackoffCount) || 0;
         this.#lastRequestWasBackoff = false; // Track if the previous request resulted in a backoff
         this.#crashFilterCallback = getConfig("crash_filter_callback", ob, null);
+        this.#contentFilterCallback = getConfig("content_filter_callback", ob, null);
 
         if (this.storage === "cookie") {
             this.#lsSupport = false;
@@ -4084,6 +4087,24 @@ class CountlyClass {
 
             if (!response.html || !response.geo) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, no html content or orientation to display");
+                return;
+            }
+
+            // Build query params
+            const queryParams = { type: "content" };
+
+            const qIndex = response.html.indexOf("?");
+            if (qIndex !== -1) {
+                const search = response.html.slice(qIndex + 1);
+                new URLSearchParams(search).forEach((v, k) => {
+                    queryParams[k] = v;
+                });
+            }
+
+            // Filter check
+            if (typeof this.#contentFilterCallback === "function" &&
+                this.#contentFilterCallback(queryParams) === false) {
+                this.#log(logLevelEnums.VERBOSE, "sendContentRequest, Content was filtered out by the content filter");
                 return;
             }
 
