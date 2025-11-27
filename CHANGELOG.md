@@ -1,7 +1,6 @@
 ## XX.XX.XX
 
-* Added a new init time config option for filtering contents:
-  * `content_filter_callback`
+* Added a new option `filter_callback` to methods `enterContentZone` and `refreshContentZone` in `content` interface for filtering contents.
 
 ## 25.4.2
 
