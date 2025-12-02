@@ -1,6 +1,6 @@
-## XX.XX.XX
+## 25.4.3
 
-* Added a new option `filter_callback` to methods `enterContentZone` and `refreshContentZone` in `content` interface for filtering contents.
+* Added filtering capability to `content` interface through `enterContentZone(contentFilterCallback)`.
 
 ## 25.4.2
 

@@ -125,6 +125,7 @@ class CountlyClass {
     #lastRequestWasBackoff;
     #testModeTime;
     #requestTimeoutDuration;
+    #contentFilterCallback;
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
@@ -196,6 +197,7 @@ class CountlyClass {
         this.#SCBackoffRequestAge = 24; // 24 hours
         this.#SCBackoffDuration = 60; // 60 seconds
         this.#requestTimeoutDuration = 30000; // 30 seconds
+        this.#contentFilterCallback = null;
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
@@ -3975,8 +3977,8 @@ class CountlyClass {
         enterContentZone: (filter_callback) => {
             this.#enterContentZoneInternal(false, filter_callback);
         },
-        refreshContentZone: (filter_callback) => {
-            this.#refreshContentZoneInternal(filter_callback);
+        refreshContentZone: () => {
+            this.#refreshContentZoneInternal();
         },
         exitContentZone: () => {
             this.#exitContentZoneInternal();
@@ -3992,25 +3994,30 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Already in content zone");
             return;
         }
+        if (filter_callback && typeof filter_callback == "function") {
+            this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Content filter callback is provided");
+            this.#contentFilterCallback = filter_callback;
+        }
+
         if (!this.#initTimestamp || (getMsTimestamp() - this.#initTimestamp) < 4000 ) {
             // settimeout
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Not enough time passed since initialization");
             setTimeout(() => {
-                this.#enterContentZoneInternal(false, filter_callback);
+                this.#enterContentZoneInternal(false);
             }, 4001);
             return;
         }
         this.#log(logLevelEnums.INFO, "content.enterContentZone, Entering content zone");
         this.#inContentZone = true;
         if (!forced) {
-            this.#sendContentRequest(filter_callback);
+            this.#sendContentRequest();
         }
         this.#contentZoneTimer = setInterval(() => {
-            this.#sendContentRequest(filter_callback);
+            this.#sendContentRequest();
         }, this.#SCIntervalContent);
     };
 
-    #refreshContentZoneInternal = (filter_callback) => {
+    #refreshContentZoneInternal = () => {
         if (!this.#SCEnableRefreshContentZone) {
             this.#log(logLevelEnums.DEBUG, "content.refreshContentZone, Refresh content zone is disabled");
             return;
@@ -4020,7 +4027,7 @@ class CountlyClass {
         this.#processAsyncQueue();
         this.#sendEventsForced();
         setTimeout(() => {
-            this.#enterContentZoneInternal(false, filter_callback);
+            this.#enterContentZoneInternal(false);
         }, 1000);
     };
 
@@ -4063,7 +4070,7 @@ class CountlyClass {
         return params;
     };
 
-    #sendContentRequest = (filter_callback) => {
+    #sendContentRequest = () => {
         this.#log(logLevelEnums.DEBUG, "sendContentRequest, sending content request");
         var params = this.#prepareContentRequest();
         this.#makeNetworkRequest("sendContentRequest,", this.url + this.#contentEndPoint, params, (e, param, resp) => {
@@ -4088,8 +4095,7 @@ class CountlyClass {
             }
 
             // Build query params
-            const queryParams = { type: "content" };
-
+            const queryParams = {};
             const qIndex = response.html.indexOf("?");
             if (qIndex !== -1) {
                 const search = response.html.slice(qIndex + 1);
@@ -4099,7 +4105,7 @@ class CountlyClass {
             }
 
             // Filter check
-            if (typeof filter_callback === "function" && filter_callback(queryParams) === false) {
+            if (this.#contentFilterCallback && this.#contentFilterCallback(queryParams) === false) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, Content was filtered out by the content filter");
                 return;
             }
