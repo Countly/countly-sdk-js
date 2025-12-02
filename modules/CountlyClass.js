@@ -3975,7 +3975,7 @@ class CountlyClass {
 
     content = {
         enterContentZone: (filter_callback) => {
-            this.#enterContentZoneInternal(false, filter_callback);
+            this.#enterContentZoneInternal(undefined, filter_callback);
         },
         refreshContentZone: () => {
             this.#refreshContentZoneInternal();
@@ -4003,7 +4003,7 @@ class CountlyClass {
             // settimeout
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Not enough time passed since initialization");
             setTimeout(() => {
-                this.#enterContentZoneInternal(false);
+                this.#enterContentZoneInternal();
             }, 4001);
             return;
         }
@@ -4027,7 +4027,7 @@ class CountlyClass {
         this.#processAsyncQueue();
         this.#sendEventsForced();
         setTimeout(() => {
-            this.#enterContentZoneInternal(false);
+            this.#enterContentZoneInternal();
         }, 1000);
     };
 
