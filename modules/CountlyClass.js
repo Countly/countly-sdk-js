@@ -125,6 +125,7 @@ class CountlyClass {
     #lastRequestWasBackoff;
     #testModeTime;
     #requestTimeoutDuration;
+    #contentFilterCallback;
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
@@ -196,6 +197,7 @@ class CountlyClass {
         this.#SCBackoffRequestAge = 24; // 24 hours
         this.#SCBackoffDuration = 60; // 60 seconds
         this.#requestTimeoutDuration = 30000; // 30 seconds
+        this.#contentFilterCallback = null;
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
@@ -3972,8 +3974,8 @@ class CountlyClass {
     }
 
     content = {
-        enterContentZone: () => {
-            this.#enterContentZoneInternal();
+        enterContentZone: (filter_callback) => {
+            this.#enterContentZoneInternal(false, filter_callback);
         },
         refreshContentZone: () => {
             this.#refreshContentZoneInternal();
@@ -3983,7 +3985,7 @@ class CountlyClass {
         },
     };
 
-    #enterContentZoneInternal = (forced) => {
+    #enterContentZoneInternal = (forced, filter_callback) => {
         if (!isBrowser) {
             this.#log(logLevelEnums.WARNING, "content.enterContentZone, window object is not available. Not entering content zone.");
             return;
@@ -3992,11 +3994,16 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Already in content zone");
             return;
         }
+        if (filter_callback && typeof filter_callback == "function") {
+            this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Content filter callback is provided");
+            this.#contentFilterCallback = filter_callback;
+        }
+
         if (!this.#initTimestamp || (getMsTimestamp() - this.#initTimestamp) < 4000 ) {
             // settimeout
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Not enough time passed since initialization");
             setTimeout(() => {
-                this.#enterContentZoneInternal();
+                this.#enterContentZoneInternal(false);
             }, 4001);
             return;
         }
@@ -4020,7 +4027,7 @@ class CountlyClass {
         this.#processAsyncQueue();
         this.#sendEventsForced();
         setTimeout(() => {
-            this.#enterContentZoneInternal();
+            this.#enterContentZoneInternal(false);
         }, 1000);
     };
 
@@ -4084,6 +4091,22 @@ class CountlyClass {
 
             if (!response.html || !response.geo) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, no html content or orientation to display");
+                return;
+            }
+
+            // Build query params
+            const queryParams = {};
+            const qIndex = response.html.indexOf("?");
+            if (qIndex !== -1) {
+                const search = response.html.slice(qIndex + 1);
+                new URLSearchParams(search).forEach((v, k) => {
+                    queryParams[k] = v;
+                });
+            }
+
+            // Filter check
+            if (this.#contentFilterCallback && this.#contentFilterCallback(queryParams) === false) {
+                this.#log(logLevelEnums.VERBOSE, "sendContentRequest, Content was filtered out by the content filter");
                 return;
             }
 
