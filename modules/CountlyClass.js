@@ -126,6 +126,7 @@ class CountlyClass {
     #testModeTime;
     #requestTimeoutDuration;
     #contentFilterCallback;
+    #isProcessingAsyncFromUserDataSave;
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
@@ -198,6 +199,7 @@ class CountlyClass {
         this.#SCBackoffDuration = 60; // 60 seconds
         this.#requestTimeoutDuration = 30000; // 30 seconds
         this.#contentFilterCallback = null;
+        this.#isProcessingAsyncFromUserDataSave = false;
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
@@ -1262,6 +1264,7 @@ class CountlyClass {
                     var req = {};
                     req.begin_session = 1;
                     req.metrics = JSON.stringify(this.#getMetrics());
+                    this.userData.save(true); // ensure user data is saved before session start
                     this.#toRequestQueue(req);
                 }
                 this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
@@ -1292,6 +1295,7 @@ class CountlyClass {
         }
 
         this.#log(logLevelEnums.INFO, "session_duration, Session extended: [" + sec + "]");
+        this.userData.save(true); // ensure user data is saved before session update
         this.#toRequestQueue({ session_duration: sec });
         this.#extendSession();
     };
@@ -1313,6 +1317,7 @@ class CountlyClass {
                 this.#reportViewDuration();
                 if (!this.#useSessionCookie || force) {
                     this.#log(logLevelEnums.INFO, "end_session, Session ended");
+                    this.userData.save(true); // ensure user data is saved before session end
                     this.#toRequestQueue({ end_session: 1, session_duration: sec });
                 }
                 else {
@@ -1476,6 +1481,10 @@ class CountlyClass {
         if (!event.key) {
             this.#log(logLevelEnums.ERROR, "Adding event failed. Event must have a key property");
             return;
+        }
+
+        if (!this.#isProcessingAsyncFromUserDataSave) {
+            this.userData.save(true); // ensure cached user data is saved before adding event
         }
 
         if (!event.count) {
@@ -1654,6 +1663,7 @@ class CountlyClass {
             user.byear = truncateSingleValue(user.byear, this.#SCLimitValueSize , "user_details", this.#log);
             user.custom = truncateObject(user.custom, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "user_details", this.#log);
             var props = ["name", "username", "email", "organization", "phone", "picture", "gender", "byear", "custom"];
+            this.userData.save(); // ensure user data (and events) is saved before sending user details
             this.#toRequestQueue({ user_details: JSON.stringify(createNewObjectFromProperties(user, props)) });
         }
     };
@@ -1841,16 +1851,29 @@ class CountlyClass {
         * Save changes made to user's custom properties object and send them to server
         * @memberof Countly.userData
         * */
-        save: () => {
-            this.#log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property");
-            if (this.check_consent(featureEnums.USERS)) {
-                // process async queue before sending events
-                this.#processAsyncQueue();
-                // flush events to event queue to prevent a drill issue
-                this.#sendEventsForced();
-                this.#log(logLevelEnums.INFO, "user_details, flushed the event queue");
-                this.#toRequestQueue({ user_details: JSON.stringify({ custom: this.#customData }) });
+        save: (forEvents) => {
+            this.#log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property. forEvents:[" + forEvents + "]");
+            if (!this.check_consent(featureEnums.USERS) || Object.keys(this.#customData).length === 0) { 
+                return;
             }
+
+            if (!forEvents) {
+                this.#log(logLevelEnums.DEBUG, "[userData] save, flushing async queue and event queue before sending custom user data");
+                this.#isProcessingAsyncFromUserDataSave = true;
+                try {
+                    // process async queue before sending events
+                    this.#processAsyncQueue();
+                }
+                finally {
+                    this.#isProcessingAsyncFromUserDataSave = false;
+                }
+
+                // flush events to request queue
+                this.#sendEventsForced();
+            }
+
+            this.#log(logLevelEnums.INFO, "[userData] save, will send the following custom data to server: [" + JSON.stringify(this.#customData) + "]");
+            this.#toRequestQueue({ user_details: JSON.stringify({ custom: this.#customData }) });
             this.#customData = {};
         }
     };
