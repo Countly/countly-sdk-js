@@ -3575,6 +3575,9 @@ class CountlyClass {
             if (feedbackWidgetSegmentation) {
                 customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
             }
+            const resInfo = this.#getResolution(true);
+            customObjectToSendWithTheWidget.width = resInfo.width;
+            customObjectToSendWithTheWidget.height = resInfo.height;
             url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
             // Origin is passed to the popup so that it passes it back in the postMessage event
             // Only web SDK passes origin and web
@@ -3675,25 +3678,25 @@ class CountlyClass {
             wrapper.appendChild(iframe);
             this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
 
-            add_event_listener(window, "message", (e) => {
-                var data = {};
-                try {
-                    data = JSON.parse(e.data);
-                }
-                catch (ex) {
-                    this.#log(logLevelEnums.ERROR, "present_feedback_widget, Error while parsing message body " + ex);
-                }
+            add_event_listener(window, "message", (event) => {
+                this.#interpretFeedbackWidgetMessage(event, presentableFeedback, wrapper);
+            });
 
-                if (data.close !== true) { // to not mix with content we check against true value
-                    // this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
-                    // silent ignore
-                    return;
-                }
-                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Received message from widget with origin: [" + e.origin + "] and data: [" + e.data + "]");
-
-                document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
-                document.getElementById("csbg").style.display = "none";
-                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Closed the widget");
+            let resizeTimeout;
+            add_event_listener(window,'resize', () => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    const width = window.innerWidth;
+                    const height = window.innerHeight;
+                    const feedbackWidgetIframe = document.getElementById("countly-" + feedbackWidgetFamily + "-iframe");
+                    if (!feedbackWidgetIframe) {
+                        return;
+                    }
+                    feedbackWidgetIframe.contentWindow.postMessage(
+                        { type: 'resize', width: width, height: height },
+                        '*'
+                    );
+                }, 200);
             });
             /**
              * Function to show survey popup
@@ -3854,6 +3857,54 @@ class CountlyClass {
 
 
     };
+
+    #interpretFeedbackWidgetMessage = (messageEvent, presentableFeedback, wrapper) => {
+        var data = {};
+        try {
+            if(typeof messageEvent.data === "object" && messageEvent.data !== null){
+                data = messageEvent.data;
+            }
+            else {
+                data = JSON.parse(messageEvent.data);
+            }
+        }
+        catch (ex) {
+            this.#log(logLevelEnums.ERROR, "interpretFeedbackWidgetMessage, Error while parsing message body " + ex);
+        }
+
+        const {key, resize_me, close} = data;
+        
+        if(key && key === 'resize_me' && resize_me){
+            this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Resizing iframe to: [" + JSON.stringify(resize_me) + "]");
+
+            const resInfo = this.#getResolution(true);
+            if (!resize_me.l || !resize_me.p) {
+                this.#log(logLevelEnums.ERROR, "interpretFeedbackWidgetMessage, Invalid resize object");
+                return;
+            }
+            var dimensionToUse = resize_me.p;
+            if (resInfo.width >= resInfo.height) {
+                dimensionToUse = resize_me.l;
+            };
+
+            wrapper.style.height = dimensionToUse.h + "px";
+            wrapper.style.width = dimensionToUse.w + "px";
+            wrapper.style.top = dimensionToUse.y + "px";
+            wrapper.style.left = dimensionToUse.x + "px";
+            return;
+        }
+
+        if (close && close !== true) { // to not mix with content we check against true value
+            // this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
+            // silent ignore
+            return;
+        }
+        this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Received message from widget with origin: [" + messageEvent.origin + "] and data: [" + messageEvent.data + "]");
+
+        document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
+        document.getElementById("csbg").style.display = "none";
+        this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Closed the widget");
+    }
 
     /**
      *  Record and report error, this is were tracked errors are modified and send to the request queue
