@@ -3679,7 +3679,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
 
             add_event_listener(window, "message", (event) => {
-                this.#interpretFeedbackWidgetMessage(event, presentableFeedback, wrapper);
+                this.#interpretFeedbackWidgetMessage(event, wrapper, iframe);
             });
 
             let resizeTimeout;
@@ -3858,7 +3858,7 @@ class CountlyClass {
 
     };
 
-    #interpretFeedbackWidgetMessage = (messageEvent, presentableFeedback, wrapper) => {
+    #interpretFeedbackWidgetMessage = (messageEvent, wrapper, iframe) => {
         var data = {};
         try {
             if(typeof messageEvent.data === "object" && messageEvent.data !== null){
@@ -3871,10 +3871,11 @@ class CountlyClass {
         catch (ex) {
             this.#log(logLevelEnums.ERROR, "interpretFeedbackWidgetMessage, Error while parsing message body " + ex);
         }
-
-        const {key, resize_me, close} = data;
+        this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Received message from widget with origin: [" + messageEvent.origin + "] and data: [" + JSON.stringify(data) + "]");
+        const {key, resize_me, close} = data; 
+        // use action when avaliable
         
-        if(key && key === 'resize_me' && resize_me){
+        if(resize_me){
             this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Resizing iframe to: [" + JSON.stringify(resize_me) + "]");
 
             const resInfo = this.#getResolution(true);
@@ -3891,19 +3892,20 @@ class CountlyClass {
             wrapper.style.width = dimensionToUse.w + "px";
             wrapper.style.top = dimensionToUse.y + "px";
             wrapper.style.left = dimensionToUse.x + "px";
+
+            iframe.style.height = dimensionToUse.h + "px";
+            iframe.style.width = dimensionToUse.w + "px";
+            iframe.style.top = dimensionToUse.y + "px";
+            iframe.style.left = dimensionToUse.x + "px";
             return;
         }
 
-        if (close && close !== true) { // to not mix with content we check against true value
-            // this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
-            // silent ignore
-            return;
+        if (close && (close === true || close === 1)) {
+             wrapper.style.display = "none";
+            iframe.style.display = "none";
+            document.getElementById("csbg").style.display = "none";
+            this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Closed the widget");
         }
-        this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Received message from widget with origin: [" + messageEvent.origin + "] and data: [" + messageEvent.data + "]");
-
-        document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
-        document.getElementById("csbg").style.display = "none";
-        this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Closed the widget");
     }
 
     /**
