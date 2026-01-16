@@ -966,6 +966,22 @@ class CountlyClass {
     };
 
     /**
+     * Returns the SDK version string currently in use
+     * @returns {string} sdk version
+     */
+    sdk_version = () => {
+        return this.#sdkVersion;
+    };
+
+    /**
+     * Returns the SDK name string currently in use
+     * @returns {string} sdk name
+     */
+    sdk_name = () => {
+        return this.#sdkName;
+    };
+
+    /**
     * Modify feature groups for consent management. Allows you to group multiple features under one feature group
     * @param {object} features - object to define feature name as key and core features as value
     * @example <caption>Adding all features under one group</caption>
