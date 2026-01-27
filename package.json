@@ -5,7 +5,8 @@
   "type": "module",
   "main": "Countly.js",
   "scripts": {
-    "test": "test"
+    "test": "test",
+    "build": "rollup -c"
   },
   "repository": {
     "type": "git",

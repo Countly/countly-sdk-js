@@ -4218,6 +4218,9 @@ class CountlyClass {
             // response.html = response.html.replace(/http:\/\//g, "https://");
             iframe.src = response.html;
             iframe.style.position = "absolute";
+            if (response.html.indexOf("feedback/survey") != -1) { // for surveys to scroll with the page (nps is not in journeys yet)
+                iframe.style.position = "fixed";
+            }
             var dimensionToUse = response.geo.p;
             const resInfo = this.#getResolution(true);
             if (resInfo.width >= resInfo.height) {

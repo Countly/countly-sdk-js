@@ -1,3 +1,7 @@
+## X.X.X
+
+* Added support for Feedback Widget resizing logic (will need server update to benefit.)
+
 ## 25.4.4
 
 * Improved user property recording order with respect to sessions and events.
