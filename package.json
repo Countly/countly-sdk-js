@@ -5,9 +5,7 @@
   "type": "module",
   "main": "Countly.js",
   "scripts": {
-    "test": "test",
-    "cy:run": "cypress run",
-    "cy:open": "cypress open"
+    "test": "test"
   },
   "repository": {
     "type": "git",

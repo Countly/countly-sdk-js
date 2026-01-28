@@ -44,8 +44,9 @@ describe("Remaining requests tests ", () => {
             Countly.begin_session();
             Countly.end_session(undefined, true);
             cy.fetch_local_request_queue().then((rq) => {
+                // We expect 3 requests in queue: begin_session, end_session, orientation. health check was not in the queue
                 expect(rq.length).to.equal(3);
-                expect(rq[0].rr).to.equal(undefined);
+                expect(rq[0].rr).to.equal(3);
                 expect(rq[1].rr).to.equal(undefined);
                 expect(rq[2].rr).to.equal(undefined);
 
@@ -55,7 +56,7 @@ describe("Remaining requests tests ", () => {
                     // We expect 4 requests in queue: begin_session, end_session, orientation and change ID
                     cy.log(rq2);
                     expect(rq2.length).to.equal(4);
-                    expect(rq2[0].rr).to.equal(undefined);
+                    expect(rq2[0].rr).to.equal(3); // still 3 as it was assigned at the time of the first request creation
                     expect(rq2[1].rr).to.equal(undefined);
                     expect(rq2[2].rr).to.equal(undefined);
                     expect(rq2[3].rr).to.equal(undefined);
