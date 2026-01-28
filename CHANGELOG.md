@@ -1,3 +1,13 @@
+## 26.1.0
+
+* Added support for SBS flags:
+  * Event whitelisting / blacklisting
+  * Segmentation whitelisting / blacklisting (global and per-event)
+  * User property whitelisting / blacklisting
+  * Journey trigger events
+
+* Improved testing consistency of queuing system
+
 ## 25.4.4
 
 * Improved user property recording order with respect to sessions and events.

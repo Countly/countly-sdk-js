@@ -115,6 +115,15 @@ class CountlyClass {
     #SCBackoffRQPercentage;
     #SCBackoffRequestAge;
     #SCBackoffDuration;
+    #SCEventBlacklist;
+    #SCEventWhitelist;
+    #SCUserPropertyBlacklist;
+    #SCUserPropertyWhitelist;
+    #SCSegmentationBlacklist;
+    #SCSegmentationWhitelist;
+    #SCEventSegmentationBlacklist;
+    #SCEventSegmentationWhitelist;
+    #SCJourneyTriggerEvents;
     #initContentSent;
     #initTimestamp;
     #isSCDisabled;
@@ -127,6 +136,15 @@ class CountlyClass {
     #requestTimeoutDuration;
     #contentFilterCallback;
     #isProcessingAsyncFromUserDataSave;
+    #journeyTriggerInProgress;
+    #journeyTriggerPending;
+    #journeyPendingEventIds;
+    #fakeRequestHandler;
+    
+    /**
+     * Create a new Countly instance with configuration
+     * @param {Object} ob - Configuration object for Countly initialization
+     */
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
@@ -197,9 +215,22 @@ class CountlyClass {
         this.#SCBackoffRQPercentage = 0.5; // 50% of the request queue
         this.#SCBackoffRequestAge = 24; // 24 hours
         this.#SCBackoffDuration = 60; // 60 seconds
+        this.#SCEventBlacklist = [];
+        this.#SCEventWhitelist = [];
+        this.#SCUserPropertyBlacklist = [];
+        this.#SCUserPropertyWhitelist = [];
+        this.#SCSegmentationBlacklist = [];
+        this.#SCSegmentationWhitelist = [];
+        this.#SCEventSegmentationBlacklist = {};
+        this.#SCEventSegmentationWhitelist = {};
+        this.#SCJourneyTriggerEvents = [];
         this.#requestTimeoutDuration = 30000; // 30 seconds
         this.#contentFilterCallback = null;
         this.#isProcessingAsyncFromUserDataSave = false;
+        this.#journeyTriggerInProgress = false;
+        this.#journeyTriggerPending = false;
+        this.#journeyPendingEventIds = new Set();
+        this.#fakeRequestHandler = getConfig("fake_request_handler", ob, null);
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
@@ -259,6 +290,11 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
     };
 
+    /**
+     * Fetch and set server configuration
+     * Retrieves server-side settings and behavior configurations
+     * @private
+     */
     #getAndSetServerConfig = () => {
         if (this.device_id === "[CLY]_temp_id") {
             this.#log(logLevelEnums.INFO, "server_config, Device ID is temporary, not fetching server config");
@@ -303,6 +339,12 @@ class CountlyClass {
         }, this.#SCInterval * 60 * 60 * 1000);
     }
 
+    /**
+     * Populate server configuration with received settings
+     * Updates internal server configuration settings based on server response
+     * @private
+     * @param {Object} mainCache - Server configuration response object
+     */
     #populateServerConfig = (mainCache) => {
         if (!mainCache || !mainCache.c || typeof mainCache.c !== "object") {
             return;
@@ -390,6 +432,33 @@ class CountlyClass {
         }
         if (cache.hasOwnProperty("bom_d")) {
             this.#SCBackoffDuration = cache.bom_d;
+        }
+        if (cache.hasOwnProperty("eb") && Array.isArray(cache.eb)) {
+            this.#SCEventBlacklist = cache.eb;
+        }
+        if (cache.hasOwnProperty("ew") && Array.isArray(cache.ew)) {
+            this.#SCEventWhitelist = cache.ew;
+        }
+        if (cache.hasOwnProperty("upb") && Array.isArray(cache.upb)) {
+            this.#SCUserPropertyBlacklist = cache.upb;
+        }
+        if (cache.hasOwnProperty("upw") && Array.isArray(cache.upw)) {
+            this.#SCUserPropertyWhitelist = cache.upw;
+        }
+        if (cache.hasOwnProperty("sb") && Array.isArray(cache.sb)) {
+            this.#SCSegmentationBlacklist = cache.sb;
+        }
+        if (cache.hasOwnProperty("sw") && Array.isArray(cache.sw)) {
+            this.#SCSegmentationWhitelist = cache.sw;
+        }
+        if (cache.hasOwnProperty("esb") && cache.esb && typeof cache.esb === "object" && !Array.isArray(cache.esb)) {
+            this.#SCEventSegmentationBlacklist = cache.esb;
+        }
+        if (cache.hasOwnProperty("esw") && cache.esw && typeof cache.esw === "object" && !Array.isArray(cache.esw)) {
+            this.#SCEventSegmentationWhitelist = cache.esw;
+        }
+        if (cache.hasOwnProperty("jte") && Array.isArray(cache.jte)) {
+            this.#SCJourneyTriggerEvents = cache.jte;
         }
     };
 
@@ -819,6 +888,11 @@ class CountlyClass {
         this.#getAndSetServerConfig();
     };
 
+    /**
+     * Update consent status and sync with server
+     * Handles consent management and sends consent updates to server
+     * @private
+     */
     #updateConsent = () => {
         if (this.#consentTimer) {
             // delay syncing consents
@@ -963,6 +1037,10 @@ class CountlyClass {
         this.#SCLimitBreadcrumbCount = undefined;
         this.#SCLimitStackTraceLinesPerThread = undefined;
         this.#SCLimitStackTraceLineLength = undefined;
+        this.#fakeRequestHandler = undefined;
+        this.#journeyTriggerInProgress = undefined;
+        this.#journeyTriggerPending = undefined;
+        this.#journeyPendingEventIds = undefined;
     };
 
     /**
@@ -1506,11 +1584,18 @@ class CountlyClass {
         if (!event.count) {
             event.count = 1;
         }
+        
+        if (!this.#isEventAllowedByBehaviorSettings(event.key)) {
+            this.#log(logLevelEnums.DEBUG, "add_cly_event, Event was filtered out by behavior settings: [" + event.key + "]");
+            return;
+        }
+        
+        const initialKey = event.key;
         // we omit the internal event keys from truncation. TODO: This is not perfect as it would omit a key that includes an internal event key and more too. But that possibility seems negligible. 
         if (!internalEventKeyEnumsArray.includes(event.key)) {
-            // truncate event name and segmentation to internal limits
             event.key = truncateSingleValue(event.key, this.#SCLimitKeyLength, "add_cly_event", this.#log);
         }
+        event.segmentation = this.#filterSegmentationByBehaviorSettings(event.key, event.segmentation);
         event.segmentation = truncateObject(event.segmentation, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "add_cly_event", this.#log);
         var props = ["key", "count", "sum", "dur", "segmentation"];
         var e = createNewObjectFromProperties(event, props);
@@ -1528,7 +1613,314 @@ class CountlyClass {
         this.#eventQueue.push(e);
         this.#setValueInStorage("cly_event", this.#eventQueue);
         this.#log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully adding the last event:", e);
+        this.#handleJourneyTrigger(initialKey, e.id);
     }
+
+    /**
+     * 
+     * @param {String} eventKey - Event key to filter for
+     * @returns {Boolean} true if event is allowed, false if it is blocked
+     */
+    #isEventAllowedByBehaviorSettings = (eventKey) => {
+        if (this.#SCEventBlacklist && this.#SCEventBlacklist.length > 0) {
+            return this.#SCEventBlacklist.indexOf(eventKey) === -1;
+        }
+        if (this.#SCEventWhitelist && this.#SCEventWhitelist.length > 0) {
+            return this.#SCEventWhitelist.indexOf(eventKey) !== -1;
+        }
+        return true;
+    }
+
+    /**
+     * Filter segmentation object by behavior settings
+     * 
+     * @param {String} eventKey - Event key to filter segmentation for
+     * @param {Object} segmentation - segmentation object to filter
+     * @returns {Object} filtered segmentation object
+     */
+    #filterSegmentationByBehaviorSettings = (eventKey, segmentation) => {
+        if (!segmentation || typeof segmentation !== "object") {
+            return segmentation;
+        }
+
+        var filteredSegmentation = {};
+        for (var key in segmentation) {
+            if (Object.prototype.hasOwnProperty.call(segmentation, key)) {
+                filteredSegmentation[key] = segmentation[key];
+            }
+        }
+
+        // global segmentation filtering
+        if (this.#SCSegmentationBlacklist && this.#SCSegmentationBlacklist.length > 0) {
+            this.#SCSegmentationBlacklist.forEach((blockedKey) => {
+                delete filteredSegmentation[blockedKey];
+            });
+        }
+        else if (this.#SCSegmentationWhitelist && this.#SCSegmentationWhitelist.length > 0) {
+            for (var segKey in filteredSegmentation) {
+                if (Object.prototype.hasOwnProperty.call(filteredSegmentation, segKey) && this.#SCSegmentationWhitelist.indexOf(segKey) === -1) {
+                    delete filteredSegmentation[segKey];
+                }
+            }
+        }
+
+        // specific event segmentation filtering
+        var specificBlacklist = this.#SCEventSegmentationBlacklist[eventKey];
+        if (Array.isArray(specificBlacklist) && specificBlacklist.length > 0) {
+            specificBlacklist.forEach((blockedSegKey) => {
+                delete filteredSegmentation[blockedSegKey];
+            });
+        }
+        else {
+            var specificWhitelist = this.#SCEventSegmentationWhitelist[eventKey];
+            if (Array.isArray(specificWhitelist) && specificWhitelist.length > 0) {
+                for (var specificSeg in filteredSegmentation) {
+                    if (Object.prototype.hasOwnProperty.call(filteredSegmentation, specificSeg) && specificWhitelist.indexOf(specificSeg) === -1) {
+                        delete filteredSegmentation[specificSeg];
+                    }
+                }
+            }
+        }
+
+        return filteredSegmentation;
+    }
+
+    /**
+     *
+     * @param {String} key - User property key to check
+     * @returns {Boolean} true if user property is allowed, false if it is blocked
+     */
+    #isUserPropertyAllowed = (key) => {
+        if (this.#SCUserPropertyBlacklist && this.#SCUserPropertyBlacklist.length > 0) {
+            return this.#SCUserPropertyBlacklist.indexOf(key) === -1;
+        }
+        if (this.#SCUserPropertyWhitelist && this.#SCUserPropertyWhitelist.length > 0) {
+            return this.#SCUserPropertyWhitelist.indexOf(key) !== -1;
+        }
+        return true;
+    }
+
+    /**
+     *
+     * @param {Object} customProps - Custom user properties to filter
+     * @returns {Object} filtered custom user properties
+     */
+    #filterUserCustomProperties = (customProps) => {
+        if (!customProps || typeof customProps !== "object") {
+            return customProps;
+        }
+        var filtered = {};
+        for (var key in customProps) {
+            if (!Object.prototype.hasOwnProperty.call(customProps, key)) {
+                continue;
+            }
+            if (!this.#isUserPropertyAllowed(key)) {
+                continue;
+            }
+            filtered[key] = customProps[key];
+        }
+        return filtered;
+    }
+
+    /**
+     * Handle journey trigger event
+     * @param {String} eventKey - Event key to check for journey trigger
+     */
+    #handleJourneyTrigger = (eventKey, eventId) => {
+        if (!Array.isArray(this.#SCJourneyTriggerEvents) || this.#SCJourneyTriggerEvents.length === 0) {
+            return;
+        }
+        if (this.#SCJourneyTriggerEvents.indexOf(eventKey) === -1) {
+            return;
+        }
+
+        this.#log(logLevelEnums.DEBUG, "journeyTrigger, Matched journey trigger event: [" + eventKey + "]");
+        this.#processAsyncQueue();
+        this.#sendEventsForced();
+        if (eventId) {
+            this.#journeyPendingEventIds.add(eventId);
+        }
+        
+        // If already processing, mark as pending to re-trigger after current processing completes
+        if (this.#journeyTriggerInProgress) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Already processing, marking as pending");
+            this.#journeyTriggerPending = true;
+            return;
+        }
+        
+        this.#processJourneyTriggerQueueAndContent();
+    }
+
+    /**
+     * Process journey trigger queue and content requests asynchronously
+     * Manages the journey trigger processing state and handles pending triggers
+     * @private
+     * @async
+     * @returns {Promise<void>}
+     */
+    #processJourneyTriggerQueueAndContent = async () => {
+        if (this.#journeyTriggerInProgress) {
+            return;
+        }
+        this.#journeyTriggerInProgress = true;
+        this.#journeyTriggerPending = false;
+        try {
+            var flushed = await this.#drainRequestQueueForJourney();
+            if (flushed) {
+                this.#triggerJourneyContentRequestWithRetries();
+            }
+            else {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, Could not flush request queue before content refresh");
+            }
+        }
+        finally {
+            this.#journeyTriggerInProgress = false;
+            
+            // If another journey trigger came in while we were processing, re-process
+            if (this.#journeyTriggerPending) {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, Processing pending journey trigger");
+                this.#journeyTriggerPending = false;
+                // Use setTimeout to avoid stack overflow and allow current call to complete
+                setTimeout(() => {
+                    this.#processAsyncQueue();
+                    this.#sendEventsForced();
+                    this.#processJourneyTriggerQueueAndContent();
+                }, 0);
+            }
+        }
+    }
+
+    /**
+     * Drain the request queue for journey trigger processing
+     * Attempts to send all pending requests in the queue
+     * @private
+     * @async
+     * @returns {Promise<boolean>} True if queue was successfully drained, false otherwise
+     */
+    #drainRequestQueueForJourney = async () => {
+        var initialQueueLength = this.#requestQueue.length;
+        if (initialQueueLength === 0) {
+            return true;
+        }
+
+        for (var i = 0; i < initialQueueLength; i++) {
+            var sent = await this.#sendNextRequestFromQueueForJourney();
+            if (!sent) {
+                return false;
+            }
+            if (this.#requestQueue.length === 0) {
+                return true;
+            }
+        }
+
+        return this.#requestQueue.length === 0;
+    }
+
+    /**
+     * Send the next request from queue specifically for journey trigger processing
+     * Waits for the SDK to be ready and handles backoff states
+     * @private
+     * @returns {Promise<boolean>} Promise that resolves to true if request was sent, false otherwise
+     */
+    #sendNextRequestFromQueueForJourney = () => {
+        return new Promise(async (resolve) => {
+            if (this.#offlineMode) {
+                resolve(false);
+                return;
+            }
+
+            if (this.#requestQueue.length === 0) {
+                resolve(true);
+                return;
+            }
+
+            var waitAttempts = 0;
+            while ((!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout) && waitAttempts < 5) {
+                waitAttempts++;
+                await this.#delay(500);
+            }
+
+            if (!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout) {
+                resolve(false);
+                return;
+            }
+
+            this.#sendRequestFromQueue("journey_trigger_send_request", (parameters) => {
+                this.#markJourneyEventIfSent(parameters);
+            }).then((sent) => {
+                resolve(sent);
+            });
+        });
+    }
+
+    /**
+     * Mark journey events as sent based on the request parameters
+     * Removes event IDs from pending set when they are confirmed sent
+     * @private
+     * @param {Object} params - Request parameters containing events data
+     */
+    #markJourneyEventIfSent = (params) => {
+        if (!params || !params.events) {
+            return;
+        }
+        try {
+            var sentEvents = JSON.parse(params.events);
+            if (!Array.isArray(sentEvents)) {
+                return;
+            }
+            for (var i = 0; i < sentEvents.length; i++) {
+                var evt = sentEvents[i];
+                if (evt && evt.id && this.#journeyPendingEventIds.has(evt.id)) {
+                    this.#journeyPendingEventIds.delete(evt.id);
+                }
+            }
+        }
+        catch (e) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Could not parse events while marking sent ids");
+        }
+    }
+
+    /**
+     * Trigger journey content request with retry mechanism
+     * Retries up to 3 times if the content request fails
+     * @private
+     * @param {number} [attempt=0] - Current attempt number for retry logic
+     */
+    #triggerJourneyContentRequestWithRetries = (attempt) => {
+        var currentAttempt = attempt || 0;
+
+        // Skip if content is already being displayed (iframe exists)
+        if (typeof document !== "undefined" && document.getElementById(this.#contentIframeID)) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Content is already being displayed, skipping content request");
+            return;
+        }
+
+        if (this.#journeyPendingEventIds && this.#journeyPendingEventIds.size > 0) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Pending journey events not yet confirmed sent. Deferring content refresh.");
+            setTimeout(() => {
+                this.#triggerJourneyContentRequestWithRetries(currentAttempt);
+            }, 300);
+            return;
+        }
+
+        var maxAttempts = 3;
+        var handleResult = (success) => {
+            if (!success && currentAttempt + 1 < maxAttempts) {
+                setTimeout(() => {
+                    this.#triggerJourneyContentRequestWithRetries(currentAttempt + 1);
+                }, 1000);
+            }
+        };
+
+        this.#sendContentRequest(handleResult);
+    }
+
+    /**
+     * Delay execution for a specified number of milliseconds
+     * @param {number} ms - Number of milliseconds to delay
+     * @returns {Promise} Promise that resolves after the specified delay
+     */
+    #delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     /**
     * Start timed event, which will fill in duration property upon ending automatically
@@ -1668,6 +2060,14 @@ class CountlyClass {
             // flush events to event queue to prevent a drill issue
             this.#sendEventsForced();
             this.#log(logLevelEnums.INFO, "user_details, flushed the event queue");
+            for (var prop in user) {
+                if (prop !=="custom") {
+                    if (!this.#isUserPropertyAllowed(prop)) {
+                        this.#log(logLevelEnums.DEBUG, "user_details, User property filtered by behavior settings: [" + prop + "]");
+                        delete user[prop];
+                    }
+                }
+            }
             // truncating user values and custom object key value pairs
             user.name = truncateSingleValue(user.name, this.#SCLimitValueSize , "user_details", this.#log);
             user.username = truncateSingleValue(user.username, this.#SCLimitValueSize , "user_details", this.#log);
@@ -1677,6 +2077,7 @@ class CountlyClass {
             user.picture = truncateSingleValue(user.picture, 4096, "user_details", this.#log);
             user.gender = truncateSingleValue(user.gender, this.#SCLimitValueSize , "user_details", this.#log);
             user.byear = truncateSingleValue(user.byear, this.#SCLimitValueSize , "user_details", this.#log);
+            user.custom = this.#filterUserCustomProperties(user.custom);
             user.custom = truncateObject(user.custom, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "user_details", this.#log);
             var props = ["name", "username", "email", "organization", "phone", "picture", "gender", "byear", "custom"];
             this.userData.save(); // ensure user data (and events) is saved before sending user details
@@ -1699,6 +2100,10 @@ class CountlyClass {
     #customData = {};
     #change_custom_property = (key, value, mod) => {
         if (this.check_consent(featureEnums.USERS)) {
+            if (!this.#isUserPropertyAllowed(key)) {
+                this.#log(logLevelEnums.DEBUG, "[userData] change_custom_property, User property filtered by behavior settings: [" + key + "]");
+                return;
+            }
             if (!this.#customData[key]) {
                 this.#customData[key] = {};
             }
@@ -1740,6 +2145,10 @@ class CountlyClass {
             // truncate user's custom property value to internal limits
             key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set", this.#log);
             value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set", this.#log);
+            if (!this.#isUserPropertyAllowed(key)) {
+                this.#log(logLevelEnums.DEBUG, "[userData] set, User property filtered by behavior settings: [" + key + "]");
+                return;
+            }
             this.#customData[key] = value;
         },
         /**
@@ -1749,6 +2158,10 @@ class CountlyClass {
         * */
         unset: (key) => {
             this.#log(logLevelEnums.INFO, "[userData] unset, Resetting user's custom property with key: [" + key + "] ");
+            if (!this.#isUserPropertyAllowed(key)) {
+                this.#log(logLevelEnums.DEBUG, "[userData] unset, User property filtered by behavior settings: [" + key + "]");
+                return;
+            }
             this.#customData[key] = "";
         },
         /**
@@ -1888,6 +2301,10 @@ class CountlyClass {
                 this.#sendEventsForced();
             }
 
+            this.#customData = this.#filterUserCustomProperties(this.#customData);
+            if (Object.keys(this.#customData).length === 0) {
+                return;
+            }
             this.#log(logLevelEnums.INFO, "[userData] save, will send the following custom data to server: [" + JSON.stringify(this.#customData) + "]");
             this.#toRequestQueue({ user_details: JSON.stringify({ custom: this.#customData }) });
             this.#customData = {};
@@ -4024,6 +4441,13 @@ class CountlyClass {
         },
     };
 
+    /**
+     * Internal method to enter content zone
+     * Initializes content zone tracking and content requests
+     * @private
+     * @param {boolean} [forced] - Whether to force enter even if already in content zone
+     * @param {function} [filter_callback] - Optional callback to filter content
+     */
     #enterContentZoneInternal = (forced, filter_callback) => {
         if (!isBrowser) {
             this.#log(logLevelEnums.WARNING, "content.enterContentZone, window object is not available. Not entering content zone.");
@@ -4056,6 +4480,11 @@ class CountlyClass {
         }, this.#SCIntervalContent);
     };
 
+    /**
+     * Internal method to refresh content zone
+     * Triggers a content refresh request while in content zone
+     * @private
+     */
     #refreshContentZoneInternal = () => {
         if (!this.#SCEnableRefreshContentZone) {
             this.#log(logLevelEnums.DEBUG, "content.refreshContentZone, Refresh content zone is disabled");
@@ -4070,6 +4499,11 @@ class CountlyClass {
         }, 1000);
     };
 
+    /**
+     * Internal method to exit content zone
+     * Stops content zone tracking and cleans up timers
+     * @private
+     */
     #exitContentZoneInternal = () => {
         if (!this.#inContentZone) {
             this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
@@ -4081,7 +4515,7 @@ class CountlyClass {
             clearInterval(this.#contentZoneTimer);
             this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
         }
-    }
+    };
 
     #prepareContentRequest = () => {
         this.#log(logLevelEnums.DEBUG, "prepareContentRequest, forming content request");
@@ -4109,15 +4543,22 @@ class CountlyClass {
         return params;
     };
 
-    #sendContentRequest = () => {
+    #sendContentRequest = (callback) => {
         this.#log(logLevelEnums.DEBUG, "sendContentRequest, sending content request");
         var params = this.#prepareContentRequest();
+        var finalizeContentRequest = (success) => {
+            if (typeof callback === "function") {
+                callback(success);
+            }
+        };
         this.#makeNetworkRequest("sendContentRequest,", this.url + this.#contentEndPoint, params, (e, param, resp) => {
             if (e) {
+                finalizeContentRequest(false);
                 return;
             }
             if (!resp) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, no content to display");
+                finalizeContentRequest(false);
                 return;
             }
             try {
@@ -4125,11 +4566,13 @@ class CountlyClass {
             } catch (error) {
                 // verbose log
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, No content to display or an error while parsing content: " + error);
+                finalizeContentRequest(false);
                 return;
             }
 
             if (!response.html || !response.geo) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, no html content or orientation to display");
+                finalizeContentRequest(false);
                 return;
             }
 
@@ -4146,6 +4589,7 @@ class CountlyClass {
             // Filter check
             if (this.#contentFilterCallback && this.#contentFilterCallback(queryParams) === false) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, Content was filtered out by the content filter");
+                finalizeContentRequest(false);
                 return;
             }
 
@@ -4170,6 +4614,7 @@ class CountlyClass {
                     );
                 }, 200);
             });
+            finalizeContentRequest(true);
         }, true);
     };
 
@@ -4600,28 +5045,9 @@ class CountlyClass {
 
         // process request queue with event queue (skip if in back-off)
         if (!skipRequestProcessing && !this.#offlineMode && this.#requestQueue.length > 0 && this.#readyToProcess && getTimestamp() > this.#failTimeout) {
-            this.#readyToProcess = false;
-            var params = this.#requestQueue[0];
-            params.rr = this.#requestQueue.length; // added at 23.2.3. It would give the current length of the queue. That includes the current request.
-            this.#log(logLevelEnums.DEBUG, "Processing request", params);
-            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+            this.#log(logLevelEnums.DEBUG, "Processing request", this.#requestQueue[0]);
             if (!this.test_mode) {
-                this.#makeNetworkRequest("send_request_queue", this.url + this.#apiPath, params, (err, parameters) => {
-                    if (err) {
-                        // error has been logged by the request function
-                        this.#failTimeout = getTimestamp() + this.#failTimeoutAmount;
-                    }
-                    else {
-                        // remove first item from queue
-                        this.#requestQueue.shift();
-                        
-                        // Check back-off conditions after successful request
-                        this.#checkBackoffConditions(parameters);
-                    }
-                    this.#setValueInStorage("cly_queue", this.#requestQueue, true);
-                    this.#readyToProcess = true;
-                    // expected response is only JSON object
-                }, false);
+                this.#sendRequestFromQueue("send_request_queue");
             }
         }
 
@@ -4671,11 +5097,55 @@ class CountlyClass {
 
     /**
      * Returns generated requests for the instance for testing purposes
-     * @returns {Array} - Returns generated requests
+     * @returns {Array} - Returns generated requests array of objects { functionName: functionName, url: url, params: params }
      */
     #getGeneratedRequests = () => {
         return this.#generatedRequests;
     };
+
+    #sendRequestFromQueue = (requestName, onSuccess) => {
+        return new Promise((resolve) => {
+            if (this.#offlineMode) {
+                resolve(false);
+                return;
+            }
+
+            if (this.#requestQueue.length === 0) {
+                resolve(false);
+                return;
+            }
+
+            if (!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout) {
+                resolve(false);
+                return;
+            }
+
+            this.#readyToProcess = false;
+            var params = this.#requestQueue[0];
+            params.rr = this.#requestQueue.length;
+            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+            this.#makeNetworkRequest(requestName, this.url + this.#apiPath, params, (err, parameters) => {
+                if (err) {
+                    this.#failTimeout = getTimestamp() + this.#failTimeoutAmount;
+                }
+                else {
+                    this.#requestQueue.shift();
+                    this.#checkBackoffConditions(parameters);
+                    if (onSuccess) {
+                        try {
+                            onSuccess(parameters);
+                        }
+                        catch (e) {
+                            this.#log(logLevelEnums.DEBUG, "sendRequestFromQueue, onSuccess handler threw");
+                        }
+                    }
+                }
+                this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+                this.#readyToProcess = true;
+                resolve(!err);
+            }, false);
+        });
+    }
 
     /**
      * Process queued calls
@@ -4977,6 +5447,34 @@ class CountlyClass {
             return;
         }
         this.#generatedRequests.push({ functionName: functionName, url: url, params: params });
+        
+        // Use fake request handler if provided (for testing)
+        if (this.#fakeRequestHandler) {
+            this.#log(logLevelEnums.DEBUG, functionName + " Using fake request handler");
+            try {
+                var response = this.#fakeRequestHandler({ functionName: functionName, url: url, params: params });
+                // Default to success response if handler returns nothing
+                if (response === undefined) {
+                    response = { status: 200, responseText: '{"result":"Success"}' };
+                }
+                // Allow handler to return false to skip callback entirely
+                if (response === false) {
+                    return;
+                }
+                var isError = response.status < 200 || response.status >= 300;
+                if (typeof callback === "function") {
+                    callback(isError, params, response.responseText);
+                }
+            }
+            catch (e) {
+                this.#log(logLevelEnums.ERROR, functionName + " Fake request handler error: " + e);
+                if (typeof callback === "function") {
+                    callback(true, params, "fake_handler_error");
+                }
+            }
+            return;
+        }
+        
         if (!isBrowser) {
             this.#sendFetchRequest(functionName, url, params, callback, useBroadResponseValidator);
         }
@@ -5843,6 +6341,9 @@ class CountlyClass {
         clearQueue: this.#clearQueue,
         getLocalQueues: this.#getLocalQueues,
         testingGetRequests: this.#getGeneratedRequests,
+        setFakeRequestHandler: (handler) => { this.#fakeRequestHandler = handler; },
+        getFakeRequestHandler: () => this.#fakeRequestHandler,
+        closeContent: () => this.#closeContentFrame()
     };
 
     /**
