@@ -2,6 +2,8 @@
 
 * Added support for Feedback Widget resizing logic (will need server update to benefit.)
 
+* Mitigated an issue where an unintended URL was opened when closing a feedback widget after a content block was closed.
+
 ## 25.4.4
 
 * Improved user property recording order with respect to sessions and events.

@@ -4188,6 +4188,8 @@ class CountlyClass {
 
             this.#displayContent(response);
             clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
+            // this needs to be deleted after content is closed
+            // otherwise it listens forever
             window.addEventListener('message', (event) => {
                 this.#interpretContentMessage(event);
             });
@@ -4244,6 +4246,13 @@ class CountlyClass {
             // silent ignore
             return;
         }
+
+        if(messageEvent.data === null || typeof messageEvent.data !== "object") {
+            // silent ignore, we only accept object messages
+            // This prevents destructuring strings which would expose String.prototype methods
+            return;
+        }
+
         this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
         const { close, link, event, resize_me } = messageEvent.data;
 
@@ -4267,7 +4276,7 @@ class CountlyClass {
             }
         }
 
-        if (link) {
+        if (link && typeof link === "string") {
             if (close === 1) {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for link");
                 this.#closeContentFrame();
