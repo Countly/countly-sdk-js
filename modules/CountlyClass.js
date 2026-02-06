@@ -4292,6 +4292,11 @@ class CountlyClass {
     };
 
     #interpretFeedbackWidgetMessage = (messageEvent, wrapper, iframe) => {
+        if(!iframe || messageEvent.source !== iframe.contentWindow){
+            //this.#log(logLevelEnums.WARNING, "interpretFeedbackWidgetMessage, Received message from an unknown source, ignoring.");
+            //silent ignore
+            return;
+        }
         var data = {};
         try {
             if(typeof messageEvent.data === "object" && messageEvent.data !== null){
@@ -4333,7 +4338,7 @@ class CountlyClass {
             return;
         }
 
-        if (close && close === true) {
+        if (close && (close === true || close === 1)) {
              wrapper.style.display = "none";
             iframe.style.display = "none";
             document.getElementById("csbg").style.display = "none";
@@ -4714,6 +4719,13 @@ class CountlyClass {
             return;
         }
 
+        const iframe = document.getElementById(this.#contentIframeID);
+        if(!iframe || messageEvent.source !== iframe.contentWindow){
+            //this.#log(logLevelEnums.WARNING, "interpretContentMessage, Received message from an unknown source, ignoring.");
+            //silent ignore
+            return;
+        }
+
         this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
         const { close, link, event, resize_me } = messageEvent.data;
 
@@ -4757,7 +4769,6 @@ class CountlyClass {
             if (resInfo.width >= resInfo.height) {
                 dimensionToUse = resize_me.l;
             };
-            const iframe = document.getElementById(this.#contentIframeID);
             iframe.style.left = dimensionToUse.x + "px";
             iframe.style.top = dimensionToUse.y + "px";
             iframe.style.width = dimensionToUse.w + "px";
