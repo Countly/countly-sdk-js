@@ -4333,7 +4333,7 @@ class CountlyClass {
             return;
         }
 
-        if (close && (close === true || close === 1)) {
+        if (close && close === true) {
              wrapper.style.display = "none";
             iframe.style.display = "none";
             document.getElementById("csbg").style.display = "none";
