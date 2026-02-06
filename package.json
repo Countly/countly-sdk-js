@@ -6,6 +6,7 @@
   "main": "Countly.js",
   "scripts": {
     "test": "test",
+    "build": "rollup -c"
     "cy:run": "cypress run",
     "cy:open": "cypress open"
   },

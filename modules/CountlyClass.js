@@ -4008,6 +4008,9 @@ class CountlyClass {
             if (feedbackWidgetSegmentation) {
                 customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
             }
+            const resInfo = this.#getResolution(true);
+            customObjectToSendWithTheWidget.width = resInfo.width;
+            customObjectToSendWithTheWidget.height = resInfo.height;
             url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
             // Origin is passed to the popup so that it passes it back in the postMessage event
             // Only web SDK passes origin and web
@@ -4108,25 +4111,25 @@ class CountlyClass {
             wrapper.appendChild(iframe);
             this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
 
-            add_event_listener(window, "message", (e) => {
-                var data = {};
-                try {
-                    data = JSON.parse(e.data);
-                }
-                catch (ex) {
-                    this.#log(logLevelEnums.ERROR, "present_feedback_widget, Error while parsing message body " + ex);
-                }
+            add_event_listener(window, "message", (event) => {
+                this.#interpretFeedbackWidgetMessage(event, wrapper, iframe);
+            });
 
-                if (data.close !== true) { // to not mix with content we check against true value
-                    // this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
-                    // silent ignore
-                    return;
-                }
-                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Received message from widget with origin: [" + e.origin + "] and data: [" + e.data + "]");
-
-                document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
-                document.getElementById("csbg").style.display = "none";
-                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Closed the widget");
+            let resizeTimeout;
+            add_event_listener(window,'resize', () => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    const width = window.innerWidth;
+                    const height = window.innerHeight;
+                    const feedbackWidgetIframe = document.getElementById("countly-" + feedbackWidgetFamily + "-iframe");
+                    if (!feedbackWidgetIframe) {
+                        return;
+                    }
+                    feedbackWidgetIframe.contentWindow.postMessage(
+                        { type: 'resize', width: width, height: height },
+                        '*'
+                    );
+                }, 200);
             });
             /**
              * Function to show survey popup
@@ -4287,6 +4290,61 @@ class CountlyClass {
 
 
     };
+
+    #interpretFeedbackWidgetMessage = (messageEvent, wrapper, iframe) => {
+        if(!iframe || messageEvent.source !== iframe.contentWindow){
+            //this.#log(logLevelEnums.WARNING, "interpretFeedbackWidgetMessage, Received message from an unknown source, ignoring.");
+            //silent ignore
+            return;
+        }
+        var data = {};
+        try {
+            if(typeof messageEvent.data === "object" && messageEvent.data !== null){
+                data = messageEvent.data;
+            }
+            else {
+                data = JSON.parse(messageEvent.data);
+            }
+        }
+        catch (ex) {
+            this.#log(logLevelEnums.ERROR, "interpretFeedbackWidgetMessage, Error while parsing message body " + ex);
+        }
+        this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Received message from widget with origin: [" + messageEvent.origin + "] and data: [" + JSON.stringify(data) + "]");
+        const {key, resize_me, close} = data; 
+        // use action when avaliable
+        
+        if(resize_me){
+            this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Resizing iframe to: [" + JSON.stringify(resize_me) + "]");
+
+            const resInfo = this.#getResolution(true);
+            if (!resize_me.l || !resize_me.p) {
+                this.#log(logLevelEnums.ERROR, "interpretFeedbackWidgetMessage, Invalid resize object");
+                return;
+            }
+            var dimensionToUse = resize_me.p;
+            if (resInfo.width >= resInfo.height) {
+                dimensionToUse = resize_me.l;
+            };
+
+            wrapper.style.height = dimensionToUse.h + "px";
+            wrapper.style.width = dimensionToUse.w + "px";
+            wrapper.style.top = dimensionToUse.y + "px";
+            wrapper.style.left = dimensionToUse.x + "px";
+
+            iframe.style.height = dimensionToUse.h + "px";
+            iframe.style.width = dimensionToUse.w + "px";
+            iframe.style.top = dimensionToUse.y + "px";
+            iframe.style.left = dimensionToUse.x + "px";
+            return;
+        }
+
+        if (close && (close === true || close === 1)) {
+             wrapper.style.display = "none";
+            iframe.style.display = "none";
+            document.getElementById("csbg").style.display = "none";
+            this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Closed the widget");
+        }
+    }
 
     /**
      *  Record and report error, this is were tracked errors are modified and send to the request queue
@@ -4595,6 +4653,8 @@ class CountlyClass {
 
             this.#displayContent(response);
             clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
+            // this needs to be deleted after content is closed
+            // otherwise it listens forever
             window.addEventListener('message', (event) => {
                 this.#interpretContentMessage(event);
             });
@@ -4626,6 +4686,9 @@ class CountlyClass {
             // response.html = response.html.replace(/http:\/\//g, "https://");
             iframe.src = response.html;
             iframe.style.position = "absolute";
+            if (response.html.indexOf("feedback/survey") != -1) { // for surveys to scroll with the page (nps is not in journeys yet)
+                iframe.style.position = "fixed";
+            }
             var dimensionToUse = response.geo.p;
             const resInfo = this.#getResolution(true);
             if (resInfo.width >= resInfo.height) {
@@ -4649,6 +4712,20 @@ class CountlyClass {
             // silent ignore
             return;
         }
+
+        if(messageEvent.data === null || typeof messageEvent.data !== "object") {
+            // silent ignore, we only accept object messages
+            // This prevents destructuring strings which would expose String.prototype methods
+            return;
+        }
+
+        const iframe = document.getElementById(this.#contentIframeID);
+        if(!iframe || messageEvent.source !== iframe.contentWindow){
+            //this.#log(logLevelEnums.WARNING, "interpretContentMessage, Received message from an unknown source, ignoring.");
+            //silent ignore
+            return;
+        }
+
         this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
         const { close, link, event, resize_me } = messageEvent.data;
 
@@ -4672,7 +4749,7 @@ class CountlyClass {
             }
         }
 
-        if (link) {
+        if (link && typeof link === "string") {
             if (close === 1) {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for link");
                 this.#closeContentFrame();
@@ -4692,7 +4769,6 @@ class CountlyClass {
             if (resInfo.width >= resInfo.height) {
                 dimensionToUse = resize_me.l;
             };
-            const iframe = document.getElementById(this.#contentIframeID);
             iframe.style.left = dimensionToUse.x + "px";
             iframe.style.top = dimensionToUse.y + "px";
             iframe.style.width = dimensionToUse.w + "px";
