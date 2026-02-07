@@ -1,12 +1,12 @@
 {
   "name": "countly-sdk-js",
-  "version": "25.4.5",
+  "version": "26.1.0",
   "description": "Countly JavaScript SDK",
   "type": "module",
   "main": "Countly.js",
   "scripts": {
     "test": "test",
-    "build": "rollup -c"
+    "build": "rollup -c",
     "cy:run": "cypress run",
     "cy:open": "cypress open"
   },
