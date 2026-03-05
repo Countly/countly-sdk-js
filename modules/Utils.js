@@ -384,6 +384,132 @@ function currentUserAgentDataString(uaOverride) {
 }
 
 /**
+ * Parse Windows version from UA-CH platformVersion
+ * Chromium based browsers use platformVersion major >= 13 for Windows 11 and lower values for Windows 10.
+ *
+ * @param {string} platformVersion - platformVersion value from userAgentData.getHighEntropyValues
+ * @returns {string|null} "11", "10" or null if not parsable
+ */
+function parseWindowsVersionFromPlatformVersion(platformVersion) {
+    if (typeof platformVersion !== "string" || !platformVersion) {
+        return null;
+    }
+
+    var major = parseInt(platformVersion.split(".")[0], 10);
+    if (isNaN(major)) {
+        return null;
+    }
+
+    return major >= 13 ? "11" : "10";
+}
+
+/**
+ * Retrieve User-Agent Client Hints (high entropy values) when available.
+ *
+ * @param {Object} uaDataOverride - optional userAgentData override for testing
+ * @returns {Promise<Object|null>} resolved hints object or null
+ */
+function getUserAgentClientHintsInternal(uaData) {
+    if (!uaData || typeof uaData.getHighEntropyValues !== "function") {
+        return Promise.resolve(null);
+    }
+
+    return uaData.getHighEntropyValues([
+        "platform",
+        "platformVersion",
+        "architecture",
+        "bitness",
+        "model",
+        "uaFullVersion",
+        "fullVersionList"
+    ]).then((values) => {
+        if (!values || typeof values !== "object") {
+            return null;
+        }
+
+        var browserName = null;
+        var browserVersion = null;
+        var versionList = Array.isArray(values.fullVersionList) ? values.fullVersionList : [];
+        var fallbackList = Array.isArray(uaData.brands) ? uaData.brands : [];
+
+        var normalizeBrand = (brand) => {
+            return typeof brand === "string" ? brand.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+        };
+
+        var isGreaseBrand = (brand) => {
+            var normalized = normalizeBrand(brand);
+            return normalized === "notabrand" || normalized === "notabrand99" || normalized.indexOf("notabrand") === 0;
+        };
+
+        var isChromiumBrand = (brand) => normalizeBrand(brand) === "chromium";
+
+        var pickEntry = (list, allowChromiumFallback) => list.find((entry) => {
+            if (!entry || !entry.brand) {
+                return false;
+            }
+            if (isGreaseBrand(entry.brand)) {
+                return false;
+            }
+            if (!allowChromiumFallback && isChromiumBrand(entry.brand)) {
+                return false;
+            }
+            return true;
+        });
+
+        var browserEntry = pickEntry(versionList, false)
+            || pickEntry(fallbackList, false)
+            || pickEntry(versionList, true)
+            || pickEntry(fallbackList, true);
+
+        if (browserEntry) {
+            browserName = browserEntry.brand || null;
+            browserVersion = browserEntry.version || null;
+        }
+
+        var parsed = {
+            platform: values.platform || uaData.platform || null,
+            platformVersion: values.platformVersion || null,
+            architecture: values.architecture || null,
+            bitness: values.bitness || null,
+            model: values.model || null,
+            uaFullVersion: values.uaFullVersion || null,
+            fullVersionList: values.fullVersionList || null,
+            browserName: browserName,
+            browserVersion: browserVersion,
+            windowsVersion: null
+        };
+
+        if (parsed.platform && parsed.platform.toLowerCase() === "windows") {
+            parsed.windowsVersion = parseWindowsVersionFromPlatformVersion(parsed.platformVersion);
+        }
+
+        return parsed;
+    }).catch(() => null);
+}
+
+var prefetchedUserAgentClientHintsPromise = null;
+if (isBrowser && typeof navigator !== "undefined" && navigator.userAgentData && typeof navigator.userAgentData.getHighEntropyValues === "function") {
+    prefetchedUserAgentClientHintsPromise = getUserAgentClientHintsInternal(navigator.userAgentData);
+}
+
+function getUserAgentClientHints(uaDataOverride) {
+    if (uaDataOverride) {
+        return getUserAgentClientHintsInternal(uaDataOverride);
+    }
+
+    if (prefetchedUserAgentClientHintsPromise) {
+        return prefetchedUserAgentClientHintsPromise;
+    }
+
+    if (isBrowser && typeof navigator !== "undefined" && navigator.userAgentData && typeof navigator.userAgentData.getHighEntropyValues === "function") {
+        prefetchedUserAgentClientHintsPromise = getUserAgentClientHintsInternal(navigator.userAgentData);
+        return prefetchedUserAgentClientHintsPromise;
+    }
+
+    return Promise.resolve(null);
+}
+
+/**
  *  Returns device type information according to user agent string
  *  @memberof Countly._internals
  *  @param {string} uaOverride - a string value to pass instead of ua value
@@ -669,5 +795,7 @@ export {
     checkIfLoggingIsOn,
     hideLoader,
     currentUserAgentDataString,
+    getUserAgentClientHints,
+    parseWindowsVersionFromPlatformVersion,
     calculateChecksum
 }; 
