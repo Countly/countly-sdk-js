@@ -32,6 +32,7 @@ import {
     showLoader,
     checkIfLoggingIsOn,
     hideLoader,
+    getUserAgentClientHints,
     calculateChecksum
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
@@ -140,6 +141,11 @@ class CountlyClass {
     #journeyTriggerPending;
     #journeyPendingEventIds;
     #fakeRequestHandler;
+    #uaClientHints;
+    #uaClientHintsStatus;
+    #clientHintsPromise;
+    #pendingRequestBuffer;
+    #clientHintsBufferTimeoutId;
     
     /**
      * Create a new Countly instance with configuration
@@ -231,6 +237,11 @@ class CountlyClass {
         this.#journeyTriggerPending = false;
         this.#journeyPendingEventIds = new Set();
         this.#fakeRequestHandler = getConfig("fake_request_handler", ob, null);
+        this.#uaClientHints = null;
+        this.#uaClientHintsStatus = "not_started";
+        this.#clientHintsPromise = null;
+        this.#pendingRequestBuffer = null;
+        this.#clientHintsBufferTimeoutId = null;
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
@@ -261,6 +272,8 @@ class CountlyClass {
             this.#consents[Countly.features[it]] = {};
         }
 
+        this.#initializeClientHints();
+
         this.#initialize(ob);
 
         // start SDK
@@ -289,6 +302,94 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
     };
+
+    /**
+     * Fetch User-Agent Client Hints and cache values for metrics enrichment.
+     * @private
+     */
+    #initializeClientHints = () => {
+        if (!isBrowser) {
+            this.#uaClientHintsStatus = "unavailable";
+            this.#pendingRequestBuffer = null; // no buffering needed
+            return;
+        }
+
+        var uaRaw = currentUserAgentString();
+        var uaDataAvailable = typeof navigator !== "undefined" && !!navigator.userAgentData;
+        var getHighEntropyValuesAvailable = uaDataAvailable && typeof navigator.userAgentData.getHighEntropyValues === "function";
+        var uaDataPlatform = uaDataAvailable ? navigator.userAgentData.platform : undefined;
+        var uaDataBrands = uaDataAvailable ? navigator.userAgentData.brands : undefined;
+
+        this.#log(logLevelEnums.DEBUG, "ua_logic, raw ua string:[" + uaRaw + "]");
+        this.#log(logLevelEnums.DEBUG, "ua_logic, userAgentData available:[" + uaDataAvailable + "], getHighEntropyValues available:[" + getHighEntropyValuesAvailable + "]");
+        this.#log(logLevelEnums.DEBUG, "ua_logic, userAgentData low-entropy platform:[" + uaDataPlatform + "], brands:[" + JSON.stringify(uaDataBrands) + "]");
+
+        this.#uaClientHintsStatus = "pending";
+        this.#pendingRequestBuffer = []; // enable request buffering until hints resolve
+
+        // Safety timeout: flush buffer even if hints never resolve (e.g. API blocked)
+        this.#clientHintsBufferTimeoutId = setTimeout(() => {
+            if (this.#pendingRequestBuffer !== null) {
+                this.#log(logLevelEnums.WARNING, "ua_logic, client hints resolution timed out after 5s, flushing pending requests with available metrics");
+                this.#flushPendingRequestBuffer();
+            }
+        }, 1000);
+
+        this.#clientHintsPromise = getUserAgentClientHints().then((clientHints) => {
+            if (clientHints && typeof clientHints === "object") {
+                this.#uaClientHints = clientHints;
+                this.#uaClientHintsStatus = "resolved";
+                this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints resolved:[" + JSON.stringify(clientHints) + "]");
+            }
+            else {
+                this.#uaClientHintsStatus = "unavailable";
+                this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints unavailable or not returned");
+            }
+        }).catch((err) => {
+            this.#uaClientHints = null;
+            this.#uaClientHintsStatus = "failed";
+            this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints fetch failed:[" + err + "]");
+        }).finally(() => {
+            this.#flushPendingRequestBuffer();
+        });
+    }
+
+    /**
+     * Flush pending request buffer after client hints resolution.
+     * Re-computes metrics for any buffered begin_session request so that
+     * high-entropy Client Hints values are included. All other buffered
+     * requests are pushed to the queue unchanged, preserving order.
+     * @private
+     */
+    #flushPendingRequestBuffer = () => {
+        // Clear safety timeout
+        if (this.#clientHintsBufferTimeoutId) {
+            clearTimeout(this.#clientHintsBufferTimeoutId);
+            this.#clientHintsBufferTimeoutId = null;
+        }
+
+        var buffer = this.#pendingRequestBuffer;
+        this.#pendingRequestBuffer = null; // disable buffering — subsequent calls go directly to queue
+
+        if (!buffer || buffer.length === 0) {
+            return;
+        }
+
+        this.#log(logLevelEnums.DEBUG, "ua_logic, flushing [" + buffer.length + "] pending request(s) after client hints resolution");
+
+        for (var i = 0; i < buffer.length; i++) {
+            var request = buffer[i];
+            // Re-compute metrics for begin_session requests with now-resolved hints
+            if (request.begin_session) {
+                request.metrics = JSON.stringify(this.#getMetrics());
+            }
+            if (this.#requestQueue.length > this.#SCSizeReqQueue) {
+                this.#requestQueue.shift();
+            }
+            this.#requestQueue.push(request);
+        }
+        this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+    }
 
     /**
      * Fetch and set server configuration
@@ -1041,6 +1142,14 @@ class CountlyClass {
         this.#journeyTriggerInProgress = undefined;
         this.#journeyTriggerPending = undefined;
         this.#journeyPendingEventIds = undefined;
+        if (this.#clientHintsBufferTimeoutId) {
+            clearTimeout(this.#clientHintsBufferTimeoutId);
+            this.#clientHintsBufferTimeoutId = null;
+        }
+        this.#pendingRequestBuffer = null;
+        this.#clientHintsPromise = null;
+        this.#uaClientHints = null;
+        this.#uaClientHintsStatus = "not_started";
     };
 
     /**
@@ -1798,6 +1907,12 @@ class CountlyClass {
      * @returns {Promise<boolean>} True if queue was successfully drained, false otherwise
      */
     #drainRequestQueueForJourney = async () => {
+        // Flush any buffered requests (e.g. held while client hints were resolving)
+        // into the real request queue so they can be sent before the content request.
+        if (this.#pendingRequestBuffer !== null) {
+            this.#flushPendingRequestBuffer();
+        }
+
         var initialQueueLength = this.#requestQueue.length;
         if (initialQueueLength === 0) {
             return true;
@@ -5042,6 +5157,12 @@ class CountlyClass {
 
         this.#prepareRequest(request);
 
+        // Buffer requests while client hints are still resolving
+        if (this.#pendingRequestBuffer !== null) {
+            this.#pendingRequestBuffer.push(request);
+            return;
+        }
+
         if (this.#requestQueue.length > this.#SCSizeReqQueue) {
             this.#requestQueue.shift();
         }
@@ -5322,6 +5443,35 @@ class CountlyClass {
     }
 
     /**
+     * Basic browser name/version parsing fallback from UA string.
+     * @private
+     * @param {string} ua - raw user agent string
+     * @returns {{name: string|null, version: string|null}}
+     */
+    #getBrowserInfoFromUA = (ua) => {
+        if (!ua || typeof ua !== "string") {
+            return { name: null, version: null };
+        }
+
+        var patterns = [
+            { name: "Edge", regex: /Edg\/([\d\.]+)/ },
+            { name: "Opera", regex: /OPR\/([\d\.]+)/ },
+            { name: "Chrome", regex: /Chrome\/([\d\.]+)/ },
+            { name: "Firefox", regex: /Firefox\/([\d\.]+)/ },
+            { name: "Safari", regex: /Version\/([\d\.]+).*Safari/ }
+        ];
+
+        for (var i = 0; i < patterns.length; i++) {
+            var match = ua.match(patterns[i].regex);
+            if (match && match[1]) {
+                return { name: patterns[i].name, version: match[1] };
+            }
+        }
+
+        return { name: null, version: null };
+    }
+
+    /**
      *  Get metrics of the browser or config object
      *  @memberof Countly._internals
      *  @returns {Object} Metrics object
@@ -5349,6 +5499,67 @@ class CountlyClass {
         var locale = navigator.language || navigator.browserLanguage || navigator.systemLanguage || navigator.userLanguage;
         if (typeof locale !== "undefined") {
             metrics._locale = metrics._locale || locale;
+        }
+
+        if (isBrowser && navigator.userAgentData && navigator.userAgentData.platform) {
+            metrics._os = metrics._os || navigator.userAgentData.platform;
+        }
+
+        var detectedDeviceType = userAgentDeviceDetection();
+        if (detectedDeviceType === "phone") {
+            detectedDeviceType = "mobile";
+        }
+        metrics._device_type = metrics._device_type || detectedDeviceType;
+
+        if (this.#uaClientHints && typeof this.#uaClientHints === "object") {
+            if (this.#uaClientHints.platform) {
+                metrics._os = metrics._os || this.#uaClientHints.platform;
+            }
+
+            var osVersionFromHints = this.#uaClientHints.windowsVersion || this.#uaClientHints.platformVersion;
+            if (osVersionFromHints) {
+                metrics._os_version = metrics._os_version || osVersionFromHints;
+            }
+
+            if (this.#uaClientHints.model) {
+                metrics._device = metrics._device || this.#uaClientHints.model;
+            }
+
+            if (this.#uaClientHints.browserName) {
+                metrics._browser = metrics._browser || this.#uaClientHints.browserName;
+            }
+
+            if (this.#uaClientHints.browserVersion) {
+                metrics._browser_version = metrics._browser_version || this.#uaClientHints.browserVersion;
+            }
+
+            if (this.#uaClientHints.windowsVersion) {
+                metrics._os = metrics._os || "Windows";
+                metrics._os_version = metrics._os_version || this.#uaClientHints.windowsVersion;
+            }
+
+            this.#log(logLevelEnums.DEBUG, "ua_logic, metrics enriched from hints:[" + JSON.stringify({
+                _os: metrics._os,
+                _os_version: metrics._os_version,
+                _device: metrics._device,
+                _device_type: metrics._device_type,
+                _browser: metrics._browser,
+                _browser_version: metrics._browser_version
+            }) + "]");
+        }
+        else {
+            if (this.#uaClientHintsStatus === "pending") {
+                this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints are still pending, using fallback metrics for now");
+            }
+            else {
+                this.#log(logLevelEnums.DEBUG, "ua_logic, no high-entropy hints available, using UA fallback parsing");
+            }
+        }
+
+        if (!metrics._browser || !metrics._browser_version) {
+            var browserInfo = this.#getBrowserInfoFromUA(metrics._ua);
+            metrics._browser = metrics._browser || browserInfo.name;
+            metrics._browser_version = metrics._browser_version || browserInfo.version;
         }
 
         if (this.#isReferrerUsable()) {
