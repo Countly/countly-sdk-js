@@ -15,6 +15,7 @@ var featureEnums = {
     APM: "apm",
     FEEDBACK: "feedback",
     REMOTE_CONFIG: "remote-config",
+    PUSH: "push",
 };
 
 /**
@@ -34,6 +35,7 @@ var internalEventKeyEnums = {
     VIEW: "[CLY]_view",
     ORIENTATION: "[CLY]_orientation",
     ACTION: "[CLY]_action",
+    PUSH_ACTION: "[CLY]_push_action",
 };
 
 var internalEventKeyEnumsArray = Object.values(internalEventKeyEnums);

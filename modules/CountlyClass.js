@@ -609,6 +609,10 @@ class CountlyClass {
         this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
         this.contentWhitelist = getConfig("content_whitelist", ob, []);
         this.salt = getConfig("salt", ob, null);
+        this.push_vapid_public_key = getConfig("push_vapid_public_key", ob, null);
+        this.push_service_worker_path = getConfig("push_service_worker_path", ob, "/countly_sw.js");
+        this.push_service_worker_scope = getConfig("push_service_worker_scope", ob, "/");
+        this.push_auto_register = getConfig("push_auto_register", ob, false);
         this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
@@ -986,7 +990,38 @@ class CountlyClass {
             this.userData.save();
         }
 
+        this.#initPushMessageListener();
+
         this.#getAndSetServerConfig();
+    };
+
+    /**
+     *  Wire up navigator.serviceWorker 'message' events so the reference service worker
+     *  can ask the page to record [CLY]_push_action via add_event. Keeps consent enforcement
+     *  and request batching on the page side. No-op outside a browser.
+     *  @private
+     */
+    #initPushMessageListener = () => {
+        if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+            return;
+        }
+        try {
+            navigator.serviceWorker.addEventListener("message", (event) => {
+                var data = event && event.data;
+                if (!data || data.type !== "countly_push_action") {
+                    return;
+                }
+                this.record_push_action(data.messageId, data.buttonIndex);
+            });
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "initPushMessageListener, Failed to register service worker message listener: " + e);
+        }
+
+        if (this.push_auto_register && this.push_vapid_public_key && this.check_consent(featureEnums.PUSH)) {
+            setTimeout(() => {
+                this.enable_push_notifications();
+            }, 1);
+        }
     };
 
     /**
@@ -1312,6 +1347,9 @@ class CountlyClass {
                             this.#lastView = null;
                             this.track_pageview.apply(this, this.#lastParams.track_pageview);
                             this.#lastParams.track_pageview = null;
+                        }
+                        else if (feature === featureEnums.PUSH && this.push_auto_register && this.push_vapid_public_key) {
+                            this.enable_push_notifications();
                         }
                     }, 1);
                 }
@@ -1639,6 +1677,9 @@ class CountlyClass {
             case internalEventKeyEnums.ACTION:
                 respectiveConsent = this.check_consent(featureEnums.CLICKS) || this.check_consent(featureEnums.SCROLLS);
                 break;
+            case internalEventKeyEnums.PUSH_ACTION:
+                respectiveConsent = this.check_consent(featureEnums.PUSH);
+                break;
             default:
                 respectiveConsent = this.#SCTrackingEvents ? this.check_consent(featureEnums.EVENTS) : false;
         }
@@ -1649,8 +1690,128 @@ class CountlyClass {
     };
 
     /**
+    * Enable web push notifications. Registers the service worker, requests notification permission,
+    * subscribes via the Push API using the configured VAPID public key, and queues a token_session
+    * request mirroring the Android/iOS contract. Idempotent — if a matching subscription already
+    * exists the cached endpoint is reused and no new token_session is sent.
+    * @param {Object} [opts] - per-call overrides for push_vapid_public_key / push_service_worker_path / push_service_worker_scope
+    * @returns {Promise<Object>} resolves to { subscribed: true, endpoint } on success, or { subscribed: false, reason } otherwise
+    */
+    enable_push_notifications = (opts) => {
+        this.#log(logLevelEnums.INFO, "enable_push_notifications, Enabling push notifications");
+        opts = opts || {};
+        if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator) || typeof window === "undefined" || !("PushManager" in window) || typeof Notification === "undefined") {
+            this.#log(logLevelEnums.WARNING, "enable_push_notifications, Web push is not supported in this environment");
+            return Promise.resolve({ subscribed: false, reason: "unsupported" });
+        }
+        if (!this.check_consent(featureEnums.PUSH)) {
+            this.#log(logLevelEnums.WARNING, "enable_push_notifications, Consent for [push] is not given, aborting");
+            return Promise.resolve({ subscribed: false, reason: "no_consent" });
+        }
+        var vapidKey = opts.push_vapid_public_key || this.push_vapid_public_key;
+        if (!vapidKey) {
+            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is required");
+            return Promise.resolve({ subscribed: false, reason: "missing_vapid_key" });
+        }
+        var swPath = opts.push_service_worker_path || this.push_service_worker_path;
+        var swScope = opts.push_service_worker_scope || this.push_service_worker_scope;
+
+        return navigator.serviceWorker.register(swPath, { scope: swScope }).then((swReg) => {
+            this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Service worker registered at scope: [" + swReg.scope + "]");
+            return navigator.serviceWorker.ready.then(() => swReg);
+        }).then((swReg) => {
+            return Notification.requestPermission().then((permission) => {
+                this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Notification permission: [" + permission + "]");
+                if (permission !== "granted") {
+                    return { subscribed: false, reason: permission || "denied" };
+                }
+                return swReg.pushManager.getSubscription().then((existing) => {
+                    var applicationServerKey = this.#urlBase64ToUint8Array(vapidKey);
+                    var savedEndpoint = this.#getValueFromStorage("cly_push_endpoint");
+                    if (existing && savedEndpoint && existing.endpoint === savedEndpoint) {
+                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Subscription matches cached endpoint, skipping token_session");
+                        return { subscribed: true, endpoint: existing.endpoint };
+                    }
+                    var subPromise;
+                    if (existing) {
+                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Existing subscription found but endpoint changed, re-using");
+                        subPromise = Promise.resolve(existing);
+                    }
+                    else {
+                        subPromise = swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey });
+                    }
+                    return subPromise.then((subscription) => {
+                        this.#sendPushToken(subscription);
+                        return { subscribed: true, endpoint: subscription.endpoint };
+                    });
+                });
+            });
+        }).catch((err) => {
+            this.#log(logLevelEnums.ERROR, "enable_push_notifications, Failed to enable push notifications: " + err);
+            return { subscribed: false, reason: "error", error: (err && err.message) ? err.message : String(err) };
+        });
+    };
+
+    /**
+    * Disable web push notifications. Unsubscribes from the browser push manager and queues a
+    * blacklist token_session request so the server clears the stored subscription.
+    * @returns {Promise<Object>} resolves to { unsubscribed: true } when complete
+    */
+    disable_push_notifications = () => {
+        this.#log(logLevelEnums.INFO, "disable_push_notifications, Disabling push notifications");
+        if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+            this.#log(logLevelEnums.WARNING, "disable_push_notifications, Web push is not supported in this environment");
+            return Promise.resolve({ unsubscribed: false, reason: "unsupported" });
+        }
+        if (!this.check_consent(featureEnums.PUSH)) {
+            this.#log(logLevelEnums.WARNING, "disable_push_notifications, Consent for [push] is not given, aborting");
+            return Promise.resolve({ unsubscribed: false, reason: "no_consent" });
+        }
+        return navigator.serviceWorker.getRegistration(this.push_service_worker_scope).then((swReg) => {
+            if (!swReg) {
+                this.#removeValueFromStorage("cly_push_endpoint");
+                return { unsubscribed: true };
+            }
+            return swReg.pushManager.getSubscription().then((subscription) => {
+                var unsubPromise = subscription ? subscription.unsubscribe() : Promise.resolve(false);
+                return unsubPromise.then(() => {
+                    this.#sendPushToken(null);
+                    this.#removeValueFromStorage("cly_push_endpoint");
+                    return { unsubscribed: true };
+                });
+            });
+        }).catch((err) => {
+            this.#log(logLevelEnums.ERROR, "disable_push_notifications, Failed to disable push notifications: " + err);
+            return { unsubscribed: false, reason: "error", error: (err && err.message) ? err.message : String(err) };
+        });
+    };
+
+    /**
+    * Record a push notification action event (body click or action button click).
+    * Mirrors the [CLY]_push_action event recorded by the iOS and Android SDKs.
+    * @param {string} messageId - the ObjectId of the message that produced the notification
+    * @param {number} [buttonIndex=0] - 0 = body click, 1+ = action button index
+    */
+    record_push_action = (messageId, buttonIndex) => {
+        this.#log(logLevelEnums.INFO, "record_push_action, Recording push action for message:[" + messageId + "], button:[" + buttonIndex + "]");
+        if (!messageId) {
+            this.#log(logLevelEnums.WARNING, "record_push_action, messageId is required");
+            return;
+        }
+        this.add_event({
+            key: internalEventKeyEnums.PUSH_ACTION,
+            count: 1,
+            segmentation: {
+                i: messageId,
+                b: typeof buttonIndex === "number" ? buttonIndex : 0,
+                p: "w"
+            }
+        });
+    };
+
+    /**
      * Attempt to send stored requests
-     * 
+     *
      */
     attempt_to_send_stored_requests = () => {
         this.#log(logLevelEnums.INFO, "attemptToSendStoredRequests, Attempting to send stored requests");
@@ -5132,6 +5293,67 @@ class CountlyClass {
         request.hour = date.getHours();
         request.dow = date.getDay();
         request.tz = -date.getTimezoneOffset(); // to match android and iOS SDKs its negative value
+    }
+
+    /**
+     *  Build and queue the web-push token_session request, mirroring Android's ConnectionQueue.tokenSession.
+     *  Pass `null` to register the BLACKLISTED sentinel (unsubscribe path).
+     *  Sent with a 10s delay after begin_session, same as Android, so the server can create the
+     *  user record before the token write.
+     *  @memberof Countly._internals
+     *  @param {?PushSubscription} subscription - subscription to register, or null to blacklist
+     */
+    #sendPushToken = (subscription) => {
+        var tokenValue;
+        if (subscription) {
+            try {
+                var subJson = (typeof subscription.toJSON === "function") ? subscription.toJSON() : {
+                    endpoint: subscription.endpoint,
+                    expirationTime: subscription.expirationTime,
+                    keys: subscription.keys
+                };
+                tokenValue = JSON.stringify(subJson);
+            } catch (e) {
+                this.#log(logLevelEnums.ERROR, "sendPushToken, Failed to serialize subscription: " + e);
+                return;
+            }
+        }
+        else {
+            tokenValue = "BLACKLISTED";
+        }
+
+        var req = {
+            token_session: 1,
+            web_token: tokenValue,
+            token_provider: "WEB"
+        };
+        if (typeof navigator !== "undefined" && navigator.language) {
+            req.locale = navigator.language;
+        }
+
+        setTimeout(() => {
+            this.#toRequestQueue(req);
+            if (subscription && subscription.endpoint) {
+                this.#setValueInStorage("cly_push_endpoint", subscription.endpoint);
+            }
+        }, 10000);
+    }
+
+    /**
+     *  Decode a base64-url VAPID public key into a Uint8Array, the format Push API expects.
+     *  @memberof Countly._internals
+     *  @param {string} base64String - base64-url encoded key
+     *  @returns {Uint8Array} decoded bytes
+     */
+    #urlBase64ToUint8Array = (base64String) => {
+        var padding = "=".repeat((4 - base64String.length % 4) % 4);
+        var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+        var rawData = atob(base64);
+        var outputArray = new Uint8Array(rawData.length);
+        for (var i = 0; i < rawData.length; ++i) {
+            outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
     }
 
     /**
