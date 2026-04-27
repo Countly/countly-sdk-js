@@ -1713,6 +1713,10 @@ class CountlyClass {
             this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is required");
             return Promise.resolve({ subscribed: false, reason: "missing_vapid_key" });
         }
+        if (!/^[A-Za-z0-9_-]+$/.test(vapidKey) || vapidKey.length < 80) {
+            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key does not look like a base64-url VAPID key (got [" + vapidKey + "]). Generate one from your Countly application settings.");
+            return Promise.resolve({ subscribed: false, reason: "invalid_vapid_key" });
+        }
         var swPath = opts.push_service_worker_path || this.push_service_worker_path;
         var swScope = opts.push_service_worker_scope || this.push_service_worker_scope;
 
