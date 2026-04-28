@@ -2,7 +2,7 @@
 
 ## 26.1.2
 
-* Delayed remote config refresh by 1 second after merged device ID changes to reduce request ordering races.
+* Delayed remote config refresh after merged device ID changes to reduce request ordering races.
 
 ## 26.1.1
 

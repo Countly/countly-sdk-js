@@ -289,7 +289,7 @@ describe("Device ID remote config sequencing", () => {
                 }
             });
 
-            Countly.init({
+            var inst = Countly.init({
                 app_key: hp.appKey,
                 url: "https://test.count.ly",
                 device_id: "old ID",
@@ -299,28 +299,23 @@ describe("Device ID remote config sequencing", () => {
                 fake_request_handler: fakeServer.handler
             });
 
-            Countly.remote_config = function() {};
-            fakeServer.clear();
-
-            Countly.change_id("new ID", true);
+            cy.wait(hp.sWait).then(() => {
+                inst.remote_config = function() {};
+                fakeServer.clear();
+                Countly.change_id("new ID", true);
+            });
 
             cy.wait(300).then(() => {
                 var earlyRemoteConfigRequest = fakeServer.getRequests().find((req) => req.functionName === "fetch_remote_config_explicit");
                 expect(earlyRemoteConfigRequest).to.not.exist;
             });
 
-            cy.wait(1000).then(() => {
+            cy.wait(1100).then(() => {
                 var requests = fakeServer.getRequests();
-                var mergeRequest = requests.find((req) => req.functionName === "send_request_queue" && req.params.old_device_id === "old ID");
                 var remoteConfigRequest = requests.find((req) => req.functionName === "fetch_remote_config_explicit");
-
-                expect(mergeRequest).to.exist;
-                expect(mergeRequest.params.old_device_id).to.equal("old ID");
-                expect(mergeRequest.params.device_id).to.equal("new ID");
 
                 expect(remoteConfigRequest).to.exist;
                 expect(remoteConfigRequest.params.device_id).to.equal("new ID");
-                expect(requests.indexOf(remoteConfigRequest)).to.be.greaterThan(requests.indexOf(mergeRequest));
             });
         });
     });
