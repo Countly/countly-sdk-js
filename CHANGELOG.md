@@ -1,5 +1,3 @@
-# Changelog
-
 ## 26.1.2
 
 * Delayed remote config refresh after merged device ID changes to reduce request ordering races.
