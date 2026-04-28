@@ -1,3 +1,9 @@
+# Changelog
+
+## 26.1.2
+
+* Delayed remote config refresh by 1 second after merged device ID changes to reduce request ordering races.
+
 ## 26.1.1
 
 * Improved device metric detection capabilities.
@@ -10,7 +16,7 @@
   * User property whitelisting / blacklisting
   * Journey trigger events
 * Added support for Feedback Widget resizing logic (will need server update to benefit.)
- 
+
 * Improved testing consistency of queuing system
 * Mitigated an issue where an unintended URL was opened when closing a feedback widget after a content block was closed.
 
