@@ -146,6 +146,7 @@ class CountlyClass {
     #clientHintsPromise;
     #pendingRequestBuffer;
     #clientHintsBufferTimeoutId;
+    #changeIdRemoteConfigTimeoutId;
     
     /**
      * Create a new Countly instance with configuration
@@ -242,6 +243,7 @@ class CountlyClass {
         this.#clientHintsPromise = null;
         this.#pendingRequestBuffer = null;
         this.#clientHintsBufferTimeoutId = null;
+        this.#changeIdRemoteConfigTimeoutId = null;
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
@@ -1146,6 +1148,10 @@ class CountlyClass {
             clearTimeout(this.#clientHintsBufferTimeoutId);
             this.#clientHintsBufferTimeoutId = null;
         }
+        if (this.#changeIdRemoteConfigTimeoutId) {
+            clearTimeout(this.#changeIdRemoteConfigTimeoutId);
+            this.#changeIdRemoteConfigTimeoutId = null;
+        }
         this.#pendingRequestBuffer = null;
         this.#clientHintsPromise = null;
         this.#uaClientHints = null;
@@ -1603,7 +1609,18 @@ class CountlyClass {
         if (this.remote_config) {
             this.#remoteConfigs = {};
             this.#setValueInStorage("cly_remote_configs", this.#remoteConfigs);
-            this.fetch_remote_config(this.remote_config);
+            if (merge) {
+                if (this.#changeIdRemoteConfigTimeoutId) {
+                    clearTimeout(this.#changeIdRemoteConfigTimeoutId);
+                }
+                this.#changeIdRemoteConfigTimeoutId = setTimeout(() => {
+                    this.#changeIdRemoteConfigTimeoutId = null;
+                    this.fetch_remote_config(this.remote_config);
+                }, 1000);
+            }
+            else {
+                this.fetch_remote_config(this.remote_config);
+            }
         }
     };
 
