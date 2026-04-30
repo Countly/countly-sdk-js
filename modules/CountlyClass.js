@@ -1732,20 +1732,27 @@ class CountlyClass {
                 return swReg.pushManager.getSubscription().then((existing) => {
                     var applicationServerKey = this.#urlBase64ToUint8Array(vapidKey);
                     var savedEndpoint = this.#getValueFromStorage("cly_push_endpoint");
-                    if (existing && savedEndpoint && existing.endpoint === savedEndpoint) {
-                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Subscription matches cached endpoint, skipping token_session");
+                    var savedVapidKey = this.#getValueFromStorage("cly_push_vapid_key");
+                    if (existing && savedEndpoint === existing.endpoint && savedVapidKey === vapidKey) {
+                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Subscription matches cached endpoint and VAPID key, skipping token_session");
                         return { subscribed: true, endpoint: existing.endpoint };
                     }
-                    var subPromise;
+                    // Endpoint or VAPID key changed (e.g. operator rotated keypair) — drop the
+                    // stale subscription so the browser binds a fresh one to the new public key.
+                    var unsubChain;
                     if (existing) {
-                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Existing subscription found but endpoint changed, re-using");
-                        subPromise = Promise.resolve(existing);
+                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Cached subscription is stale (endpoint or VAPID key changed), unsubscribing before re-subscribe");
+                        unsubChain = existing.unsubscribe().catch((err) => {
+                            this.#log(logLevelEnums.WARNING, "enable_push_notifications, unsubscribe failed, continuing: " + err);
+                        });
                     }
                     else {
-                        subPromise = swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey });
+                        unsubChain = Promise.resolve();
                     }
-                    return subPromise.then((subscription) => {
-                        this.#sendPushToken(subscription);
+                    return unsubChain.then(() => {
+                        return swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey });
+                    }).then((subscription) => {
+                        this.#sendPushToken(subscription, vapidKey);
                         return { subscribed: true, endpoint: subscription.endpoint };
                     });
                 });
@@ -1774,6 +1781,7 @@ class CountlyClass {
         return navigator.serviceWorker.getRegistration(this.push_service_worker_scope).then((swReg) => {
             if (!swReg) {
                 this.#removeValueFromStorage("cly_push_endpoint");
+                this.#removeValueFromStorage("cly_push_vapid_key");
                 return { unsubscribed: true };
             }
             return swReg.pushManager.getSubscription().then((subscription) => {
@@ -1781,6 +1789,7 @@ class CountlyClass {
                 return unsubPromise.then(() => {
                     this.#sendPushToken(null);
                     this.#removeValueFromStorage("cly_push_endpoint");
+                    this.#removeValueFromStorage("cly_push_vapid_key");
                     return { unsubscribed: true };
                 });
             });
@@ -5303,11 +5312,14 @@ class CountlyClass {
      *  Build and queue the web-push token_session request, mirroring Android's ConnectionQueue.tokenSession.
      *  Pass `null` to register the BLACKLISTED sentinel (unsubscribe path).
      *  Sent with a 10s delay after begin_session, same as Android, so the server can create the
-     *  user record before the token write.
+     *  user record before the token write. Persists endpoint + VAPID public key after the request
+     *  is queued so subsequent enable_push_notifications calls can detect a key rotation and
+     *  re-subscribe instead of bailing out on the cached endpoint alone.
      *  @memberof Countly._internals
      *  @param {?PushSubscription} subscription - subscription to register, or null to blacklist
+     *  @param {string} [vapidKey] - the VAPID public key used to create this subscription
      */
-    #sendPushToken = (subscription) => {
+    #sendPushToken = (subscription, vapidKey) => {
         var tokenValue;
         if (subscription) {
             try {
@@ -5339,6 +5351,9 @@ class CountlyClass {
             this.#toRequestQueue(req);
             if (subscription && subscription.endpoint) {
                 this.#setValueInStorage("cly_push_endpoint", subscription.endpoint);
+                if (vapidKey) {
+                    this.#setValueInStorage("cly_push_vapid_key", vapidKey);
+                }
             }
         }, 10000);
     }
