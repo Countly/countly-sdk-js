@@ -1,3 +1,7 @@
+## XX.XX.XX
+
+* Added support for reporting the current theme (light or dark) when presenting feedback widgets, rating widgets, and content, so they are displayed in matching conditions.
+
 ## 26.1.2
 
 * Delayed remote config refresh after merged device ID changes to reduce request ordering races.

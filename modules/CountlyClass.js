@@ -33,7 +33,8 @@ import {
     checkIfLoggingIsOn,
     hideLoader,
     getUserAgentClientHints,
-    calculateChecksum
+    calculateChecksum,
+    appendThemeToUrl
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
 
@@ -4148,6 +4149,8 @@ class CountlyClass {
             // Only web SDK passes origin and web
             url += "&origin=" + passedOrigin;
             url += "&widget_v=web";
+            // report the current theme so the widget is presented in matching conditions
+            url = appendThemeToUrl(url);
 
             var iframe = document.createElement("iframe");
             iframe.src = url;
@@ -4816,7 +4819,8 @@ class CountlyClass {
             iframe.id = this.#contentIframeID;
             // always https in the future
             // response.html = response.html.replace(/http:\/\//g, "https://");
-            iframe.src = response.html;
+            // report the current theme so the content is presented in matching conditions
+            iframe.src = appendThemeToUrl(response.html);
             iframe.style.position = "absolute";
             if (response.html.indexOf("feedback/survey") != -1) { // for surveys to scroll with the page (nps is not in journeys yet)
                 iframe.style.position = "fixed";
@@ -4967,7 +4971,8 @@ class CountlyClass {
             var iframe = document.createElement("iframe");
             iframe.name = "countly-feedback-iframe";
             iframe.id = "countly-feedback-iframe";
-            iframe.src = this.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + this.app_key + "&device_id=" + this.device_id + "&sdk_version=" + this.#sdkVersion;
+            // report the current theme so the rating widget is presented in matching conditions
+            iframe.src = appendThemeToUrl(this.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + this.app_key + "&device_id=" + this.device_id + "&sdk_version=" + this.#sdkVersion);
             // inject them to dom
             document.body.appendChild(wrapper);
             wrapper.appendChild(closeIcon);

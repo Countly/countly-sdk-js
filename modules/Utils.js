@@ -763,6 +763,45 @@ function hideLoader() {
     }
 }
 
+/**
+ *  Resolves the color scheme (theme) the page is currently rendered with, so it can be reported on
+ *  feedback widget, rating widget and content URLs and they are presented in matching conditions.
+ *  @returns {string} "d" for dark, "l" for light, or null when it can not be resolved
+ */
+function getThemeMode() {
+    try {
+        if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+            return null;
+        }
+        if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            return "d";
+        }
+        if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+            return "l";
+        }
+        return null;
+    }
+    catch (e) {
+        return null;
+    }
+}
+
+/**
+ *  Appends the current theme as the "th" query parameter (th=l for light, th=d for dark) to a URL
+ *  that is loaded into a widget or content iframe. Uses "?" as the separator when the URL has no
+ *  query yet, "&" otherwise. When the theme can not be resolved the URL is returned unchanged.
+ *  @param {string} url - the URL that will be loaded into the iframe
+ *  @returns {string} the URL with "th" appended, or the original URL when the theme is undefined
+ */
+function appendThemeToUrl(url) {
+    var theme = getThemeMode();
+    if (!theme) {
+        return url;
+    }
+    var separator = url.indexOf("?") !== -1 ? "&" : "?";
+    return url + separator + "th=" + theme;
+}
+
 export {
     getMultiSelectValues,
     secureRandom,
@@ -797,5 +836,7 @@ export {
     currentUserAgentDataString,
     getUserAgentClientHints,
     parseWindowsVersionFromPlatformVersion,
-    calculateChecksum
+    calculateChecksum,
+    getThemeMode,
+    appendThemeToUrl
 }; 
