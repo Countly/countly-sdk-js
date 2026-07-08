@@ -58,8 +58,8 @@ describe("parseUrlParts helper", () => {
     });
 
     it("returns an empty path for an origin with no path", () => {
-        var parts = Countly._internals.parseUrlParts("https://master.count.ly");
-        expect(parts.origin).to.eq("https://master.count.ly");
+        var parts = Countly._internals.parseUrlParts("https://main.count.ly");
+        expect(parts.origin).to.eq("https://main.count.ly");
         expect(parts.pathname).to.eq("");
     });
 
