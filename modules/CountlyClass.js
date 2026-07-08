@@ -33,7 +33,8 @@ import {
     checkIfLoggingIsOn,
     hideLoader,
     getUserAgentClientHints,
-    calculateChecksum
+    calculateChecksum,
+    parseUrlParts
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
 
@@ -4147,6 +4148,15 @@ class CountlyClass {
             // Origin is passed to the popup so that it passes it back in the postMessage event
             // Only web SDK passes origin and web
             url += "&origin=" + passedOrigin;
+            // Pass the path prefix (if any) for reverse proxy scenarios. The server only accepts a
+            // same-origin relative path, so we send just the pathname and omit it when there is none.
+            var providedPath = "";
+            if (this.url) {
+                providedPath = stripTrailingSlash(parseUrlParts(this.url).pathname);
+            }
+            if (providedPath) {
+                url += "&provided_url=" + encodeURIComponent(providedPath);
+            }
             url += "&widget_v=web";
 
             var iframe = document.createElement("iframe");
@@ -4812,13 +4822,31 @@ class CountlyClass {
 
     #displayContent = (response) => {
         try {
+            //   1. rebase html onto dev provided url so the content page loads from the right path
+            //   2. pass the SDK path prefix as provided_url
+            var contentUrl = response.html;
+            if (typeof contentUrl === "string") {
+                var parts = parseUrlParts(contentUrl);
+                var base = parts.origin + parts.pathname;
+                if (this.url && contentUrl.indexOf(this.url) !== 0) {
+                    base = stripTrailingSlash(this.url) + parts.pathname;
+                }
+                var search = parts.search;
+                var providedPath = this.url ? stripTrailingSlash(parseUrlParts(this.url).pathname) : "";
+                if (providedPath) {
+                    // insert into the query (before any #hash); server ignores values with ':' or '//'
+                    search += (search ? "&" : "?") + "provided_url=" + encodeURIComponent(providedPath);
+                }
+                contentUrl = base + search + parts.hash;
+                this.#log(logLevelEnums.DEBUG, "displayContent, Content iframe URL:[" + contentUrl + "]");
+            }
             var iframe = document.createElement("iframe");
             iframe.id = this.#contentIframeID;
             // always https in the future
             // response.html = response.html.replace(/http:\/\//g, "https://");
-            iframe.src = response.html;
+            iframe.src = contentUrl;
             iframe.style.position = "absolute";
-            if (response.html.indexOf("feedback/survey") != -1) { // for surveys to scroll with the page (nps is not in journeys yet)
+            if (contentUrl.indexOf("feedback/survey") != -1) { // for surveys to scroll with the page (nps is not in journeys yet)
                 iframe.style.position = "fixed";
             }
             var dimensionToUse = response.geo.p;
@@ -4839,7 +4867,13 @@ class CountlyClass {
     };
 
     #interpretContentMessage = (messageEvent) => {
-        if (this.contentWhitelist.indexOf(messageEvent.origin) === -1) {
+        // messageEvent.origin is always origin-only (scheme://host[:port]), while whitelist
+        // entries (including this.url) may carry a path prefix behind a reverse proxy. Compare
+        // by origin so proxied content (served from this.url's origin) is not rejected.
+        var isWhitelistedOrigin = Array.isArray(this.contentWhitelist) && this.contentWhitelist.some((entry) => {
+            return parseUrlParts(entry).origin === messageEvent.origin;
+        });
+        if (!isWhitelistedOrigin) {
             // this.#log(logLevelEnums.ERROR, "interpretContentMessage, Received message from invalid origin");
             // silent ignore
             return;
@@ -6597,6 +6631,7 @@ class CountlyClass {
         truncateObject: truncateObject,
         truncateSingleValue: truncateSingleValue,
         stripTrailingSlash: stripTrailingSlash,
+        parseUrlParts: parseUrlParts,
         prepareParams: prepareParams,
         sendXmlHttpRequest: this.#sendXmlHttpRequest,
         isResponseValid: this.#isResponseValid,

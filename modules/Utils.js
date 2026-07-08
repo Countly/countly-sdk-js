@@ -1,5 +1,5 @@
 import { isBrowser, Countly } from "./Platform.js";
-import { logLevelEnums } from "./Constants.js";
+import { logLevelEnums, urlParseRE } from "./Constants.js";
 
 /**
  *  Get selected values from multi select input
@@ -763,6 +763,34 @@ function hideLoader() {
     }
 }
 
+/**
+ * Split a URL string into its parts using the shared urlParseRE regex. Kept regex-based
+ * (rather than the URL constructor) to preserve IE11 support, and it needs no DOM access.
+ * Relative URLs (no scheme/host) return an empty origin and everything in pathname.
+ * @memberof Countly._internals
+ * @param {String} urlString - URL to parse
+ * @returns {Object} object with origin, pathname, search and hash string properties
+ */
+function parseUrlParts(urlString) {
+    var parts = { origin: "", pathname: "", search: "", hash: "" };
+    if (typeof urlString !== "string") {
+        return parts;
+    }
+    var matches = urlParseRE.exec(urlString);
+    if (!matches) {
+        return parts;
+    }
+    // matches[4] = "protocol:", matches[10] = "host[:port]", matches[13] = path,
+    // matches[16] = "?query", matches[17] = "#hash" (see urlParseRE comments in Constants.js)
+    if (matches[4] && matches[10]) {
+        parts.origin = matches[4] + "//" + matches[10];
+    }
+    parts.pathname = matches[13] || "";
+    parts.search = matches[16] || "";
+    parts.hash = matches[17] || "";
+    return parts;
+}
+
 export {
     getMultiSelectValues,
     secureRandom,
@@ -797,5 +825,6 @@ export {
     currentUserAgentDataString,
     getUserAgentClientHints,
     parseWindowsVersionFromPlatformVersion,
-    calculateChecksum
-}; 
+    calculateChecksum,
+    parseUrlParts
+};
