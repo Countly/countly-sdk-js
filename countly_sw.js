@@ -29,10 +29,13 @@
 var CLY_ACTION = "countly_push_action";
 var CLY_SUBSCRIPTION_CHANGE = "countly_push_subscription_change";
 var CLY_READY = "countly_push_ready";
+var CLY_ACK = "countly_push_ack";
 var CLY_MAX_ACTIONS = 2; // Countly messages carry at most two buttons
 var CLY_MAX_PENDING = 20;
 
-// actions that could not be handed to a page yet, drained when one says it is listening
+// actions no page has confirmed recording yet. matchAll returns every window on the origin,
+// including ones with no Countly SDK on them, so an action is only forgotten once a page
+// acknowledges it — otherwise a later page drains it on handshake.
 var clyPendingActions = [];
 
 /**
@@ -41,6 +44,42 @@ var clyPendingActions = [];
  */
 function clyWindowClients() {
     return self.clients.matchAll({ type: "window", includeUncontrolled: true });
+}
+
+/**
+ * Choose the single client that should record a push action: the one already on the target URL
+ * (it is the one about to be focused), else a focused one, else the first available.
+ * @param {WindowClient[]} clientList - open window clients
+ * @param {string} url - the URL this click is heading to
+ * @returns {?WindowClient} the client to hand the action to
+ */
+function clyPickActionTarget(clientList, url) {
+    var i;
+    if (url) {
+        for (i = 0; i < clientList.length; i++) {
+            if (clientList[i].url === url) {
+                return clientList[i];
+            }
+        }
+    }
+    for (i = 0; i < clientList.length; i++) {
+        if (clientList[i].focused) {
+            return clientList[i];
+        }
+    }
+    return clientList[0] || null;
+}
+
+/**
+ * Hold on to an action until a page acknowledges having recorded it.
+ * @param {Object} actionMessage - the action to remember
+ * @returns {undefined}
+ */
+function clyRemember(actionMessage) {
+    clyPendingActions.push(actionMessage);
+    if (clyPendingActions.length > CLY_MAX_PENDING) {
+        clyPendingActions.shift();
+    }
 }
 
 self.addEventListener("push", function (event) {
@@ -93,10 +132,12 @@ self.addEventListener("notificationclick", function (event) {
     var url = data.l || "";
 
     if (event.action && event.action.indexOf("btn_") === 0) {
+        // "btn_1" is the first button, so index 0 of the payload's button list
         var idx = parseInt(event.action.slice(4), 10);
-        if (!isNaN(idx) && buttons[idx - 1]) {
+        var button = buttons[idx - 1];
+        if (button) {
             buttonIndex = idx;
-            url = buttons[idx - 1].l || url;
+            url = button.l || url;
         }
     }
 
@@ -110,25 +151,19 @@ self.addEventListener("notificationclick", function (event) {
 
     event.waitUntil(
         clyWindowClients().then(function (clientList) {
-            for (var i = 0; i < clientList.length; i++) {
-                clientList[i].postMessage(actionMessage);
-            }
-            if (clientList.length === 0) {
-                // nobody to record it — hold it until a page announces itself
-                clyPendingActions.push(actionMessage);
-                if (clyPendingActions.length > CLY_MAX_PENDING) {
-                    clyPendingActions.shift();
-                }
+            // Exactly one page may record the action. Broadcasting it would make every open tab
+            // report the same click and inflate the campaign's actioned count.
+            var target = clyPickActionTarget(clientList, url);
+            clyRemember(actionMessage);
+            if (target) {
+                target.postMessage(actionMessage);
             }
 
             if (!url) {
                 return;
             }
-            for (var j = 0; j < clientList.length; j++) {
-                var client = clientList[j];
-                if (client.url === url && "focus" in client) {
-                    return client.focus();
-                }
+            if (target && target.url === url && "focus" in target) {
+                return target.focus();
             }
             if (self.clients.openWindow) {
                 return self.clients.openWindow(url);
@@ -139,16 +174,23 @@ self.addEventListener("notificationclick", function (event) {
 
 self.addEventListener("message", function (event) {
     var data = event.data;
-    if (!data || data.type !== CLY_READY || clyPendingActions.length === 0) {
+    if (!data) {
         return;
     }
-    var drained = clyPendingActions;
-    clyPendingActions = [];
-    if (!event.source) {
+    if (data.type === CLY_ACK) {
+        // a page recorded it, so it no longer needs redelivering
+        clyPendingActions = clyPendingActions.filter(function (pending) {
+            return pending.aid !== data.aid;
+        });
         return;
     }
-    for (var i = 0; i < drained.length; i++) {
-        event.source.postMessage(drained[i]);
+    if (data.type !== CLY_READY || !event.source) {
+        return;
+    }
+    // Left in place until acknowledged: only the pages that run the SDK reply, so a window that
+    // cannot record the action does not consume it. The page drops duplicates by `aid`.
+    for (var i = 0; i < clyPendingActions.length; i++) {
+        event.source.postMessage(clyPendingActions[i]);
     }
 });
 

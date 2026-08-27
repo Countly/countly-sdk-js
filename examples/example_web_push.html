@@ -55,11 +55,14 @@
             s.parentNode.insertBefore(cly, s);
         })();
 
+        // Called directly rather than queued through Countly.q: browsers only allow a notification
+        // permission prompt while the click's user activation is still alive, and a queued call
+        // would run later, on a heartbeat.
         function enablePush() {
-            Countly.q.push(['enable_push_notifications']);
+            Countly.enable_push_notifications();
         }
         function disablePush() {
-            Countly.q.push(['disable_push_notifications']);
+            Countly.disable_push_notifications();
         }
     </script>
 </head>
@@ -87,9 +90,11 @@
             <code>push_auto_register: false</code> to turn the automatic part off.
         </p>
         <p style="max-width: 640px; margin: 0 auto; text-align: left;">
-            <strong>How to test:</strong> Serve this repo over HTTP(S) so the
-            <code>/countly_sw.js</code> path is reachable from the page (service
-            workers are blocked on <code>file://</code>). Replace
+            <strong>How to test:</strong> Serve this repo over HTTPS, or over HTTP
+            from <code>localhost</code>, so the <code>/countly_sw.js</code> path is
+            reachable from the page. Service workers and the Push API need a secure
+            context: <code>file://</code> and plain-HTTP LAN or hosted origins are
+            both refused, only loopback is exempt. Replace
             <code>app_key</code>, <code>url</code> and
             <code>push_vapid_public_key</code> above. Click "Enable Push
             Notifications" and accept the browser prompt — the SDK will queue a

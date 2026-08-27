@@ -44,6 +44,9 @@ function installPushMocks() {
         subscribeCalls: 0,
         unsubscribeCalls: 0,
         registerCalls: [],
+        getRegistrationScopes: [],
+        registeredScopeWorker: null,
+        callOrder: [],
         messageListeners: [],
         restore: []
     };
@@ -68,16 +71,22 @@ function installPushMocks() {
             return Promise.resolve(state.subscription);
         }
     };
-    var registration = { scope: "/", pushManager: pushManager };
+    state.pushManager = pushManager;
+    var registration = { scope: "/", pushManager: pushManager, active: { scriptURL: new URL("/countly_sw.js", location.href).href } };
 
     var container = {
         controller: { postMessage: () => { } },
         ready: Promise.resolve(registration),
         register: (path, options) => {
+            state.callOrder.push("register");
             state.registerCalls.push({ path: path, scope: options && options.scope });
+            state.registeredScopeWorker = registration;
             return Promise.resolve(registration);
         },
-        getRegistration: () => Promise.resolve(registration),
+        getRegistration: (scope) => {
+            state.getRegistrationScopes.push(scope);
+            return Promise.resolve(state.registeredScopeWorker);
+        },
         addEventListener: (type, callback) => {
             if (type === "message") {
                 state.messageListeners.push(callback);
@@ -103,7 +112,10 @@ function installPushMocks() {
         override(window, "Notification", {});
     }
     override(window.Notification, "permission", "granted");
-    override(window.Notification, "requestPermission", () => Promise.resolve(state.permission));
+    override(window.Notification, "requestPermission", () => {
+        state.callOrder.push("requestPermission");
+        return Promise.resolve(state.permission);
+    });
     if (typeof window.PushManager === "undefined") {
         override(window, "PushManager", function () { });
     }
@@ -140,9 +152,8 @@ function enablePush(opts) {
     return cy.wrap(null).then(() => Countly.enable_push_notifications(opts));
 }
 
-// token_session is deliberately delayed so begin_session lands first
-function waitForPendingToken() {
-    cy.wait(hp.lWait + 500);
+function disablePush() {
+    return cy.wrap(null).then(() => Countly.disable_push_notifications());
 }
 
 function tokenRequests(callback) {
@@ -225,8 +236,6 @@ describe("Web push tests", () => {
                 expect(push.registerCalls[0]).to.deep.equal({ path: "/countly_sw.js", scope: "/" });
                 pushStorage("cly_push_endpoint").should("equal", result.endpoint);
                 pushStorage("cly_push_vapid_key").should("equal", VAPID_KEY);
-                expectTokenRequestCount(0);
-                waitForPendingToken();
                 tokenRequests((requests) => {
                     expect(requests.length).to.equal(1);
                     expect(requests[0].token_provider).to.equal("WEB");
@@ -238,7 +247,7 @@ describe("Web push tests", () => {
                     expect(second.endpoint).to.equal(result.endpoint);
                     expect(push.subscribeCalls).to.equal(1);
                 });
-                waitForPendingToken();
+                // a second enable must not queue another token_session
                 expectTokenRequestCount(1);
             });
         });
@@ -248,7 +257,6 @@ describe("Web push tests", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY });
             enablePush();
-            waitForPendingToken();
             // losing the cached endpoint must not cost the user their subscription
             cy.then(() => {
                 Countly._internals.removeValueFromStorage("cly_push_endpoint");
@@ -258,14 +266,12 @@ describe("Web push tests", () => {
                 expect(push.subscribeCalls).to.equal(1);
                 expect(push.unsubscribeCalls).to.equal(0);
             });
-            waitForPendingToken();
             expectTokenRequestCount(2);
             enablePush({ push_vapid_public_key: OTHER_VAPID_KEY }).then(() => {
                 expect(push.unsubscribeCalls).to.equal(1);
                 expect(push.subscribeCalls).to.equal(2);
                 expect(new Uint8Array(push.subscription.options.applicationServerKey)).to.deep.equal(keyToBytes(OTHER_VAPID_KEY));
             });
-            waitForPendingToken();
             expectTokenRequestCount(3);
             pushStorage("cly_push_vapid_key").should("equal", OTHER_VAPID_KEY);
         });
@@ -275,19 +281,16 @@ describe("Web push tests", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY });
             enablePush();
-            waitForPendingToken();
-            cy.wrap(null).then(() => Countly.disable_push_notifications()).then((result) => {
+            disablePush().then((result) => {
                 expect(result.unsubscribed).to.equal(true);
                 expect(push.unsubscribeCalls).to.equal(1);
             });
-            waitForPendingToken();
             tokenRequests((requests) => {
                 expect(requests.length).to.equal(2);
                 expect(requests[1].web_token).to.equal("BLACKLISTED");
             });
             pushStorage("cly_push_endpoint").should("equal", null);
-            cy.wrap(null).then(() => Countly.disable_push_notifications());
-            waitForPendingToken();
+            disablePush();
             expectTokenRequestCount(2);
         });
     });
@@ -297,9 +300,7 @@ describe("Web push tests", () => {
             initMain({ require_consent: true, push_vapid_public_key: VAPID_KEY });
             cy.then(() => Countly.add_consent(["push"]));
             enablePush();
-            waitForPendingToken();
             cy.then(() => Countly.remove_consent(["push"]));
-            waitForPendingToken();
             tokenRequests((requests) => {
                 expect(requests[requests.length - 1].web_token).to.equal("BLACKLISTED");
             });
@@ -361,12 +362,10 @@ describe("Web push tests", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY });
             enablePush();
-            waitForPendingToken();
             cy.then(() => {
                 push.subscribeCalls = 0;
                 push.emit({ type: "countly_push_subscription_change" });
             });
-            waitForPendingToken();
             tokenRequests((requests) => {
                 // the live subscription is reused, only the server is brought back in sync
                 expect(push.subscribeCalls).to.equal(0);
@@ -394,7 +393,6 @@ describe("Web push tests", () => {
             cy.wait(hp.sWait).then(() => {
                 expect(push.subscribeCalls).to.equal(1);
             });
-            waitForPendingToken();
             expectTokenRequestCount(1);
         });
     });
@@ -414,13 +412,11 @@ describe("Web push tests", () => {
         hp.haltAndClearStorage(() => {
             push.grantPermission();
             initMain({ push_vapid_public_key: VAPID_KEY });
-            waitForPendingToken();
             pushStorage("cly_push_device_id").should("equal", "web push tester");
             cy.then(() => {
                 push.subscribeCalls = 0;
                 Countly.change_id("logged in user", true);
             });
-            waitForPendingToken();
             tokenRequests((requests) => {
                 // the subscription belongs to the browser, so it is reused rather than recreated
                 expect(push.subscribeCalls).to.equal(0);
@@ -437,7 +433,6 @@ describe("Web push tests", () => {
             enablePush().then(() => {
                 Countly.change_id("someone else", false);
             });
-            waitForPendingToken();
             tokenRequests((requests) => {
                 expect(requests.length).to.equal(1);
                 expect(requests[0].device_id).to.equal("web push tester");
@@ -445,16 +440,78 @@ describe("Web push tests", () => {
         });
     });
 
-    it("Clears push state and cancels the pending token on halt", () => {
+    it("Queues the token immediately and clears push state on halt", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            enablePush();
+            // no page timer holds the token: closing the tab must not lose a live subscription
+            expectTokenRequestCount(1);
+            cy.then(() => Countly.halt());
+            pushStorage("cly_push_endpoint").should("equal", null);
+            pushStorage("cly_push_vapid_key").should("equal", null);
+            pushStorage("cly_push_scope").should("equal", null);
+        });
+    });
+
+    it("Asks for notification permission before any asynchronous work", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY });
             enablePush().then(() => {
-                Countly.halt();
+                // a prompt fired after the registration resolves would have lost the click's
+                // user activation, which is what browsers require it to run under
+                expect(push.callOrder[0]).to.equal("requestPermission");
+                expect(push.callOrder.indexOf("register")).to.be.greaterThan(0);
             });
-            pushStorage("cly_push_endpoint").should("equal", null);
-            pushStorage("cly_push_vapid_key").should("equal", null);
-            waitForPendingToken();
+        });
+    });
+
+    it("Refuses to replace a service worker the application already owns", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => {
+                push.registeredScopeWorker = { scope: "/", pushManager: push.pushManager, active: { scriptURL: new URL("/my-pwa-sw.js", location.href).href } };
+            });
+            enablePush().then((result) => {
+                expect(result.reason).to.equal("service_worker_conflict");
+                expect(push.registerCalls.length).to.equal(0);
+            });
             expectTokenRequestCount(0);
+        });
+    });
+
+    it("Uses a supplied registration and disables through the scope it subscribed under", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            enablePush({ push_service_worker_registration: { scope: "/app/", pushManager: push.pushManager } }).then((result) => {
+                expect(result.subscribed).to.equal(true);
+                expect(push.registerCalls.length).to.equal(0);
+            });
+            pushStorage("cly_push_scope").should("equal", "/app/");
+            cy.then(() => {
+                push.getRegistrationScopes = [];
+                return Countly.disable_push_notifications();
+            }).then(() => {
+                expect(push.getRegistrationScopes).to.deep.equal(["/app/"]);
+            });
+        });
+    });
+
+    it("Blacklists a token the server may still hold when the registration is gone", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            enablePush();
+            cy.then(() => {
+                // cleared site data or a worker unregistered elsewhere
+                push.registeredScopeWorker = null;
+                push.subscription = null;
+                return Countly.disable_push_notifications();
+            }).then((result) => {
+                expect(result.unsubscribed).to.equal(true);
+            });
+            tokenRequests((requests) => {
+                expect(requests.length).to.equal(2);
+                expect(requests[1].web_token).to.equal("BLACKLISTED");
+            });
         });
     });
 });

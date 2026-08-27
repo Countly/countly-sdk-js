@@ -148,7 +148,6 @@ class CountlyClass {
     #pendingRequestBuffer;
     #clientHintsBufferTimeoutId;
     #changeIdRemoteConfigTimeoutId;
-    #pushTokenTimeoutId;
     #seenPushActionIds;
     
     /**
@@ -617,6 +616,7 @@ class CountlyClass {
         this.push_vapid_public_key = getConfig("push_vapid_public_key", ob, null);
         this.push_service_worker_path = getConfig("push_service_worker_path", ob, "/countly_sw.js");
         this.push_service_worker_scope = getConfig("push_service_worker_scope", ob, "/");
+        this.push_service_worker_registration = getConfig("push_service_worker_registration", ob, null);
         this.push_auto_register = getConfig("push_auto_register", ob, true);
         this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
@@ -1005,10 +1005,10 @@ class CountlyClass {
      *  can ask the page to record [CLY]_push_action via add_event, and to re-register the
      *  token after the browser rotates the subscription. Keeps consent enforcement and
      *  request batching on the page side. No-op outside a browser.
-     *  @private
+     *  @memberof Countly._internals
      */
     #initPushMessageListener = () => {
-        if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+        if (!this.#isPushSupported(false)) {
             return;
         }
         this.#seenPushActionIds = [];
@@ -1019,19 +1019,14 @@ class CountlyClass {
                     return;
                 }
                 if (data.type === pushMessageTypes.ACTION) {
-                    // the worker broadcasts to every open tab and also queues the action for
-                    // tabs that were not listening yet, so the same action can arrive twice
-                    if (data.aid) {
-                        if (this.#seenPushActionIds.indexOf(data.aid) !== -1) {
-                            this.#log(logLevelEnums.DEBUG, "initPushMessageListener, Ignoring duplicate push action [" + data.aid + "]");
-                            return;
-                        }
-                        this.#seenPushActionIds.push(data.aid);
-                        if (this.#seenPushActionIds.length > pushConstants.MAX_SEEN_ACTION_IDS) {
-                            this.#seenPushActionIds.shift();
-                        }
+                    if (this.#isNewPushAction(data.aid)) {
+                        this.record_push_action(data.messageId, data.buttonIndex);
                     }
-                    this.record_push_action(data.messageId, data.buttonIndex);
+                    else {
+                        this.#log(logLevelEnums.DEBUG, "initPushMessageListener, Ignoring duplicate push action [" + data.aid + "]");
+                    }
+                    // acknowledged either way, so the worker stops holding on to it
+                    this.#postToPushWorker({ type: pushMessageTypes.ACK, aid: data.aid });
                 }
                 else if (data.type === pushMessageTypes.SUBSCRIPTION_CHANGE) {
                     this.#log(logLevelEnums.DEBUG, "initPushMessageListener, Push subscription changed, re-registering token");
@@ -1052,13 +1047,36 @@ class CountlyClass {
     };
 
     /**
+     *  Decide whether a push action relayed by the service worker still has to be recorded, and
+     *  remember it if so. The worker holds an action until a page confirms it and redelivers it on
+     *  the next handshake, so the same action can legitimately arrive more than once. An action
+     *  without an id cannot be tracked, so it is always treated as new.
+     *  @memberof Countly._internals
+     *  @param {?string} aid - the worker assigned action id, if any
+     *  @returns {Boolean} true when the action has not been recorded yet
+     */
+    #isNewPushAction = (aid) => {
+        if (!aid) {
+            return true;
+        }
+        if (this.#seenPushActionIds.indexOf(aid) !== -1) {
+            return false;
+        }
+        this.#seenPushActionIds.push(aid);
+        if (this.#seenPushActionIds.length > pushConstants.MAX_SEEN_ACTION_IDS) {
+            this.#seenPushActionIds.shift();
+        }
+        return true;
+    }
+
+    /**
      *  Register for push without the developer having to call anything, but only when it can be
      *  done silently: notification permission must already be granted, because Safari and Firefox
      *  only allow Notification.requestPermission from a user gesture and a prompt fired at init
      *  would simply be refused. New visitors still go through enable_push_notifications, wired to
      *  a button; returning ones get their token kept in sync on every load, after a device ID
      *  change and as soon as push consent arrives.
-     *  @private
+     *  @memberof Countly._internals
      */
     #autoRegisterPush = () => {
         if (!this.push_auto_register || !this.push_vapid_public_key) {
@@ -1076,11 +1094,20 @@ class CountlyClass {
 
     /**
      *  Ask the service worker for push actions it recorded while no tab was listening.
-     *  @private
+     *  @memberof Countly._internals
      */
     #drainPendingPushActions = () => {
+        this.#postToPushWorker({ type: pushMessageTypes.READY });
+    };
+
+    /**
+     *  Send a message to the service worker controlling this page, if there is one.
+     *  @memberof Countly._internals
+     *  @param {Object} message - message to post
+     */
+    #postToPushWorker = (message) => {
         if (navigator.serviceWorker.controller) {
-            navigator.serviceWorker.controller.postMessage({ type: pushMessageTypes.READY });
+            navigator.serviceWorker.controller.postMessage(message);
         }
     };
 
@@ -1233,6 +1260,7 @@ class CountlyClass {
         this.push_vapid_public_key = undefined;
         this.push_service_worker_path = undefined;
         this.push_service_worker_scope = undefined;
+        this.push_service_worker_registration = undefined;
         this.push_auto_register = undefined;
         this.#seenPushActionIds = null;
         this.#SCLimitKeyLength = undefined;
@@ -1252,10 +1280,6 @@ class CountlyClass {
         if (this.#changeIdRemoteConfigTimeoutId) {
             clearTimeout(this.#changeIdRemoteConfigTimeoutId);
             this.#changeIdRemoteConfigTimeoutId = null;
-        }
-        if (this.#pushTokenTimeoutId) {
-            clearTimeout(this.#pushTokenTimeoutId);
-            this.#pushTokenTimeoutId = null;
         }
         this.#pendingRequestBuffer = null;
         this.#clientHintsPromise = null;
@@ -1789,7 +1813,7 @@ class CountlyClass {
     * subscribes via the Push API using the configured VAPID public key, and queues a token_session
     * request mirroring the Android/iOS contract. Idempotent — if a matching subscription already
     * exists the cached endpoint is reused and no new token_session is sent.
-    * @param {Object} [opts] - per-call overrides for push_vapid_public_key / push_service_worker_path / push_service_worker_scope
+    * @param {Object} [opts] - per-call overrides for push_vapid_public_key / push_service_worker_path / push_service_worker_scope / push_service_worker_registration
     * @returns {Promise<Object>} resolves to { subscribed: true, endpoint } on success, or { subscribed: false, reason } otherwise
     */
     enable_push_notifications = (opts) => {
@@ -1815,47 +1839,20 @@ class CountlyClass {
         }
         var swPath = opts.push_service_worker_path || this.push_service_worker_path;
         var swScope = opts.push_service_worker_scope || this.push_service_worker_scope;
-        var swReg = null;
 
-        return navigator.serviceWorker.register(swPath, { scope: swScope }).then((registration) => {
-            swReg = registration;
-            this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Service worker registered at scope: [" + swReg.scope + "]");
-            return navigator.serviceWorker.ready;
-        }).then(() => this.#requestNotificationPermission()).then((permission) => {
+        // Ask before touching anything asynchronous. Browsers that require transient user
+        // activation for a notification prompt would refuse it once the service worker
+        // registration has resolved, which would make the first opt-in impossible.
+        return this.#requestNotificationPermission().then((permission) => {
             this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Notification permission: [" + permission + "]");
             if (permission !== "granted") {
                 return { subscribed: false, reason: permission || "denied" };
             }
-            return swReg.pushManager.getSubscription().then((existing) => {
-                var savedEndpoint = this.#getValueFromStorage(pushStorageKeys.endpoint);
-                var savedVapidKey = this.#getValueFromStorage(pushStorageKeys.vapidKey);
-                var savedDeviceId = this.#getValueFromStorage(pushStorageKeys.deviceId);
-                if (existing && this.#pushSubscriptionUsesKey(existing, applicationServerKey, savedVapidKey, vapidKey)) {
-                    // the subscription is still bound to the configured key, so keep it. It is
-                    // only the server that may be out of date, e.g. after pushsubscriptionchange
-                    // rotated the endpoint, after a device ID change or after storage was cleared.
-                    if (savedEndpoint === existing.endpoint && savedVapidKey === vapidKey && savedDeviceId === this.device_id) {
-                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Subscription matches cached endpoint and VAPID key, skipping token_session");
-                    }
-                    else {
-                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Reusing existing subscription and re-registering its token");
-                        this.#sendPushToken(existing, vapidKey);
-                    }
-                    return { subscribed: true, endpoint: existing.endpoint };
+            return this.#resolvePushRegistration(swPath, swScope, opts.push_service_worker_registration).then((registration) => {
+                if (!registration) {
+                    return { subscribed: false, reason: "service_worker_conflict" };
                 }
-                // The VAPID keypair changed, so drop the stale subscription and let the browser
-                // bind a fresh one to the new public key.
-                var unsubChain = Promise.resolve();
-                if (existing) {
-                    this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Existing subscription uses a different VAPID key, unsubscribing before re-subscribe");
-                    unsubChain = existing.unsubscribe().catch((err) => {
-                        this.#log(logLevelEnums.WARNING, "enable_push_notifications, unsubscribe failed, continuing: " + err);
-                    });
-                }
-                return unsubChain.then(() => swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey })).then((subscription) => {
-                    this.#sendPushToken(subscription, vapidKey);
-                    return { subscribed: true, endpoint: subscription.endpoint };
-                });
+                return this.#subscribeAndRegisterToken(registration, vapidKey, applicationServerKey);
             });
         }).catch((err) => {
             this.#log(logLevelEnums.ERROR, "enable_push_notifications, Failed to enable push notifications: " + err);
@@ -1864,24 +1861,127 @@ class CountlyClass {
     };
 
     /**
+     *  Get a service worker registration to subscribe through, without replacing one the host
+     *  application already owns. register() updates whatever is registered for the same scope, so
+     *  installing the reference worker at "/" on a PWA would silently drop its fetch and cache
+     *  handlers. When a foreign worker holds the scope the developer has to either import
+     *  countly_sw.js into it or pass its registration in.
+     *  @memberof Countly._internals
+     *  @param {string} swPath - path of the reference worker to install
+     *  @param {string} swScope - scope to register it under
+     *  @param {?ServiceWorkerRegistration} suppliedRegistration - registration to use as is, if any
+     *  @returns {Promise<?ServiceWorkerRegistration>} the registration to use, or null when the scope is taken
+     */
+    #resolvePushRegistration = (swPath, swScope, suppliedRegistration) => {
+        var provided = suppliedRegistration || this.push_service_worker_registration;
+        if (provided) {
+            this.#log(logLevelEnums.DEBUG, "resolvePushRegistration, Using the supplied service worker registration at scope: [" + provided.scope + "]");
+            return Promise.resolve(provided);
+        }
+        return navigator.serviceWorker.getRegistration(swScope).then((existing) => {
+            var existingWorker = existing && (existing.active || existing.waiting || existing.installing);
+            // getRegistration matches by longest scope prefix, so `existing` can belong to a wider
+            // scope than the one asked for. Registering a narrower scope leaves that one alone, so
+            // only an exact scope match can actually be replaced.
+            var ownsExactScope = existing && this.#resolveUrl(existing.scope) === this.#resolveUrl(swScope);
+            if (existingWorker && ownsExactScope && existingWorker.scriptURL !== this.#resolveUrl(swPath)) {
+                this.#log(logLevelEnums.ERROR, "resolvePushRegistration, A different service worker ([" + existingWorker.scriptURL + "]) already owns scope [" + existing.scope + "]. Registering [" + swPath + "] would replace it. Import countly_sw.js into that worker, or pass its registration as push_service_worker_registration.");
+                return null;
+            }
+            return navigator.serviceWorker.register(swPath, { scope: swScope }).then((registration) => {
+                this.#log(logLevelEnums.DEBUG, "resolvePushRegistration, Service worker registered at scope: [" + registration.scope + "]");
+                return navigator.serviceWorker.ready.then(() => registration);
+            });
+        });
+    }
+
+    /**
+     *  Resolve a possibly relative service worker path or scope against the page, so it can be
+     *  compared with the absolute values the browser reports.
+     *  @memberof Countly._internals
+     *  @param {string} value - path or scope, relative or absolute
+     *  @returns {string} absolute URL, or the input unchanged if it cannot be resolved
+     */
+    #resolveUrl = (value) => {
+        try {
+            return new URL(value, location.href).href;
+        } catch (e) {
+            return value;
+        }
+    }
+
+    /**
+     *  Reuse or create a browser subscription for the given key and register its token.
+     *  @memberof Countly._internals
+     *  @param {ServiceWorkerRegistration} swReg - registration to subscribe through
+     *  @param {string} vapidKey - configured VAPID public key, base64-url encoded
+     *  @param {Uint8Array} applicationServerKey - the same key decoded
+     *  @returns {Promise<Object>} resolves to { subscribed, endpoint }
+     */
+    #subscribeAndRegisterToken = (swReg, vapidKey, applicationServerKey) => {
+        return swReg.pushManager.getSubscription().then((existing) => {
+            var savedEndpoint = this.#getValueFromStorage(pushStorageKeys.endpoint);
+            var savedVapidKey = this.#getValueFromStorage(pushStorageKeys.vapidKey);
+            var savedDeviceId = this.#getValueFromStorage(pushStorageKeys.deviceId);
+            if (existing && this.#pushSubscriptionUsesKey(existing, applicationServerKey, savedVapidKey, vapidKey)) {
+                // the subscription is still bound to the configured key, so keep it. It is only the
+                // server that may be out of date, e.g. after pushsubscriptionchange rotated the
+                // endpoint, after a device ID change or after storage was cleared.
+                if (savedEndpoint === existing.endpoint && savedVapidKey === vapidKey && savedDeviceId === this.device_id) {
+                    this.#log(logLevelEnums.DEBUG, "subscribeAndRegisterToken, Subscription matches the registered endpoint, VAPID key and device ID, nothing to send");
+                }
+                else {
+                    this.#log(logLevelEnums.DEBUG, "subscribeAndRegisterToken, Reusing existing subscription and re-registering its token");
+                    this.#sendPushToken(existing, vapidKey, swReg.scope);
+                }
+                return { subscribed: true, endpoint: existing.endpoint };
+            }
+            // The VAPID keypair changed, so drop the stale subscription and let the browser bind a
+            // fresh one to the new public key.
+            var unsubChain = Promise.resolve();
+            if (existing) {
+                this.#log(logLevelEnums.DEBUG, "subscribeAndRegisterToken, Existing subscription uses a different VAPID key, unsubscribing before re-subscribe");
+                unsubChain = existing.unsubscribe().catch((err) => {
+                    this.#log(logLevelEnums.WARNING, "subscribeAndRegisterToken, unsubscribe failed, continuing: " + err);
+                });
+            }
+            return unsubChain.then(() => swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey })).then((subscription) => {
+                this.#sendPushToken(subscription, vapidKey, swReg.scope);
+                return { subscribed: true, endpoint: subscription.endpoint };
+            });
+        });
+    }
+
+    /**
     * Disable web push notifications. Unsubscribes from the browser push manager and queues a
     * blacklist token_session request so the server clears the stored subscription. Deliberately
     * not consent gated — opting out must stay possible after push consent is withdrawn.
+    * @param {Object} [opts] - per-call override for push_service_worker_scope
     * @returns {Promise<Object>} resolves to { unsubscribed: true } when complete
     */
-    disable_push_notifications = () => {
+    disable_push_notifications = (opts) => {
         this.#log(logLevelEnums.INFO, "disable_push_notifications, Disabling push notifications");
+        opts = opts || {};
         if (!this.#isPushSupported(false)) {
             this.#log(logLevelEnums.WARNING, "disable_push_notifications, Web push is not supported in this environment");
             return Promise.resolve({ unsubscribed: false, reason: "unsupported" });
         }
-        return navigator.serviceWorker.getRegistration(this.push_service_worker_scope).then((swReg) => {
+        // the scope that was actually subscribed under, so a per-call override at enable time is
+        // still found here instead of looking only where the defaults would have put it
+        var swScope = opts.push_service_worker_scope || this.#getValueFromStorage(pushStorageKeys.scope) || this.push_service_worker_scope;
+        // a token the server may still hold, even if the registration or subscription is already gone
+        var hadRegisteredToken = !!this.#getValueFromStorage(pushStorageKeys.endpoint);
+
+        return navigator.serviceWorker.getRegistration(swScope).then((swReg) => {
             return swReg ? swReg.pushManager.getSubscription() : null;
         }).then((subscription) => {
             return subscription ? subscription.unsubscribe().then(() => true) : false;
         }).then((hadSubscription) => {
-            if (hadSubscription) {
+            if (hadSubscription || hadRegisteredToken) {
                 this.#sendPushToken(null);
+            }
+            else {
+                this.#log(logLevelEnums.DEBUG, "disable_push_notifications, Nothing was registered, no blacklist request needed");
             }
             this.#clearStoredPushSubscription();
             return { unsubscribed: true };
@@ -5458,6 +5558,7 @@ class CountlyClass {
         this.#removeValueFromStorage(pushStorageKeys.endpoint);
         this.#removeValueFromStorage(pushStorageKeys.vapidKey);
         this.#removeValueFromStorage(pushStorageKeys.deviceId);
+        this.#removeValueFromStorage(pushStorageKeys.scope);
     }
 
     /**
@@ -5515,33 +5616,32 @@ class CountlyClass {
     }
 
     /**
-     *  Build and queue the web-push token_session request, mirroring Android's ConnectionQueue.tokenSession.
-     *  Pass `null` to register the BLACKLISTED sentinel (unsubscribe path).
-     *  Sent with a delay after begin_session, same as Android, so the server can create the
-     *  user record before the token write. The endpoint and VAPID public key are persisted right
-     *  away so a concurrent enable_push_notifications call detects the subscription instead of
-     *  queueing a second token, and so a key rotation can be told apart from a no-op.
+     *  Build and queue the web-push token_session request. Pass `null` to register the BLACKLISTED
+     *  sentinel (unsubscribe path).
+     *
+     *  Android delays this by 10 seconds so begin_session is processed before the token write, but
+     *  a page timer is not durable — navigating away inside the window would lose a live
+     *  subscription the server never heard about. It is not needed here either: the request queue
+     *  is FIFO and sends one request at a time, awaiting each response, so a begin_session queued
+     *  earlier is already processed server side before this request goes out.
      *  @memberof Countly._internals
      *  @param {?PushSubscription} subscription - subscription to register, or null to blacklist
      *  @param {string} [vapidKey] - the VAPID public key used to create this subscription
+     *  @param {string} [scope] - the service worker scope the subscription was created under
      */
-    #sendPushToken = (subscription, vapidKey) => {
+    #sendPushToken = (subscription, vapidKey, scope) => {
         var tokenValue = pushConstants.BLACKLISTED_TOKEN;
         if (subscription) {
             try {
-                tokenValue = JSON.stringify((typeof subscription.toJSON === "function") ? subscription.toJSON() : {
+                var serializable = (typeof subscription.toJSON === "function") ? subscription.toJSON() : {
                     endpoint: subscription.endpoint,
                     expirationTime: subscription.expirationTime,
                     keys: subscription.keys
-                });
+                };
+                tokenValue = JSON.stringify(serializable);
             } catch (e) {
                 this.#log(logLevelEnums.ERROR, "sendPushToken, Failed to serialize subscription: " + e);
                 return;
-            }
-            this.#setValueInStorage(pushStorageKeys.endpoint, subscription.endpoint);
-            this.#setValueInStorage(pushStorageKeys.deviceId, this.device_id);
-            if (vapidKey) {
-                this.#setValueInStorage(pushStorageKeys.vapidKey, vapidKey);
             }
         }
 
@@ -5553,20 +5653,24 @@ class CountlyClass {
         if (typeof navigator !== "undefined" && navigator.language) {
             req.locale = navigator.language;
         }
-
-        // Stamp app key, device id and the rest now rather than when the timer fires. Android builds
-        // the request string before scheduling for the same reason: a change_id or an offline mode
-        // switch inside the delay window would otherwise re-attribute this token to another user.
-        this.#prepareRequest(req);
-
-        // only the newest token matters, so a pending one is replaced rather than both being sent
-        if (this.#pushTokenTimeoutId) {
-            clearTimeout(this.#pushTokenTimeoutId);
+        // A drop here is silent (opted out, tracking disabled by server config, no app key yet), so
+        // the markers below must not be written or the token would be remembered as registered
+        // while the server never heard about it, and no later enable would retry it.
+        if (!this.#toRequestQueue(req)) {
+            this.#log(logLevelEnums.WARNING, "sendPushToken, The request queue rejected the token, not recording it as registered");
+            return;
         }
-        this.#pushTokenTimeoutId = setTimeout(() => {
-            this.#pushTokenTimeoutId = null;
-            this.#toRequestQueue(req, true);
-        }, pushConstants.TOKEN_SESSION_DELAY);
+
+        if (subscription) {
+            this.#setValueInStorage(pushStorageKeys.endpoint, subscription.endpoint);
+            this.#setValueInStorage(pushStorageKeys.deviceId, this.device_id);
+            if (vapidKey) {
+                this.#setValueInStorage(pushStorageKeys.vapidKey, vapidKey);
+            }
+            if (scope) {
+                this.#setValueInStorage(pushStorageKeys.scope, scope);
+            }
+        }
     }
 
     /**
@@ -5596,32 +5700,32 @@ class CountlyClass {
      *  Add request to request queue
      *  @memberof Countly._internals
      *  @param {Object} request - object with request parameters
-     *  @param {Boolean} [alreadyPrepared] - true if common properties were already stamped onto the request, e.g. by a delayed sender that had to capture the identity of the moment it was created
+     *  @returns {Boolean} true if the request was accepted, false if it was dropped. Callers that
+     *  record state about a request having been sent must check this, since a drop is otherwise silent.
      */
-    #toRequestQueue = (request, alreadyPrepared) => {
+    #toRequestQueue = (request) => {
         if (this.ignore_visitor) {
             this.#log(logLevelEnums.DEBUG, "User is opt_out will ignore the request: " + request);
-            return;
+            return false;
         }
 
         if (!this.#SCTrackingAll) {
             this.#log(logLevelEnums.DEBUG, "Tracking is disabled by server config, will not track the request: " + JSON.stringify(request));
-            return;
+            return false;
         }
 
         if (!this.app_key || !this.device_id) {
             this.#log(logLevelEnums.ERROR, "app_key or device_id is missing ", this.app_key, this.device_id);
-            return;
+            return false;
         }
 
-        if (!alreadyPrepared) {
-            this.#prepareRequest(request);
-        }
+        this.#prepareRequest(request);
 
-        // Buffer requests while client hints are still resolving
+        // Buffer requests while client hints are still resolving. Counts as accepted: the buffer is
+        // flushed into the queue as soon as the hints land.
         if (this.#pendingRequestBuffer !== null) {
             this.#pendingRequestBuffer.push(request);
-            return;
+            return true;
         }
 
         if (this.#requestQueue.length > this.#SCSizeReqQueue) {
@@ -5630,6 +5734,7 @@ class CountlyClass {
 
         this.#requestQueue.push(request);
         this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        return true;
     }
 
     /**

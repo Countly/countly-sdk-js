@@ -115,6 +115,7 @@ var pushMessageTypes = Object.freeze({
     ACTION: "countly_push_action",
     SUBSCRIPTION_CHANGE: "countly_push_subscription_change",
     READY: "countly_push_ready",
+    ACK: "countly_push_ack",
 });
 
 /**
@@ -124,16 +125,15 @@ var pushStorageKeys = Object.freeze({
     endpoint: "cly_push_endpoint",
     vapidKey: "cly_push_vapid_key",
     deviceId: "cly_push_device_id",
+    scope: "cly_push_scope",
 });
 
 /**
  * Web push behaviour constants
- * TOKEN_SESSION_DELAY: ms to wait before queueing token_session, so begin_session lands first (parity with Android's ConnectionQueue.tokenSession)
  * MAX_SEEN_ACTION_IDS: how many recently handled push action ids are kept to drop duplicates
  * VAPID_PUBLIC_KEY_BYTE_LENGTH / VAPID_PUBLIC_KEY_PREFIX: an uncompressed P-256 point is 65 bytes and starts with 0x04
  */
 var pushConstants = Object.freeze({
-    TOKEN_SESSION_DELAY: 10000,
     MAX_SEEN_ACTION_IDS: 20,
     VAPID_PUBLIC_KEY_BYTE_LENGTH: 65,
     VAPID_PUBLIC_KEY_PREFIX: 4,
