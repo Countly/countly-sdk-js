@@ -77,6 +77,16 @@
         <input type="button" onclick="disablePush()" value="Disable Push Notifications">
         <br /><br />
         <p style="max-width: 640px; margin: 0 auto; text-align: left;">
+            <strong>What the SDK does on its own:</strong> once
+            <code>push_vapid_public_key</code> is set, every load re-registers the
+            subscription token if the browser has already granted notification
+            permission, and notification clicks are recorded as
+            <code>[CLY]_push_action</code> without any code here. The button below is
+            only needed for the very first opt-in, because browsers refuse a
+            permission prompt that does not come from a user gesture. Pass
+            <code>push_auto_register: false</code> to turn the automatic part off.
+        </p>
+        <p style="max-width: 640px; margin: 0 auto; text-align: left;">
             <strong>How to test:</strong> Serve this repo over HTTP(S) so the
             <code>/countly_sw.js</code> path is reachable from the page (service
             workers are blocked on <code>file://</code>). Replace

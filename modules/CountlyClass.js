@@ -1,6 +1,6 @@
 
 
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, pushConstants, pushMessageTypes, pushStorageKeys, urlParseRE } from "./Constants.js";
 import {
     getMultiSelectValues,
     secureRandom,
@@ -148,6 +148,8 @@ class CountlyClass {
     #pendingRequestBuffer;
     #clientHintsBufferTimeoutId;
     #changeIdRemoteConfigTimeoutId;
+    #pushTokenTimeoutId;
+    #seenPushActionIds;
     
     /**
      * Create a new Countly instance with configuration
@@ -615,7 +617,7 @@ class CountlyClass {
         this.push_vapid_public_key = getConfig("push_vapid_public_key", ob, null);
         this.push_service_worker_path = getConfig("push_service_worker_path", ob, "/countly_sw.js");
         this.push_service_worker_scope = getConfig("push_service_worker_scope", ob, "/");
-        this.push_auto_register = getConfig("push_auto_register", ob, false);
+        this.push_auto_register = getConfig("push_auto_register", ob, true);
         this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
@@ -1000,30 +1002,85 @@ class CountlyClass {
 
     /**
      *  Wire up navigator.serviceWorker 'message' events so the reference service worker
-     *  can ask the page to record [CLY]_push_action via add_event. Keeps consent enforcement
-     *  and request batching on the page side. No-op outside a browser.
+     *  can ask the page to record [CLY]_push_action via add_event, and to re-register the
+     *  token after the browser rotates the subscription. Keeps consent enforcement and
+     *  request batching on the page side. No-op outside a browser.
      *  @private
      */
     #initPushMessageListener = () => {
         if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
             return;
         }
+        this.#seenPushActionIds = [];
         try {
             navigator.serviceWorker.addEventListener("message", (event) => {
                 var data = event && event.data;
-                if (!data || data.type !== "countly_push_action") {
+                if (!data) {
                     return;
                 }
-                this.record_push_action(data.messageId, data.buttonIndex);
+                if (data.type === pushMessageTypes.ACTION) {
+                    // the worker broadcasts to every open tab and also queues the action for
+                    // tabs that were not listening yet, so the same action can arrive twice
+                    if (data.aid) {
+                        if (this.#seenPushActionIds.indexOf(data.aid) !== -1) {
+                            this.#log(logLevelEnums.DEBUG, "initPushMessageListener, Ignoring duplicate push action [" + data.aid + "]");
+                            return;
+                        }
+                        this.#seenPushActionIds.push(data.aid);
+                        if (this.#seenPushActionIds.length > pushConstants.MAX_SEEN_ACTION_IDS) {
+                            this.#seenPushActionIds.shift();
+                        }
+                    }
+                    this.record_push_action(data.messageId, data.buttonIndex);
+                }
+                else if (data.type === pushMessageTypes.SUBSCRIPTION_CHANGE) {
+                    this.#log(logLevelEnums.DEBUG, "initPushMessageListener, Push subscription changed, re-registering token");
+                    this.enable_push_notifications();
+                }
             });
+            // tell the worker this tab is listening so it can drain actions it queued while
+            // no tab was around (notification click that opened a brand new window)
+            this.#drainPendingPushActions();
+            navigator.serviceWorker.addEventListener("controllerchange", this.#drainPendingPushActions);
         } catch (e) {
             this.#log(logLevelEnums.ERROR, "initPushMessageListener, Failed to register service worker message listener: " + e);
         }
 
-        if (this.push_auto_register && this.push_vapid_public_key && this.check_consent(featureEnums.PUSH)) {
-            setTimeout(() => {
-                this.enable_push_notifications();
-            }, 1);
+        setTimeout(() => {
+            this.#autoRegisterPush();
+        }, 1);
+    };
+
+    /**
+     *  Register for push without the developer having to call anything, but only when it can be
+     *  done silently: notification permission must already be granted, because Safari and Firefox
+     *  only allow Notification.requestPermission from a user gesture and a prompt fired at init
+     *  would simply be refused. New visitors still go through enable_push_notifications, wired to
+     *  a button; returning ones get their token kept in sync on every load, after a device ID
+     *  change and as soon as push consent arrives.
+     *  @private
+     */
+    #autoRegisterPush = () => {
+        if (!this.push_auto_register || !this.push_vapid_public_key) {
+            return;
+        }
+        if (!this.#isPushSupported(true) || Notification.permission !== "granted") {
+            this.#log(logLevelEnums.DEBUG, "autoRegisterPush, Notification permission has not been granted yet, waiting for an explicit enable_push_notifications call");
+            return;
+        }
+        if (!this.check_consent(featureEnums.PUSH)) {
+            return;
+        }
+        this.enable_push_notifications();
+    };
+
+    /**
+     *  Ask the service worker for push actions it recorded while no tab was listening.
+     *  @private
+     */
+    #drainPendingPushActions = () => {
+        if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({ type: pushMessageTypes.READY });
         }
     };
 
@@ -1136,7 +1193,10 @@ class CountlyClass {
             this.#lsSupport = false;
         }
 
-        Countly.features = [featureEnums.SESSIONS, featureEnums.EVENTS, featureEnums.VIEWS, featureEnums.SCROLLS, featureEnums.CLICKS, featureEnums.FORMS, featureEnums.CRASHES, featureEnums.ATTRIBUTION, featureEnums.USERS, featureEnums.STAR_RATING, featureEnums.LOCATION, featureEnums.APM, featureEnums.FEEDBACK, featureEnums.REMOTE_CONFIG];
+        // This has to happen while app_key is still set, hence before the reset block further down.
+        this.#clearStoredPushSubscription();
+
+        Countly.features = [featureEnums.SESSIONS, featureEnums.EVENTS, featureEnums.VIEWS, featureEnums.SCROLLS, featureEnums.CLICKS, featureEnums.FORMS, featureEnums.CRASHES, featureEnums.ATTRIBUTION, featureEnums.USERS, featureEnums.STAR_RATING, featureEnums.LOCATION, featureEnums.APM, featureEnums.FEEDBACK, featureEnums.REMOTE_CONFIG, featureEnums.PUSH];
 
         // CONSENTS
         this.#consents = {};
@@ -1170,6 +1230,11 @@ class CountlyClass {
         this.storage = undefined;
         this.enableOrientationTracking = undefined;
         this.salt = undefined;
+        this.push_vapid_public_key = undefined;
+        this.push_service_worker_path = undefined;
+        this.push_service_worker_scope = undefined;
+        this.push_auto_register = undefined;
+        this.#seenPushActionIds = null;
         this.#SCLimitKeyLength = undefined;
         this.#SCLimitValueSize  = undefined;
         this.#SCLimitSegmentationValues = undefined;
@@ -1187,6 +1252,10 @@ class CountlyClass {
         if (this.#changeIdRemoteConfigTimeoutId) {
             clearTimeout(this.#changeIdRemoteConfigTimeoutId);
             this.#changeIdRemoteConfigTimeoutId = null;
+        }
+        if (this.#pushTokenTimeoutId) {
+            clearTimeout(this.#pushTokenTimeoutId);
+            this.#pushTokenTimeoutId = null;
         }
         this.#pendingRequestBuffer = null;
         this.#clientHintsPromise = null;
@@ -1355,8 +1424,8 @@ class CountlyClass {
                             this.track_pageview.apply(this, this.#lastParams.track_pageview);
                             this.#lastParams.track_pageview = null;
                         }
-                        else if (feature === featureEnums.PUSH && this.push_auto_register && this.push_vapid_public_key) {
-                            this.enable_push_notifications();
+                        else if (feature === featureEnums.PUSH) {
+                            this.#autoRegisterPush();
                         }
                     }, 1);
                 }
@@ -1395,10 +1464,16 @@ class CountlyClass {
                 this.remove_consent_internal(this.#consents[feature].features, enforceConsentUpdate);
             }
             else {
+                var wasOptedIn = this.#consents[feature].optin === true;
                 this.#consents[feature].optin = false;
                 // this is core feature
                 if (enforceConsentUpdate && this.#consents[feature].optin !== false) {
                     this.#updateConsent();
+                }
+                // leaving the browser subscribed after push consent is withdrawn would keep the
+                // server able to reach this user, so drop the subscription and blacklist the token
+                if (enforceConsentUpdate && wasOptedIn && feature === featureEnums.PUSH) {
+                    this.disable_push_notifications();
                 }
             }
         }
@@ -1644,6 +1719,8 @@ class CountlyClass {
             // start new session for new ID TODO: check this when no session tracking is enabled
             this.begin_session(!this.#autoExtend, true);
         }
+        // the subscription belongs to the browser, not the user, so hand it to the new device ID too
+        this.#autoRegisterPush();
         // if init time remote config was enabled with a callback function, remove currently stored remote configs and fetch remote config again
         if (this.remote_config) {
             this.#remoteConfigs = {};
@@ -1718,7 +1795,7 @@ class CountlyClass {
     enable_push_notifications = (opts) => {
         this.#log(logLevelEnums.INFO, "enable_push_notifications, Enabling push notifications");
         opts = opts || {};
-        if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator) || typeof window === "undefined" || !("PushManager" in window) || typeof Notification === "undefined") {
+        if (!this.#isPushSupported(true)) {
             this.#log(logLevelEnums.WARNING, "enable_push_notifications, Web push is not supported in this environment");
             return Promise.resolve({ subscribed: false, reason: "unsupported" });
         }
@@ -1731,48 +1808,53 @@ class CountlyClass {
             this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is required");
             return Promise.resolve({ subscribed: false, reason: "missing_vapid_key" });
         }
-        if (!/^[A-Za-z0-9_-]+$/.test(vapidKey) || vapidKey.length < 80) {
-            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key does not look like a base64-url VAPID key (got [" + vapidKey + "]). Generate one from your Countly application settings.");
+        var applicationServerKey = this.#urlBase64ToUint8Array(vapidKey);
+        if (!applicationServerKey || applicationServerKey.length !== pushConstants.VAPID_PUBLIC_KEY_BYTE_LENGTH || applicationServerKey[0] !== pushConstants.VAPID_PUBLIC_KEY_PREFIX) {
+            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is not a base64-url encoded uncompressed P-256 public key (got [" + vapidKey + "]). Generate one from your Countly application settings.");
             return Promise.resolve({ subscribed: false, reason: "invalid_vapid_key" });
         }
         var swPath = opts.push_service_worker_path || this.push_service_worker_path;
         var swScope = opts.push_service_worker_scope || this.push_service_worker_scope;
+        var swReg = null;
 
-        return navigator.serviceWorker.register(swPath, { scope: swScope }).then((swReg) => {
+        return navigator.serviceWorker.register(swPath, { scope: swScope }).then((registration) => {
+            swReg = registration;
             this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Service worker registered at scope: [" + swReg.scope + "]");
-            return navigator.serviceWorker.ready.then(() => swReg);
-        }).then((swReg) => {
-            return Notification.requestPermission().then((permission) => {
-                this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Notification permission: [" + permission + "]");
-                if (permission !== "granted") {
-                    return { subscribed: false, reason: permission || "denied" };
-                }
-                return swReg.pushManager.getSubscription().then((existing) => {
-                    var applicationServerKey = this.#urlBase64ToUint8Array(vapidKey);
-                    var savedEndpoint = this.#getValueFromStorage("cly_push_endpoint");
-                    var savedVapidKey = this.#getValueFromStorage("cly_push_vapid_key");
-                    if (existing && savedEndpoint === existing.endpoint && savedVapidKey === vapidKey) {
+            return navigator.serviceWorker.ready;
+        }).then(() => this.#requestNotificationPermission()).then((permission) => {
+            this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Notification permission: [" + permission + "]");
+            if (permission !== "granted") {
+                return { subscribed: false, reason: permission || "denied" };
+            }
+            return swReg.pushManager.getSubscription().then((existing) => {
+                var savedEndpoint = this.#getValueFromStorage(pushStorageKeys.endpoint);
+                var savedVapidKey = this.#getValueFromStorage(pushStorageKeys.vapidKey);
+                var savedDeviceId = this.#getValueFromStorage(pushStorageKeys.deviceId);
+                if (existing && this.#pushSubscriptionUsesKey(existing, applicationServerKey, savedVapidKey, vapidKey)) {
+                    // the subscription is still bound to the configured key, so keep it. It is
+                    // only the server that may be out of date, e.g. after pushsubscriptionchange
+                    // rotated the endpoint, after a device ID change or after storage was cleared.
+                    if (savedEndpoint === existing.endpoint && savedVapidKey === vapidKey && savedDeviceId === this.device_id) {
                         this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Subscription matches cached endpoint and VAPID key, skipping token_session");
-                        return { subscribed: true, endpoint: existing.endpoint };
-                    }
-                    // Endpoint or VAPID key changed (e.g. operator rotated keypair) — drop the
-                    // stale subscription so the browser binds a fresh one to the new public key.
-                    var unsubChain;
-                    if (existing) {
-                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Cached subscription is stale (endpoint or VAPID key changed), unsubscribing before re-subscribe");
-                        unsubChain = existing.unsubscribe().catch((err) => {
-                            this.#log(logLevelEnums.WARNING, "enable_push_notifications, unsubscribe failed, continuing: " + err);
-                        });
                     }
                     else {
-                        unsubChain = Promise.resolve();
+                        this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Reusing existing subscription and re-registering its token");
+                        this.#sendPushToken(existing, vapidKey);
                     }
-                    return unsubChain.then(() => {
-                        return swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey });
-                    }).then((subscription) => {
-                        this.#sendPushToken(subscription, vapidKey);
-                        return { subscribed: true, endpoint: subscription.endpoint };
+                    return { subscribed: true, endpoint: existing.endpoint };
+                }
+                // The VAPID keypair changed, so drop the stale subscription and let the browser
+                // bind a fresh one to the new public key.
+                var unsubChain = Promise.resolve();
+                if (existing) {
+                    this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Existing subscription uses a different VAPID key, unsubscribing before re-subscribe");
+                    unsubChain = existing.unsubscribe().catch((err) => {
+                        this.#log(logLevelEnums.WARNING, "enable_push_notifications, unsubscribe failed, continuing: " + err);
                     });
+                }
+                return unsubChain.then(() => swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey })).then((subscription) => {
+                    this.#sendPushToken(subscription, vapidKey);
+                    return { subscribed: true, endpoint: subscription.endpoint };
                 });
             });
         }).catch((err) => {
@@ -1783,34 +1865,26 @@ class CountlyClass {
 
     /**
     * Disable web push notifications. Unsubscribes from the browser push manager and queues a
-    * blacklist token_session request so the server clears the stored subscription.
+    * blacklist token_session request so the server clears the stored subscription. Deliberately
+    * not consent gated — opting out must stay possible after push consent is withdrawn.
     * @returns {Promise<Object>} resolves to { unsubscribed: true } when complete
     */
     disable_push_notifications = () => {
         this.#log(logLevelEnums.INFO, "disable_push_notifications, Disabling push notifications");
-        if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+        if (!this.#isPushSupported(false)) {
             this.#log(logLevelEnums.WARNING, "disable_push_notifications, Web push is not supported in this environment");
             return Promise.resolve({ unsubscribed: false, reason: "unsupported" });
         }
-        if (!this.check_consent(featureEnums.PUSH)) {
-            this.#log(logLevelEnums.WARNING, "disable_push_notifications, Consent for [push] is not given, aborting");
-            return Promise.resolve({ unsubscribed: false, reason: "no_consent" });
-        }
         return navigator.serviceWorker.getRegistration(this.push_service_worker_scope).then((swReg) => {
-            if (!swReg) {
-                this.#removeValueFromStorage("cly_push_endpoint");
-                this.#removeValueFromStorage("cly_push_vapid_key");
-                return { unsubscribed: true };
+            return swReg ? swReg.pushManager.getSubscription() : null;
+        }).then((subscription) => {
+            return subscription ? subscription.unsubscribe().then(() => true) : false;
+        }).then((hadSubscription) => {
+            if (hadSubscription) {
+                this.#sendPushToken(null);
             }
-            return swReg.pushManager.getSubscription().then((subscription) => {
-                var unsubPromise = subscription ? subscription.unsubscribe() : Promise.resolve(false);
-                return unsubPromise.then(() => {
-                    this.#sendPushToken(null);
-                    this.#removeValueFromStorage("cly_push_endpoint");
-                    this.#removeValueFromStorage("cly_push_vapid_key");
-                    return { unsubscribed: true };
-                });
-            });
+            this.#clearStoredPushSubscription();
+            return { unsubscribed: true };
         }).catch((err) => {
             this.#log(logLevelEnums.ERROR, "disable_push_notifications, Failed to disable push notifications: " + err);
             return { unsubscribed: false, reason: "error", error: (err && err.message) ? err.message : String(err) };
@@ -5360,65 +5434,157 @@ class CountlyClass {
     }
 
     /**
+     *  Report whether this environment can do web push at all.
+     *  @memberof Countly._internals
+     *  @param {Boolean} needsSubscribe - also require the APIs used to create a subscription
+     *  @returns {Boolean} true if web push is usable here
+     */
+    #isPushSupported = (needsSubscribe) => {
+        if (!isBrowser || typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+            return false;
+        }
+        if (!needsSubscribe) {
+            return true;
+        }
+        return typeof window !== "undefined" && "PushManager" in window && typeof Notification !== "undefined";
+    }
+
+    /**
+     *  Forget the last push subscription this SDK registered. The keys are namespaced by app key,
+     *  so they need the storage helper rather than a raw removeItem.
+     *  @memberof Countly._internals
+     */
+    #clearStoredPushSubscription = () => {
+        this.#removeValueFromStorage(pushStorageKeys.endpoint);
+        this.#removeValueFromStorage(pushStorageKeys.vapidKey);
+        this.#removeValueFromStorage(pushStorageKeys.deviceId);
+    }
+
+    /**
+     *  Tell whether an existing browser subscription is bound to the given application server key.
+     *  Prefers the key the browser reports on the subscription itself and falls back to the last
+     *  key this SDK stored when the browser does not expose subscription options.
+     *  @memberof Countly._internals
+     *  @param {PushSubscription} subscription - subscription to inspect
+     *  @param {Uint8Array} keyBytes - decoded configured VAPID public key
+     *  @param {?string} savedVapidKey - last VAPID key this SDK registered, if any
+     *  @param {string} vapidKey - configured VAPID public key, base64-url encoded
+     *  @returns {Boolean} true when the subscription can keep being used
+     */
+    #pushSubscriptionUsesKey = (subscription, keyBytes, savedVapidKey, vapidKey) => {
+        var reported = subscription.options && subscription.options.applicationServerKey;
+        if (!reported) {
+            // no way to compare, so trust our own record and treat an unknown key as usable
+            return !savedVapidKey || savedVapidKey === vapidKey;
+        }
+        var reportedBytes = new Uint8Array(reported);
+        if (reportedBytes.length !== keyBytes.length) {
+            return false;
+        }
+        for (var i = 0; i < reportedBytes.length; i++) {
+            if (reportedBytes[i] !== keyBytes[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     *  Ask for notification permission, tolerating the legacy callback-only form of
+     *  Notification.requestPermission still shipped by some browsers.
+     *  @memberof Countly._internals
+     *  @returns {Promise<string>} resolves to "granted", "denied" or "default"
+     */
+    #requestNotificationPermission = () => {
+        if (Notification.permission === "granted" || Notification.permission === "denied") {
+            return Promise.resolve(Notification.permission);
+        }
+        return new Promise((resolve) => {
+            var pending;
+            try {
+                pending = Notification.requestPermission(resolve);
+            } catch (e) {
+                this.#log(logLevelEnums.ERROR, "requestNotificationPermission, Failed to request notification permission: " + e);
+                resolve("denied");
+                return;
+            }
+            if (pending && typeof pending.then === "function") {
+                pending.then(resolve, () => resolve("denied"));
+            }
+        });
+    }
+
+    /**
      *  Build and queue the web-push token_session request, mirroring Android's ConnectionQueue.tokenSession.
      *  Pass `null` to register the BLACKLISTED sentinel (unsubscribe path).
-     *  Sent with a 10s delay after begin_session, same as Android, so the server can create the
-     *  user record before the token write. Persists endpoint + VAPID public key after the request
-     *  is queued so subsequent enable_push_notifications calls can detect a key rotation and
-     *  re-subscribe instead of bailing out on the cached endpoint alone.
+     *  Sent with a delay after begin_session, same as Android, so the server can create the
+     *  user record before the token write. The endpoint and VAPID public key are persisted right
+     *  away so a concurrent enable_push_notifications call detects the subscription instead of
+     *  queueing a second token, and so a key rotation can be told apart from a no-op.
      *  @memberof Countly._internals
      *  @param {?PushSubscription} subscription - subscription to register, or null to blacklist
      *  @param {string} [vapidKey] - the VAPID public key used to create this subscription
      */
     #sendPushToken = (subscription, vapidKey) => {
-        var tokenValue;
+        var tokenValue = pushConstants.BLACKLISTED_TOKEN;
         if (subscription) {
             try {
-                var subJson = (typeof subscription.toJSON === "function") ? subscription.toJSON() : {
+                tokenValue = JSON.stringify((typeof subscription.toJSON === "function") ? subscription.toJSON() : {
                     endpoint: subscription.endpoint,
                     expirationTime: subscription.expirationTime,
                     keys: subscription.keys
-                };
-                tokenValue = JSON.stringify(subJson);
+                });
             } catch (e) {
                 this.#log(logLevelEnums.ERROR, "sendPushToken, Failed to serialize subscription: " + e);
                 return;
             }
-        }
-        else {
-            tokenValue = "BLACKLISTED";
+            this.#setValueInStorage(pushStorageKeys.endpoint, subscription.endpoint);
+            this.#setValueInStorage(pushStorageKeys.deviceId, this.device_id);
+            if (vapidKey) {
+                this.#setValueInStorage(pushStorageKeys.vapidKey, vapidKey);
+            }
         }
 
         var req = {
             token_session: 1,
             web_token: tokenValue,
-            token_provider: "WEB"
+            token_provider: pushConstants.TOKEN_PROVIDER
         };
         if (typeof navigator !== "undefined" && navigator.language) {
             req.locale = navigator.language;
         }
 
-        setTimeout(() => {
-            this.#toRequestQueue(req);
-            if (subscription && subscription.endpoint) {
-                this.#setValueInStorage("cly_push_endpoint", subscription.endpoint);
-                if (vapidKey) {
-                    this.#setValueInStorage("cly_push_vapid_key", vapidKey);
-                }
-            }
-        }, 10000);
+        // Stamp app key, device id and the rest now rather than when the timer fires. Android builds
+        // the request string before scheduling for the same reason: a change_id or an offline mode
+        // switch inside the delay window would otherwise re-attribute this token to another user.
+        this.#prepareRequest(req);
+
+        // only the newest token matters, so a pending one is replaced rather than both being sent
+        if (this.#pushTokenTimeoutId) {
+            clearTimeout(this.#pushTokenTimeoutId);
+        }
+        this.#pushTokenTimeoutId = setTimeout(() => {
+            this.#pushTokenTimeoutId = null;
+            this.#toRequestQueue(req, true);
+        }, pushConstants.TOKEN_SESSION_DELAY);
     }
 
     /**
      *  Decode a base64-url VAPID public key into a Uint8Array, the format Push API expects.
      *  @memberof Countly._internals
      *  @param {string} base64String - base64-url encoded key
-     *  @returns {Uint8Array} decoded bytes
+     *  @returns {?Uint8Array} decoded bytes, or null if the input is not valid base64-url
      */
     #urlBase64ToUint8Array = (base64String) => {
         var padding = "=".repeat((4 - base64String.length % 4) % 4);
         var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-        var rawData = atob(base64);
+        var rawData;
+        try {
+            rawData = atob(base64);
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "urlBase64ToUint8Array, Value is not valid base64-url: " + e);
+            return null;
+        }
         var outputArray = new Uint8Array(rawData.length);
         for (var i = 0; i < rawData.length; ++i) {
             outputArray[i] = rawData.charCodeAt(i);
@@ -5430,8 +5596,9 @@ class CountlyClass {
      *  Add request to request queue
      *  @memberof Countly._internals
      *  @param {Object} request - object with request parameters
+     *  @param {Boolean} [alreadyPrepared] - true if common properties were already stamped onto the request, e.g. by a delayed sender that had to capture the identity of the moment it was created
      */
-    #toRequestQueue = (request) => {
+    #toRequestQueue = (request, alreadyPrepared) => {
         if (this.ignore_visitor) {
             this.#log(logLevelEnums.DEBUG, "User is opt_out will ignore the request: " + request);
             return;
@@ -5447,7 +5614,9 @@ class CountlyClass {
             return;
         }
 
-        this.#prepareRequest(request);
+        if (!alreadyPrepared) {
+            this.#prepareRequest(request);
+        }
 
         // Buffer requests while client hints are still resolving
         if (this.#pendingRequestBuffer !== null) {
@@ -6923,7 +7092,10 @@ class CountlyClass {
         testingGetRequests: this.#getGeneratedRequests,
         setFakeRequestHandler: (handler) => { this.#fakeRequestHandler = handler; },
         getFakeRequestHandler: () => this.#fakeRequestHandler,
-        closeContent: () => this.#closeContentFrame()
+        closeContent: () => this.#closeContentFrame(),
+        sendPushToken: this.#sendPushToken,
+        urlBase64ToUint8Array: this.#urlBase64ToUint8Array,
+        isPushSupported: this.#isPushSupported
     };
 
     /**

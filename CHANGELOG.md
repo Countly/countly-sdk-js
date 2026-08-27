@@ -1,3 +1,7 @@
+## XX.XX.XX
+
+* Added web push notification support. Give the SDK the new `push` consent and call `enable_push_notifications` once from a user gesture, passing the VAPID public key from your application settings; from then on it keeps the subscription token in sync and records notification clicks on its own.
+
 ## 26.1.3
 
 * Added support for Feedback Widgets and Content working with certain proxy configurations.
