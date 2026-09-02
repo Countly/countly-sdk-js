@@ -126,6 +126,8 @@ var pushStorageKeys = Object.freeze({
     vapidKey: "cly_push_vapid_key",
     deviceId: "cly_push_device_id",
     scope: "cly_push_scope",
+    // set by disable_push_notifications, cleared by enable_push_notifications; survives halt()
+    optOut: "cly_push_opt_out",
 });
 
 /**

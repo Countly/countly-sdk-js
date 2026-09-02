@@ -149,6 +149,8 @@ class CountlyClass {
     #clientHintsBufferTimeoutId;
     #changeIdRemoteConfigTimeoutId;
     #seenPushActionIds;
+    #pushMessageHandler;
+    #pushEnableInFlight;
     
     /**
      * Create a new Countly instance with configuration
@@ -1013,9 +1015,10 @@ class CountlyClass {
         }
         this.#seenPushActionIds = [];
         try {
-            navigator.serviceWorker.addEventListener("message", (event) => {
+            // kept so halt() can remove exactly this listener; re-init would otherwise stack them
+            this.#pushMessageHandler = (event) => {
                 var data = event && event.data;
-                if (!data) {
+                if (!data || !this.#seenPushActionIds) {
                     return;
                 }
                 if (data.type === pushMessageTypes.ACTION) {
@@ -1025,18 +1028,26 @@ class CountlyClass {
                     else {
                         this.#log(logLevelEnums.DEBUG, "initPushMessageListener, Ignoring duplicate push action [" + data.aid + "]");
                     }
-                    // acknowledged either way, so the worker stops holding on to it
-                    this.#postToPushWorker({ type: pushMessageTypes.ACK, aid: data.aid });
+                    // acknowledged either way, so the worker stops holding on to it. Reply to the
+                    // worker that sent it: a freshly registered worker does not control this page
+                    // until the next load, so navigator.serviceWorker.controller may still be null.
+                    this.#postToPushWorker({ type: pushMessageTypes.ACK, aid: data.aid }, event.source);
                 }
                 else if (data.type === pushMessageTypes.SUBSCRIPTION_CHANGE) {
                     this.#log(logLevelEnums.DEBUG, "initPushMessageListener, Push subscription changed, re-registering token");
-                    this.enable_push_notifications();
+                    // nobody asked for this registration, so the same rules as at init apply
+                    this.#autoRegisterPush();
                 }
-            });
-            // tell the worker this tab is listening so it can drain actions it queued while
-            // no tab was around (notification click that opened a brand new window)
-            this.#drainPendingPushActions();
-            navigator.serviceWorker.addEventListener("controllerchange", this.#drainPendingPushActions);
+            };
+            navigator.serviceWorker.addEventListener("message", this.#pushMessageHandler);
+            if (this.push_vapid_public_key) {
+                // tell the worker this tab is listening so it can drain actions it queued while
+                // no tab was around (notification click that opened a brand new window). Only
+                // worth saying when push is configured, otherwise the message lands on whatever
+                // worker the host application runs.
+                this.#drainPendingPushActions();
+                navigator.serviceWorker.addEventListener("controllerchange", this.#drainPendingPushActions);
+            }
         } catch (e) {
             this.#log(logLevelEnums.ERROR, "initPushMessageListener, Failed to register service worker message listener: " + e);
         }
@@ -1044,6 +1055,26 @@ class CountlyClass {
         setTimeout(() => {
             this.#autoRegisterPush();
         }, 1);
+    };
+
+    /**
+     *  Undo #initPushMessageListener. A worker keeps posting to the page after halt(); nothing here
+     *  must act on those messages, and the next init must not end up with two listeners.
+     *  @memberof Countly._internals
+     */
+    #removePushMessageListener = () => {
+        if (!this.#isPushSupported(false)) {
+            return;
+        }
+        try {
+            if (this.#pushMessageHandler) {
+                navigator.serviceWorker.removeEventListener("message", this.#pushMessageHandler);
+                this.#pushMessageHandler = null;
+            }
+            navigator.serviceWorker.removeEventListener("controllerchange", this.#drainPendingPushActions);
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "removePushMessageListener, Failed to remove service worker message listener: " + e);
+        }
     };
 
     /**
@@ -1082,6 +1113,11 @@ class CountlyClass {
         if (!this.push_auto_register || !this.push_vapid_public_key) {
             return;
         }
+        if (this.#getValueFromStorage(pushStorageKeys.optOut)) {
+            // permission alone is not consent to re-subscribe someone who asked to be unsubscribed
+            this.#log(logLevelEnums.DEBUG, "autoRegisterPush, Push was disabled explicitly, waiting for an explicit enable_push_notifications call");
+            return;
+        }
         if (!this.#isPushSupported(true) || Notification.permission !== "granted") {
             this.#log(logLevelEnums.DEBUG, "autoRegisterPush, Notification permission has not been granted yet, waiting for an explicit enable_push_notifications call");
             return;
@@ -1101,13 +1137,15 @@ class CountlyClass {
     };
 
     /**
-     *  Send a message to the service worker controlling this page, if there is one.
+     *  Send a message to a service worker: the given one, else the one controlling this page.
      *  @memberof Countly._internals
      *  @param {Object} message - message to post
+     *  @param {?ServiceWorker} [worker] - the worker to address, typically the `source` of a message being replied to
      */
-    #postToPushWorker = (message) => {
-        if (navigator.serviceWorker.controller) {
-            navigator.serviceWorker.controller.postMessage(message);
+    #postToPushWorker = (message, worker) => {
+        var target = (worker && typeof worker.postMessage === "function") ? worker : navigator.serviceWorker.controller;
+        if (target) {
+            target.postMessage(message);
         }
     };
 
@@ -1220,6 +1258,7 @@ class CountlyClass {
             this.#lsSupport = false;
         }
 
+        this.#removePushMessageListener();
         // This has to happen while app_key is still set, hence before the reset block further down.
         this.#clearStoredPushSubscription();
 
@@ -1263,6 +1302,7 @@ class CountlyClass {
         this.push_service_worker_registration = undefined;
         this.push_auto_register = undefined;
         this.#seenPushActionIds = null;
+        this.#pushEnableInFlight = null;
         this.#SCLimitKeyLength = undefined;
         this.#SCLimitValueSize  = undefined;
         this.#SCLimitSegmentationValues = undefined;
@@ -1495,9 +1535,11 @@ class CountlyClass {
                     this.#updateConsent();
                 }
                 // leaving the browser subscribed after push consent is withdrawn would keep the
-                // server able to reach this user, so drop the subscription and blacklist the token
-                if (enforceConsentUpdate && wasOptedIn && feature === featureEnums.PUSH) {
-                    this.disable_push_notifications();
+                // server able to reach this user, so drop the subscription and blacklist the token.
+                // Not an opt-out though: consent given again is the user's answer, and the silent
+                // registration may then pick the subscription back up.
+                if (enforceConsentUpdate && wasOptedIn && feature === featureEnums.PUSH && this.#isPushSupported(false)) {
+                    this.#unsubscribePush({});
                 }
             }
         }
@@ -1743,8 +1785,22 @@ class CountlyClass {
             // start new session for new ID TODO: check this when no session tracking is enabled
             this.begin_session(!this.#autoExtend, true);
         }
-        // the subscription belongs to the browser, not the user, so hand it to the new device ID too
-        this.#autoRegisterPush();
+        if (merge) {
+            // same user: the server moves the push token to the new id when it handles
+            // /i/device_id, so there is nothing to send. Only point the local record at the id the
+            // token now lives under, otherwise the next load would re-register it needlessly.
+            if (this.#getValueFromStorage(pushStorageKeys.endpoint)) {
+                this.#setValueInStorage(pushStorageKeys.deviceId, this.device_id);
+            }
+        }
+        else {
+            // new user: the browser subscription is not theirs yet. Drop the previous user's push
+            // record and give them the same silent registration a fresh visitor gets, which waits
+            // for their consent when consent is required. An explicit opt-out is the browser's
+            // person saying no, so it stays.
+            this.#clearStoredPushSubscription();
+            this.#autoRegisterPush();
+        }
         // if init time remote config was enabled with a callback function, remove currently stored remote configs and fetch remote config again
         if (this.remote_config) {
             this.#remoteConfigs = {};
@@ -1839,11 +1895,19 @@ class CountlyClass {
         }
         var swPath = opts.push_service_worker_path || this.push_service_worker_path;
         var swScope = opts.push_service_worker_scope || this.push_service_worker_scope;
+        // an explicit call is the one thing that ends an earlier disable_push_notifications
+        this.#removeValueFromStorage(pushStorageKeys.optOut);
+        if (this.#pushEnableInFlight) {
+            // a double click, or the silent registration racing an explicit call: two runs would
+            // each find no subscription yet and create one apiece
+            this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Already in progress, joining that call");
+            return this.#pushEnableInFlight;
+        }
 
         // Ask before touching anything asynchronous. Browsers that require transient user
         // activation for a notification prompt would refuse it once the service worker
         // registration has resolved, which would make the first opt-in impossible.
-        return this.#requestNotificationPermission().then((permission) => {
+        this.#pushEnableInFlight = this.#requestNotificationPermission().then((permission) => {
             this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Notification permission: [" + permission + "]");
             if (permission !== "granted") {
                 return { subscribed: false, reason: permission || "denied" };
@@ -1855,9 +1919,18 @@ class CountlyClass {
                 return this.#subscribeAndRegisterToken(registration, vapidKey, applicationServerKey);
             });
         }).catch((err) => {
+            var message = (err && err.message) ? err.message : String(err);
+            if (message === "service_worker_redundant" || message === "service_worker_missing") {
+                this.#log(logLevelEnums.ERROR, "enable_push_notifications, The service worker never became active: [" + message + "]");
+                return { subscribed: false, reason: message };
+            }
             this.#log(logLevelEnums.ERROR, "enable_push_notifications, Failed to enable push notifications: " + err);
-            return { subscribed: false, reason: "error", error: (err && err.message) ? err.message : String(err) };
+            return { subscribed: false, reason: "error", error: message };
+        }).then((result) => {
+            this.#pushEnableInFlight = null;
+            return result;
         });
+        return this.#pushEnableInFlight;
     };
 
     /**
@@ -1890,8 +1963,42 @@ class CountlyClass {
             }
             return navigator.serviceWorker.register(swPath, { scope: swScope }).then((registration) => {
                 this.#log(logLevelEnums.DEBUG, "resolvePushRegistration, Service worker registered at scope: [" + registration.scope + "]");
-                return navigator.serviceWorker.ready.then(() => registration);
+                return this.#waitForPushWorker(registration);
             });
+        });
+    }
+
+    /**
+     *  Wait until the registration's worker is active, so its push manager can be used.
+     *  navigator.serviceWorker.ready is not usable for this: it only resolves once a registration
+     *  whose scope covers the current page is active, so a worker registered under a narrower
+     *  scope would leave the caller pending forever, with no error.
+     *  @memberof Countly._internals
+     *  @param {ServiceWorkerRegistration} registration - the registration just created or updated
+     *  @returns {Promise<ServiceWorkerRegistration>} the same registration once active; rejects with "service_worker_redundant" if the worker fails to install or activate
+     */
+    #waitForPushWorker = (registration) => {
+        if (registration.active) {
+            return Promise.resolve(registration);
+        }
+        var worker = registration.installing || registration.waiting;
+        if (!worker) {
+            return Promise.reject(new Error("service_worker_missing"));
+        }
+        return new Promise((resolve, reject) => {
+            var onStateChange = () => {
+                if (worker.state === "activated") {
+                    worker.removeEventListener("statechange", onStateChange);
+                    resolve(registration);
+                }
+                else if (worker.state === "redundant") {
+                    worker.removeEventListener("statechange", onStateChange);
+                    reject(new Error("service_worker_redundant"));
+                }
+            };
+            worker.addEventListener("statechange", onStateChange);
+            // it may already have moved on between register() resolving and this call
+            onStateChange();
         });
     }
 
@@ -1961,11 +2068,25 @@ class CountlyClass {
     */
     disable_push_notifications = (opts) => {
         this.#log(logLevelEnums.INFO, "disable_push_notifications, Disabling push notifications");
-        opts = opts || {};
         if (!this.#isPushSupported(false)) {
             this.#log(logLevelEnums.WARNING, "disable_push_notifications, Web push is not supported in this environment");
             return Promise.resolve({ unsubscribed: false, reason: "unsupported" });
         }
+        // Remembered across reloads: notification permission stays granted after an unsubscribe,
+        // so without this the silent registration at the next init would simply subscribe again.
+        // Only an explicit enable_push_notifications lifts it.
+        this.#setValueInStorage(pushStorageKeys.optOut, 1);
+        return this.#unsubscribePush(opts || {});
+    };
+
+    /**
+     *  Drop the browser subscription and blacklist the token on the server. Shared by the explicit
+     *  disable and by push consent withdrawal, which must not count as an opt-out.
+     *  @memberof Countly._internals
+     *  @param {Object} opts - per-call override for push_service_worker_scope
+     *  @returns {Promise<Object>} resolves to { unsubscribed: true } when complete
+     */
+    #unsubscribePush = (opts) => {
         // the scope that was actually subscribed under, so a per-call override at enable time is
         // still found here instead of looking only where the defaults would have put it
         var swScope = opts.push_service_worker_scope || this.#getValueFromStorage(pushStorageKeys.scope) || this.push_service_worker_scope;
@@ -2012,6 +2133,9 @@ class CountlyClass {
                 p: "w"
             }
         });
+        // a click usually lands on a page that is about to navigate away, so like the NPS and
+        // survey events on the other SDKs this one does not wait for the heartbeat
+        this.#sendEventsForced();
     };
 
     /**

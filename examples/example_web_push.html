@@ -50,6 +50,11 @@
                     push_service_worker_path: Countly.push_service_worker_path,
                     push_service_worker_scope: Countly.push_service_worker_scope
                 });
+                // The push methods exist on the global Countly object only once init has run, and
+                // this script loads asynchronously: keep the buttons disabled until then so an
+                // early click does not hit an undefined function.
+                document.getElementById("enable-push").disabled = false;
+                document.getElementById("disable-push").disabled = false;
             };
             var s = document.getElementsByTagName('script')[0];
             s.parentNode.insertBefore(cly, s);
@@ -76,8 +81,8 @@
     <center>
         <img src="./images/team_countly.jpg" id="wallpaper" />
         <br />
-        <input type="button" onclick="enablePush()" value="Enable Push Notifications">
-        <input type="button" onclick="disablePush()" value="Disable Push Notifications">
+        <input type="button" id="enable-push" onclick="enablePush()" value="Enable Push Notifications" disabled>
+        <input type="button" id="disable-push" onclick="disablePush()" value="Disable Push Notifications" disabled>
         <br /><br />
         <p style="max-width: 640px; margin: 0 auto; text-align: left;">
             <strong>What the SDK does on its own:</strong> once
@@ -102,7 +107,10 @@
             <code>web_token</code> JSON. To simulate a click-through, open
             DevTools → Application → Service Workers and use the "Push" button
             to inject a payload such as
-            <code>{"title":"Hi","message":"Test","c":{"i":"abc123"}}</code>.
+            <code>{"title":"Hi","message":"Test","c":{"i":"507f1f77bcf86cd799439011"}}</code>.
+            The <code>i</code> value must be a 24-character message id: the server drops
+            <code>[CLY]_push_action</code> events whose id has any other length.
+            Pressing "Disable" is remembered across reloads; only "Enable" subscribes again.
         </p>
         <p><a href='https://countly.com/'>Countly</a></p>
     </center>

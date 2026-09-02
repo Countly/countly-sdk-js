@@ -5,7 +5,8 @@
  * Handles the W3C Push API `push` event by displaying a notification, the
  * `notificationclick` event by opening the target URL and asking a page to record
  * the [CLY]_push_action event, and `pushsubscriptionchange` so a browser-initiated
- * subscription rotation gets re-registered with the server.
+ * subscription rotation gets re-registered with the server. On `install` and
+ * `activate` it takes control of the open pages right away (see below).
  *
  * Payload shape (mirrors iOS/Android — see CountlyNotificationService.m and
  * ModulePush.java):
@@ -81,6 +82,19 @@ function clyRemember(actionMessage) {
         clyPendingActions.shift();
     }
 }
+
+// Take over as soon as possible. Without this the page that registered the worker is not
+// controlled until it reloads, so its ready/ack messages to the worker would go nowhere and an
+// action it recorded would be redelivered — and counted again — after that reload. It also lets a
+// new version of this file replace the old one without waiting for every tab of the site to close.
+// Developers merging these handlers into their own worker should keep this behaviour in mind.
+self.addEventListener("install", function (event) {
+    event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener("activate", function (event) {
+    event.waitUntil(self.clients.claim());
+});
 
 self.addEventListener("push", function (event) {
     var payload = {};
@@ -199,10 +213,21 @@ self.addEventListener("pushsubscriptionchange", function (event) {
     // server key and let the pages know so they queue a fresh token_session.
     var oldSubscription = event.oldSubscription || {};
     var applicationServerKey = (oldSubscription.options && oldSubscription.options.applicationServerKey) || null;
-    var resubscribed = event.newSubscription ? Promise.resolve(event.newSubscription) : self.registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: applicationServerKey
-    });
+    var resubscribed;
+    if (event.newSubscription) {
+        resubscribed = Promise.resolve(event.newSubscription);
+    }
+    else if (applicationServerKey) {
+        resubscribed = self.registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: applicationServerKey
+        });
+    }
+    else {
+        // Chrome fires this with neither subscription attached. A subscribe() without the key is
+        // a guaranteed rejection, so leave it to the pages, which know the configured key.
+        resubscribed = Promise.resolve(null);
+    }
 
     event.waitUntil(
         resubscribed.catch(function () {

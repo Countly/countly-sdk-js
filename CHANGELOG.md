@@ -1,6 +1,6 @@
 ## XX.XX.XX
 
-* Added web push notification support. Give the SDK the new `push` consent and call `enable_push_notifications` once from a user gesture, passing the VAPID public key from your application settings; from then on it keeps the subscription token in sync and records notification clicks on its own.
+* Added web push notification support. Give the SDK the new `push` consent and call `enable_push_notifications` once from a user gesture, passing the VAPID public key from your application settings; from then on it keeps the subscription token in sync and records notification clicks on its own. `disable_push_notifications` is remembered across page loads, so the automatic registration never undoes it; only another explicit `enable_push_notifications` subscribes again.
 
 ## 26.1.3
 
