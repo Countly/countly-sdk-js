@@ -109,24 +109,38 @@ var healthCheckCounterEnum = Object.freeze({
 });
 
 /**
- * postMessage `type` values exchanged between the page and the Countly service worker
+ * postMessage `type` values exchanged between the page and the Countly service worker.
+ * Mirrored by hand as the CLY_* constants in countly_sw.js (the worker cannot import this file);
+ * cypress/e2e/web_push_sw.cy.js fails if the two drift. Treat these as a wire contract: a
+ * customer's cached worker may be a different version than the page SDK, so never rename them.
  */
 var pushMessageTypes = Object.freeze({
     ACTION: "countly_push_action",
     SUBSCRIPTION_CHANGE: "countly_push_subscription_change",
     READY: "countly_push_ready",
     ACK: "countly_push_ack",
+    RECEIVED: "countly_push_received",
+    CLOSED: "countly_push_closed",
+    LOG: "countly_push_log",
 });
 
 /**
- * Local storage keys holding the last registered push subscription
+ * Query parameters the SDK appends to the service worker URL so the worker knows the page's
+ * configuration without a round trip. Mirrored by hand in countly_sw.js.
+ */
+var pushWorkerParams = Object.freeze({
+    debug: "cly_debug",
+});
+
+/**
+ * Local storage keys holding the last registered push subscription, and the explicit opt-out
+ * (set by disable_push_notifications, cleared by enable_push_notifications, kept across halt())
  */
 var pushStorageKeys = Object.freeze({
     endpoint: "cly_push_endpoint",
     vapidKey: "cly_push_vapid_key",
     deviceId: "cly_push_device_id",
     scope: "cly_push_scope",
-    // set by disable_push_notifications, cleared by enable_push_notifications; survives halt()
     optOut: "cly_push_opt_out",
 });
 
@@ -171,4 +185,4 @@ var SDK_NAME = "javascript_native_web";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, pushConstants, pushMessageTypes, pushStorageKeys, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };

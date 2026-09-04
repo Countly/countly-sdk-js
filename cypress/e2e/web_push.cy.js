@@ -284,7 +284,8 @@ describe("Web push tests", () => {
             enablePush().then((result) => {
                 expect(result.subscribed).to.equal(true);
                 expect(push.subscribeCalls).to.equal(1);
-                expect(push.registerCalls[0]).to.deep.equal({ path: "/countly_sw.js", scope: "/" });
+                // initMain turns debug on, which the SDK tells the worker through its URL
+                expect(push.registerCalls[0]).to.deep.equal({ path: "/countly_sw.js?cly_debug=1", scope: "/" });
                 pushStorage("cly_push_endpoint").should("equal", result.endpoint);
                 pushStorage("cly_push_vapid_key").should("equal", VAPID_KEY);
                 tokenRequests((requests) => {
@@ -831,6 +832,119 @@ describe("Web push tests", () => {
             cy.wait(hp.sWait).then(() => {
                 var ready = push.controllerMessages.filter((message) => message.type === "countly_push_ready");
                 expect(ready.length).to.equal(1);
+            });
+        });
+    });
+
+    // ---- debugging, listener, allowed hosts ------------------------------------------------
+
+    it("Registers the worker with the debug flag in its URL", () => {
+        hp.haltAndClearStorage(() => {
+            // initMain sets debug: true
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => {
+                // a previous visit registered the worker under the plain URL: that is still our worker
+                push.registeredScopeWorker = push.registration;
+            });
+            enablePush().then((result) => {
+                expect(result.subscribed).to.equal(true);
+                expect(push.registerCalls[0].path).to.equal("/countly_sw.js?cly_debug=1");
+            });
+        });
+    });
+
+    it("Registers the plain worker URL when debug is off", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, debug: false });
+            enablePush().then((result) => {
+                expect(result.subscribed).to.equal(true);
+                expect(push.registerCalls[0].path).to.equal("/countly_sw.js");
+            });
+        });
+    });
+
+    it("Tells the worker to log when debug is on", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.wait(hp.sWait).then(() => {
+                var ready = push.controllerMessages.filter((m) => m.type === "countly_push_ready");
+                expect(ready.length).to.equal(1);
+                expect(ready[0].debug).to.equal(true);
+            });
+        });
+    });
+
+    it("Prints log lines forwarded by the worker", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => {
+                var printed = [];
+                var saved = {};
+                ["log", "debug", "warn", "error", "info"].forEach((k) => {
+                    saved[k] = console[k];
+                    console[k] = function () {
+                        printed.push(Array.prototype.join.call(arguments, " "));
+                    };
+                });
+                try {
+                    push.emit({ type: "countly_push_log", level: "debug", message: "push received " + MESSAGE_ID });
+                    push.emit({ type: "countly_push_log", level: "error", message: "showNotification failed" });
+                }
+                finally {
+                    Object.keys(saved).forEach((k) => {
+                        console[k] = saved[k];
+                    });
+                }
+                expect(printed.some((l) => l.indexOf("[SW]") !== -1 && l.indexOf("push received") !== -1)).to.equal(true);
+                expect(printed.some((l) => l.indexOf("[SW]") !== -1 && l.indexOf("showNotification failed") !== -1)).to.equal(true);
+            });
+        });
+    });
+
+    it("Informs the push listener when a notification is received, clicked and closed", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            var events = [];
+            cy.then(() => {
+                Countly.set_push_notification_listener((e) => events.push(e));
+                push.emit({ type: "countly_push_received", messageId: MESSAGE_ID, title: "Hi", message: "Body", url: "https://x/open", buttons: [{ t: "One", l: "https://x/1" }], payload: { c: { i: MESSAGE_ID }, custom: 1 } });
+                push.emit({ type: "countly_push_action", messageId: MESSAGE_ID, buttonIndex: 1, buttonTitle: "One", url: "https://x/1", title: "Hi", message: "Body", payload: { custom: 1 }, aid: "a-1" });
+                // redelivered by the worker: recorded once, reported once
+                push.emit({ type: "countly_push_action", messageId: MESSAGE_ID, buttonIndex: 1, buttonTitle: "One", url: "https://x/1", aid: "a-1" });
+                push.emit({ type: "countly_push_closed", messageId: MESSAGE_ID, title: "Hi" });
+            });
+            cy.then(() => {
+                expect(events.map((e) => e.type)).to.deep.equal(["received", "clicked", "closed"]);
+                expect(events[0]).to.include({ messageId: MESSAGE_ID, title: "Hi", message: "Body", url: "https://x/open" });
+                expect(events[0].payload.custom).to.equal(1);
+                expect(events[1]).to.include({ messageId: MESSAGE_ID, buttonIndex: 1, buttonTitle: "One", url: "https://x/1" });
+                expect(events[2]).to.include({ messageId: MESSAGE_ID, title: "Hi" });
+            });
+            recordedPushActions((actions) => {
+                expect(actions.length).to.equal(1);
+            });
+        });
+    });
+
+    it("Takes the push listener from init and keeps recording when it throws", () => {
+        hp.haltAndClearStorage(() => {
+            var calls = 0;
+            initMain({
+                push_vapid_public_key: VAPID_KEY,
+                push_notification_listener: () => {
+                    calls++;
+                    throw new Error("listener bug");
+                }
+            });
+            cy.then(() => {
+                push.emit({ type: "countly_push_received", messageId: MESSAGE_ID, title: "Hi" });
+                push.emit({ type: "countly_push_action", messageId: MESSAGE_ID, buttonIndex: 0, aid: "b-1" });
+            });
+            cy.then(() => {
+                expect(calls).to.equal(2);
+            });
+            recordedPushActions((actions) => {
+                expect(actions.length).to.equal(1);
             });
         });
     });

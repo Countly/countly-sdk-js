@@ -1,6 +1,9 @@
 ## XX.XX.XX
 
-* Added web push notification support. Give the SDK the new `push` consent and call `enable_push_notifications` once from a user gesture, passing the VAPID public key from your application settings; from then on it keeps the subscription token in sync and records notification clicks on its own. `disable_push_notifications` is remembered across page loads, so the automatic registration never undoes it; only another explicit `enable_push_notifications` subscribes again.
+* Added web push notification support. Give the SDK the new `push` consent and call `enable_push_notifications` once from a user gesture, passing the VAPID public key from your application settings; from then on it keeps the subscription token in sync and records notification clicks on its own. `disable_push_notifications` is remembered across page loads, so the automatic registration never undoes it; only another explicit `enable_push_notifications` subscribes again. Sites that already run a service worker import `countly_sw.js` into it (see `examples/example_custom_sw.js`) and pass their registration as `push_service_worker_registration`; the imported handlers only act on Countly's own pushes and notifications, and `self.COUNTLY_PUSH_LIFECYCLE = false` keeps the host worker's install/activate behaviour.
+* Added `push_notification_listener` (also `set_push_notification_listener`) to be told when a notification is received, clicked (which button, its title and URL) or closed, together with the message's custom payload. "closed" is best effort: on Windows the X on the toast popup only moves it to the Action Center, and a removal from the Action Center reaches the browser late or not at all; Firefox reports "closed" right after every "clicked" and shows no action buttons.
+* A notification click only opens http(s) URLs; any other scheme is refused and logged, while the click is still recorded.
+* With `debug: true` the service worker logs every push, click and close too, and forwards the lines to the page as `[SW]` entries. A host worker turns this on with `self.COUNTLY_PUSH_DEBUG = true`.
 
 ## 26.1.3
 
