@@ -2,6 +2,7 @@
 /* eslint-disable require-jsdoc */
 var Countly = require("../../Countly.js");
 var hp = require("../support/helper.js");
+const { SDK_VERSION } = require("../../modules/Constants.js");
 
 // An uncompressed P-256 public key is 65 bytes starting with 0x04. Two distinct keys let us
 // exercise the "operator rotated the VAPID keypair" path.
@@ -945,6 +946,194 @@ describe("Web push tests", () => {
             });
             recordedPushActions((actions) => {
                 expect(actions.length).to.equal(1);
+            });
+        });
+    });
+
+    // ---- the worker reporting clicks itself, and giving up on a browser that never answers -----
+
+    function workerMessages(type) {
+        return push.controllerMessages.filter((m) => m.type === type);
+    }
+
+    it("Tells the worker how to report a click itself in the ready handshake", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, app_version: "1.2.3" });
+            cy.wait(hp.sWait).then(() => {
+                var ready = workerMessages("countly_push_ready");
+                expect(ready.length).to.equal(1);
+                expect(ready[0].config).to.deep.equal({
+                    url: "https://your.domain.count.ly/i",
+                    app_key: hp.appKey,
+                    device_id: "web push tester",
+                    t: 0,
+                    sdk_name: "javascript_native_web",
+                    sdk_version: SDK_VERSION,
+                    av: "1.2.3"
+                });
+            });
+        });
+    });
+
+    it("Passes the salt to the worker so its reports carry the same checksum", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, salt: "pepper" });
+            cy.wait(hp.sWait).then(() => {
+                expect(workerMessages("countly_push_ready")[0].config.salt).to.equal("pepper");
+            });
+        });
+    });
+
+    it("Withholds the server details until push consent is given", () => {
+        hp.haltAndClearStorage(() => {
+            push.grantPermission();
+            initMain({ require_consent: true, push_vapid_public_key: VAPID_KEY });
+            cy.wait(hp.sWait).then(() => {
+                var ready = workerMessages("countly_push_ready");
+                expect(ready.length).to.equal(1);
+                expect(ready[0].config).to.equal(null);
+                Countly.add_consent(["push"]);
+            });
+            cy.wait(hp.sWait).then(() => {
+                // consent let the silent registration run, and the worker is told along with it
+                var configs = workerMessages("countly_push_config");
+                expect(configs.length).to.be.greaterThan(0);
+                expect(configs[configs.length - 1].config.device_id).to.equal("web push tester");
+            });
+        });
+    });
+
+    it("Tells the worker to stop reporting when push consent is withdrawn", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ require_consent: true, push_vapid_public_key: VAPID_KEY });
+            cy.then(() => Countly.add_consent(["push"]));
+            enablePush().then((result) => {
+                expect(result.subscribed).to.equal(true);
+                push.controllerMessages.length = 0;
+                Countly.remove_consent(["push"]);
+            });
+            cy.wait(hp.sWait).then(() => {
+                var configs = workerMessages("countly_push_config");
+                expect(configs.length).to.be.greaterThan(0);
+                expect(configs[configs.length - 1].config).to.equal(null);
+            });
+        });
+    });
+
+    it("Tells the worker the new device id after a change", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            enablePush();
+            cy.then(() => {
+                push.controllerMessages.length = 0;
+                Countly.change_id("someone else", true);
+            });
+            cy.wait(hp.sWait).then(() => {
+                var configs = workerMessages("countly_push_config");
+                expect(configs.length).to.be.greaterThan(0);
+                expect(configs[configs.length - 1].config.device_id).to.equal("someone else");
+            });
+        });
+    });
+
+    it("Only informs the listener about a click the worker already recorded", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            var events = [];
+            var acks = [];
+            cy.then(() => {
+                Countly.set_push_notification_listener((e) => events.push(e));
+                push.emit({ type: "countly_push_action", messageId: MESSAGE_ID, buttonIndex: 2, url: "https://docs.example/", aid: "direct-1", recorded: true }, { postMessage: (m) => acks.push(m) });
+            });
+            cy.then(() => {
+                expect(events.map((e) => e.type)).to.deep.equal(["clicked"]);
+                expect(events[0].buttonIndex).to.equal(2);
+                expect(acks).to.deep.equal([{ type: "countly_push_ack", aid: "direct-1" }]);
+            });
+            recordedPushActions((actions) => {
+                expect(actions.length).to.equal(0);
+            });
+        });
+    });
+
+    it("Reaches the supplied registration's worker when no worker controls the page yet", () => {
+        hp.haltAndClearStorage(() => {
+            var posted = [];
+            cy.then(() => {
+                push.container.controller = null;
+                push.registration.active.postMessage = (m) => posted.push(m);
+                initMain({ push_vapid_public_key: VAPID_KEY, push_service_worker_registration: push.registration });
+            });
+            cy.wait(hp.sWait).then(() => {
+                expect(posted.filter((m) => m.type === "countly_push_ready").length).to.equal(1);
+            });
+        });
+    });
+
+    it("Gives up with a reason when the browser never finishes subscribing, and lets a later call retry", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, push_subscribe_timeout: 200 });
+            var working = null;
+            cy.then(() => {
+                working = push.pushManager.subscribe;
+                // iOS 18.7 left pushManager.subscribe() pending forever
+                push.pushManager.subscribe = () => new Promise(() => { });
+            });
+            enablePush().then((result) => {
+                expect(result).to.deep.equal({ subscribed: false, reason: "timeout" });
+                push.pushManager.subscribe = working;
+            });
+            enablePush().then((result) => {
+                // the in-flight guard was released, so this is a fresh attempt rather than the dead promise
+                expect(result.subscribed).to.equal(true);
+                expect(push.subscribeCalls).to.equal(1);
+            });
+        });
+    });
+
+    it("Says so when the silent registration gives up", () => {
+        hp.haltAndClearStorage(() => {
+            var printed = [];
+            var saved = {};
+            cy.then(() => {
+                ["log", "debug", "warn", "error", "info"].forEach((k) => {
+                    saved[k] = console[k];
+                    console[k] = function () {
+                        printed.push(Array.prototype.join.call(arguments, " "));
+                    };
+                });
+                push.grantPermission();
+                push.pushManager.subscribe = () => Promise.reject(new Error("push service unreachable"));
+                initMain({ push_vapid_public_key: VAPID_KEY });
+            });
+            cy.wait(hp.sWait).then(() => {
+                Object.keys(saved).forEach((k) => {
+                    console[k] = saved[k];
+                });
+                expect(printed.some((l) => l.indexOf("[WARNING]") === 0 && l.indexOf("autoRegisterPush") !== -1 && l.indexOf("push service unreachable") !== -1)).to.equal(true);
+            });
+        });
+    });
+
+    it("Says which endpoint the silent registration ended up with", () => {
+        hp.haltAndClearStorage(() => {
+            var printed = [];
+            var saved = {};
+            cy.then(() => {
+                ["log", "debug", "warn", "error", "info"].forEach((k) => {
+                    saved[k] = console[k];
+                    console[k] = function () {
+                        printed.push(Array.prototype.join.call(arguments, " "));
+                    };
+                });
+                push.grantPermission();
+                initMain({ push_vapid_public_key: VAPID_KEY });
+            });
+            cy.wait(hp.sWait).then(() => {
+                Object.keys(saved).forEach((k) => {
+                    console[k] = saved[k];
+                });
+                expect(printed.some((l) => l.indexOf("autoRegisterPush") !== -1 && l.indexOf("https://push.example/endpoint1") !== -1)).to.equal(true);
             });
         });
     });

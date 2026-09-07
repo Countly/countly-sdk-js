@@ -621,6 +621,7 @@ class CountlyClass {
         this.push_service_worker_scope = getConfig("push_service_worker_scope", ob, "/");
         this.push_service_worker_registration = getConfig("push_service_worker_registration", ob, null);
         this.push_auto_register = getConfig("push_auto_register", ob, true);
+        this.push_subscribe_timeout = getConfig("push_subscribe_timeout", ob, pushConstants.SUBSCRIBE_TIMEOUT_MS);
         var pushListener = getConfig("push_notification_listener", ob, null);
         this.#pushNotificationListener = typeof pushListener === "function" ? pushListener : null;
         this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
@@ -1030,7 +1031,12 @@ class CountlyClass {
                 }
                 if (data.type === pushMessageTypes.ACTION) {
                     if (this.#isNewPushAction(data.aid)) {
-                        this.record_push_action(data.messageId, data.buttonIndex);
+                        if (data.recorded === true) {
+                            this.#log(logLevelEnums.DEBUG, "initPushMessageListener, The worker already recorded push action [" + data.aid + "], only informing the listener");
+                        }
+                        else {
+                            this.record_push_action(data.messageId, data.buttonIndex);
+                        }
                         this.#notifyPushListener("clicked", data);
                     }
                     else {
@@ -1136,7 +1142,14 @@ class CountlyClass {
         if (!this.check_consent(featureEnums.PUSH)) {
             return;
         }
-        this.enable_push_notifications();
+        this.enable_push_notifications().then((result) => {
+            if (result && result.subscribed) {
+                this.#log(logLevelEnums.DEBUG, "autoRegisterPush, Silent registration done, endpoint: [" + result.endpoint + "]");
+            }
+            else {
+                this.#log(logLevelEnums.WARNING, "autoRegisterPush, Silent registration did not subscribe, reason: [" + (result && result.reason) + "]" + (result && result.error ? " " + result.error : ""));
+            }
+        });
     };
 
     /**
@@ -1151,6 +1164,7 @@ class CountlyClass {
      *  @param {Boolean} merge - whether the old and new IDs were merged on the server
      */
     #handlePushOnDeviceIdChange = (merge) => {
+        this.#syncPushWorkerConfig();
         if (merge) {
             if (this.#getValueFromStorage(pushStorageKeys.endpoint)) {
                 this.#setValueInStorage(pushStorageKeys.deviceId, this.device_id);
@@ -1164,22 +1178,63 @@ class CountlyClass {
     /**
      *  Ask the service worker for push actions it recorded while no tab was listening, and tell it
      *  whether this page wants its debug log lines (the only way a host worker that imported
-     *  countly_sw.js, which this SDK did not register, learns that).
+     *  countly_sw.js, which this SDK did not register, learns that), and what it needs to record a
+     *  click itself while no page is open.
      *  @memberof Countly._internals
      */
     #drainPendingPushActions = () => {
-        this.#postToPushWorker({ type: pushMessageTypes.READY, debug: this.debug === true });
+        this.#postToPushWorker({ type: pushMessageTypes.READY, debug: this.debug === true, config: this.#pushReportingConfig() });
     };
 
     /**
-     *  Send a message to a service worker: the given one, else the one controlling this page.
+     *  What the service worker needs to record a click itself when no page is open: the fields of
+     *  the request this page would have sent, so the server cannot tell the two apart. Null while
+     *  this page must not record push actions either (no push consent, visitor opted out, tracking
+     *  off), in which case the worker keeps such clicks for a page to decide on.
+     *  @memberof Countly._internals
+     *  @returns {?Object} url, app_key, device_id, t, sdk_name, sdk_version, av and salt, or null
+     */
+    #pushReportingConfig = () => {
+        if (this.ignore_visitor || !this.#SCTrackingAll || !this.check_consent(featureEnums.PUSH) || !this.app_key || !this.device_id) {
+            return null;
+        }
+        var config = {
+            url: this.url + this.#apiPath,
+            app_key: this.app_key,
+            device_id: this.device_id,
+            t: this.#deviceIdType,
+            sdk_name: this.#sdkName,
+            sdk_version: this.#sdkVersion,
+            av: this.app_version
+        };
+        if (this.salt) {
+            config.salt = this.salt;
+        }
+        return config;
+    };
+
+    /**
+     *  Hand the worker the current server details, or withdraw them: called whenever a token is
+     *  registered or blacklisted, when the device ID changes and when an existing subscription is
+     *  found good, so the worker records a click the way this page would have at that moment.
+     *  @memberof Countly._internals
+     */
+    #syncPushWorkerConfig = () => {
+        this.#postToPushWorker({ type: pushMessageTypes.CONFIG, config: this.#pushReportingConfig() });
+    };
+
+    /**
+     *  Send a message to a service worker: the given one, else the one controlling this page, else
+     *  the active worker of a registration the application supplied (a host worker that has not
+     *  claimed this page yet).
      *  @memberof Countly._internals
      *  @param {Object} message - message to post
      *  @param {?ServiceWorker} [worker] - the worker to address, typically the `source` of a message being replied to
      */
     #postToPushWorker = (message, worker) => {
-        var target = (worker && typeof worker.postMessage === "function") ? worker : navigator.serviceWorker.controller;
-        if (target) {
+        var supplied = this.push_service_worker_registration && this.push_service_worker_registration.active;
+        var target = (worker && typeof worker.postMessage === "function") ? worker : (navigator.serviceWorker.controller || supplied);
+        if (target && typeof target.postMessage === "function") {
             target.postMessage(message);
         }
     };
@@ -1336,6 +1391,7 @@ class CountlyClass {
         this.push_service_worker_scope = undefined;
         this.push_service_worker_registration = undefined;
         this.push_auto_register = undefined;
+        this.push_subscribe_timeout = undefined;
         this.#pushNotificationListener = null;
         this.#seenPushActionIds = null;
         this.#pushEnableInFlight = null;
@@ -1890,8 +1946,11 @@ class CountlyClass {
     * exists the cached endpoint is reused and no new token_session is sent. Lifts an earlier
     * disable_push_notifications. Concurrent calls (a double click, or the silent registration
     * racing an explicit call) share one run, so only one subscription is ever created.
+    * Gives up on an attempt after `push_subscribe_timeout` milliseconds (default 30 s) when the
+    * browser never finishes creating the subscription, as iOS 18.7 was seen doing; the next call
+    * then starts afresh instead of joining the stuck one.
     * @param {Object} [opts] - per-call overrides for push_vapid_public_key / push_service_worker_path / push_service_worker_scope / push_service_worker_registration
-    * @returns {Promise<Object>} resolves to { subscribed: true, endpoint } on success, or { subscribed: false, reason } otherwise
+    * @returns {Promise<Object>} resolves to { subscribed: true, endpoint } on success, or { subscribed: false, reason } otherwise ("timeout" when the browser did not answer in time)
     */
     enable_push_notifications = (opts) => {
         this.#log(logLevelEnums.INFO, "enable_push_notifications, Enabling push notifications");
@@ -1934,7 +1993,7 @@ class CountlyClass {
                 if (!registration) {
                     return { subscribed: false, reason: "service_worker_conflict" };
                 }
-                return this.#subscribeAndRegisterToken(registration, vapidKey, applicationServerKey);
+                return this.#withPushTimeout(this.#subscribeAndRegisterToken(registration, vapidKey, applicationServerKey), this.push_subscribe_timeout);
             });
         }).catch((err) => {
             var message = (err && err.message) ? err.message : String(err);
@@ -2082,6 +2141,7 @@ class CountlyClass {
                 // endpoint, after a device ID change or after storage was cleared.
                 if (savedEndpoint === existing.endpoint && savedVapidKey === vapidKey && savedDeviceId === this.device_id) {
                     this.#log(logLevelEnums.DEBUG, "subscribeAndRegisterToken, Subscription matches the registered endpoint, VAPID key and device ID, nothing to send");
+                    this.#syncPushWorkerConfig();
                 }
                 else {
                     this.#log(logLevelEnums.DEBUG, "subscribeAndRegisterToken, Reusing existing subscription and re-registering its token");
@@ -2191,11 +2251,14 @@ class CountlyClass {
     * `buttonTitle`/`url` describe it) or "closed" (dismissed without a click). `payload` is the
     * whole message as sent by the server, including any custom key/values. Only pages that are
     * open at the time hear about "received" and "closed"; a click that opened a new window is
-    * reported by that window. "closed" is best effort: browsers only pass on dismissals the OS tells
-    * them about, and on Windows the X on the toast popup merely moves it to the Action Center while
-    * a removal from the Action Center reaches Chrome late or not at all; Firefox reports a "closed"
-    * right after every "clicked", because it fires the close event for the worker's own close()
-    * call. Firefox also shows no action buttons, so a click there is always the body (index 0).
+    * reported by that window, and a click made while no page was open (the worker recorded it
+    * itself) is reported to the next page that loads. "closed" is best effort: browsers only pass on the dismissals the OS
+    * tells them about, and that differs by browser and OS (on Windows the toast's X and Action
+    * Center removals mostly produce nothing; on macOS Chrome and Firefox report Notification Center
+    * removals, Safari does not). Firefox, and Safari for Notification Center clicks, also report a
+    * "closed" right after "clicked" because they fire the close event for the worker's own close()
+    * call. Safari and desktop Firefox show no action buttons (Firefox for Android does), so a click
+    * there is always the body (index 0).
     * The [CLY]_push_action event is recorded regardless of the listener.
     * Can also be given at init as `push_notification_listener`.
     * @param {?Function} listener - the function to call, or null to remove the current one
@@ -5813,6 +5876,33 @@ class CountlyClass {
     }
 
     /**
+     *  Give the browser's part of subscribing a deadline. pushManager.subscribe() has been seen never
+     *  settling (iOS 18.7); without a deadline #pushEnableInFlight would hold that dead promise and
+     *  hand it to every later enable_push_notifications call until the page is reloaded. On expiry
+     *  this attempt resolves with reason "timeout" and the guard is released; should the browser
+     *  answer late after all, the chain still registers the token it produced.
+     *  @memberof Countly._internals
+     *  @param {Promise<Object>} attempt - the subscribe-and-register chain
+     *  @param {number} ms - how long to wait
+     *  @returns {Promise<Object>} the attempt's result, or { subscribed: false, reason: "timeout" }
+     */
+    #withPushTimeout = (attempt, ms) => {
+        return new Promise((resolve, reject) => {
+            var timer = setTimeout(() => {
+                this.#log(logLevelEnums.ERROR, "enable_push_notifications, The browser did not finish subscribing within [" + ms + "] ms, giving up on this attempt");
+                resolve({ subscribed: false, reason: "timeout" });
+            }, ms);
+            attempt.then((result) => {
+                clearTimeout(timer);
+                resolve(result);
+            }, (err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+        });
+    };
+
+    /**
      *  Ask for notification permission, tolerating the legacy callback-only form of
      *  Notification.requestPermission still shipped by some browsers.
      *  @memberof Countly._internals
@@ -5893,6 +5983,7 @@ class CountlyClass {
                 this.#setValueInStorage(pushStorageKeys.scope, scope);
             }
         }
+        this.#syncPushWorkerConfig();
     }
 
     /**

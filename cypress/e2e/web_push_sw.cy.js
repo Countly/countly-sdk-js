@@ -3,7 +3,7 @@
 // is evaluated against a fake global and its handlers are driven with hand-made events.
 
 const MESSAGE_ID = "507f1f77bcf86cd799439011";
-const { SDK_VERSION, pushMessageTypes, pushWorkerParams, pushConstants } = require("../../modules/Constants.js");
+const { SDK_VERSION, pushMessageTypes, pushWorkerParams, pushConstants, internalEventKeyEnums } = require("../../modules/Constants.js");
 
 function fakeClient(url, focused) {
     return {
@@ -281,6 +281,8 @@ describe("Web push service worker", () => {
             });
             expect(source).to.include("CLY_MAX_ACTIONS = 2");
             expect(source).to.include("CLY_MAX_PENDING = " + pushConstants.MAX_SEEN_ACTION_IDS);
+            // the event the worker records on its own must be the one the page SDK records
+            expect(source).to.include('CLY_PUSH_ACTION_EVENT = "' + internalEventKeyEnums.PUSH_ACTION + '"');
             expect(source).to.include('CLY_SW_VERSION = "' + SDK_VERSION + '"');
         });
     });
@@ -415,6 +417,233 @@ describe("Web push service worker", () => {
             expect(worker.self.clients.opened).to.deep.equal([]);
             expect(out.lines.some((l) => l.indexOf("warn:") === 0 && l.indexOf("not opening") !== -1)).to.equal(true);
             expect(page.messages.filter((m) => m.type === "countly_push_action").length).to.equal(1);
+        });
+    });
+
+    // ---- reporting a click itself when no page is open -----------------------------------------
+
+    const REPORTING_CONFIG = { url: "https://srv.example/i", app_key: "app-key-1", device_id: "device-1", t: 0, sdk_name: "javascript_native_web", sdk_version: SDK_VERSION, av: "1.0" };
+
+    // a fetch() handed to the worker through `self`: records every call and answers as told
+    function fakeFetch(answer) {
+        var calls = [];
+        var fn = function (url, init) {
+            calls.push({ url: url, init: init || {} });
+            return typeof answer === "function" ? answer() : Promise.resolve(answer || { ok: true });
+        };
+        fn.calls = calls;
+        return fn;
+    }
+
+    function formBody(call) {
+        var out = {};
+        call.init.body.split("&").forEach((pair) => {
+            var i = pair.indexOf("=");
+            out[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1));
+        });
+        return out;
+    }
+
+    // a worker that a page has already told how to reach the server
+    function configuredWorker(setup) {
+        var worker = loadWorker(source, (self) => {
+            self.fetch = fakeFetch();
+            if (setup) {
+                setup(self);
+            }
+        });
+        var page = fakeClient("https://x/", true);
+        return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page }).then(() => worker);
+    }
+
+    function click(worker, action) {
+        var data = { i: MESSAGE_ID, l: "https://x/open", b: [{ t: "One", l: "https://x/1" }, { t: "Docs", l: "https://docs.example/" }] };
+        return worker.dispatch("notificationclick", { notification: { close() { }, data: data }, action: action || "" });
+    }
+
+    function actionsHandedTo(page) {
+        return page.messages.filter((m) => m.type === "countly_push_action");
+    }
+
+    it("Records a click itself when no page is open, with what the page told it about the server", () => {
+        cy.then(() => configuredWorker()).then((worker) => click(worker, "btn_2").then(() => {
+            var calls = worker.self.fetch.calls;
+            expect(calls.length).to.equal(1);
+            expect(calls[0].url).to.equal("https://srv.example/i");
+            expect(calls[0].init.method).to.equal("POST");
+            expect(calls[0].init.headers["Content-Type"]).to.equal("application/x-www-form-urlencoded");
+            var body = formBody(calls[0]);
+            expect(body).to.include({ app_key: "app-key-1", device_id: "device-1", t: "0", sdk_name: "javascript_native_web", sdk_version: SDK_VERSION, av: "1.0" });
+            ["timestamp", "hour", "dow", "tz"].forEach((k) => {
+                expect(body[k], k).to.match(/^-?\d+$/);
+            });
+            var events = JSON.parse(body.events);
+            expect(events.length).to.equal(1);
+            expect(events[0].key).to.equal("[CLY]_push_action");
+            expect(events[0].count).to.equal(1);
+            expect(events[0].segmentation).to.deep.equal({ i: MESSAGE_ID, b: 2, p: "w" });
+            expect(events[0].timestamp).to.be.a("number");
+            // the tab this click opens has no SDK on it, so nothing else could have recorded the click
+            expect(worker.self.clients.opened).to.deep.equal(["https://docs.example/"]);
+            // the next SDK page still hears about the click for its listener, but must not record it again
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: page }).then(() => {
+                var actions = actionsHandedTo(page);
+                expect(actions.length).to.equal(1);
+                expect(actions[0].recorded).to.equal(true);
+                expect(actions[0].buttonIndex).to.equal(2);
+            });
+        }));
+    });
+
+    it("Hands the click to an open page instead of reporting it itself", () => {
+        cy.then(() => configuredWorker()).then((worker) => {
+            var page = fakeClient("https://x/other", false);
+            worker.self.clients.list = [page];
+            return click(worker).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(0);
+                var actions = actionsHandedTo(page);
+                expect(actions.length).to.equal(1);
+                expect(actions[0].recorded).to.not.equal(true);
+            });
+        });
+    });
+
+    it("Keeps the click for a page when the server cannot be reached", () => {
+        cy.then(() => configuredWorker((self) => {
+            self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+        })).then((worker) => click(worker).then(() => {
+            expect(worker.self.fetch.calls.length).to.equal(1);
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: page }).then(() => {
+                var actions = actionsHandedTo(page);
+                expect(actions.length).to.equal(1);
+                expect(actions[0].recorded).to.not.equal(true);
+            });
+        }));
+    });
+
+    it("Keeps the click for a page when the server answers with an error", () => {
+        cy.then(() => configuredWorker((self) => {
+            self.fetch = fakeFetch({ ok: false, status: 400 });
+        })).then((worker) => click(worker).then(() => {
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: page }).then(() => {
+                expect(actionsHandedTo(page).filter((m) => m.recorded !== true).length).to.equal(1);
+            });
+        }));
+    });
+
+    it("Keeps the click for a page while no page has told it about the server", () => {
+        var worker = loadWorker(source, (self) => {
+            self.fetch = fakeFetch();
+        });
+        cy.then(() => click(worker)).then(() => {
+            expect(worker.self.fetch.calls.length).to.equal(0);
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: page }).then(() => {
+                expect(actionsHandedTo(page).filter((m) => m.recorded !== true).length).to.equal(1);
+            });
+        });
+    });
+
+    it("Stops reporting when a page withdraws the server details", () => {
+        cy.then(() => configuredWorker()).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: null } }).then(() => click(worker)).then(() => {
+            expect(worker.self.fetch.calls.length).to.equal(0);
+        }));
+    });
+
+    it("Signs the report the way the page SDK does when a salt is configured", () => {
+        var salt = "pepper";
+        cy.then(() => configuredWorker((self) => {
+            self.crypto = window.crypto;
+        })).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: Object.assign({ salt: salt }, REPORTING_CONFIG) } }).then(() => click(worker)).then(() => {
+            var body = worker.self.fetch.calls[0].init.body;
+            var marker = "&checksum256=";
+            var at = body.lastIndexOf(marker);
+            expect(at).to.be.greaterThan(0);
+            var unsigned = body.slice(0, at);
+            var checksum = body.slice(at + marker.length);
+            // the signed string is the sorted, url-encoded parameter list, as prepareParams builds it
+            var keys = unsigned.split("&").map((pair) => pair.split("=")[0]);
+            expect(keys).to.deep.equal(keys.slice().sort());
+            expect(keys).to.not.include("salt");
+            return crypto.subtle.digest("SHA-256", new TextEncoder().encode(unsigned + salt)).then((digest) => {
+                var expected = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
+                expect(checksum).to.equal(expected);
+            });
+        }));
+    });
+
+    // ---- surviving a worker restart (IndexedDB) ----------------------------------------------
+
+    function deleteDb() {
+        return new Promise((resolve) => {
+            var request = indexedDB.deleteDatabase("countly_push");
+            request.onsuccess = request.onerror = request.onblocked = () => resolve();
+        });
+    }
+
+    // a worker with the browser's real IndexedDB, as in production; a fresh loadWorker() stands for
+    // the browser stopping the worker and starting it again later, with empty memory
+    function persistentWorker(setup) {
+        return loadWorker(source, (self) => {
+            self.indexedDB = window.indexedDB;
+            self.fetch = fakeFetch();
+            if (setup) {
+                setup(self);
+            }
+        });
+    }
+
+    it("Keeps pending clicks and the server details across a worker restart", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var first = persistentWorker((self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            var page = fakeClient("https://x/", true);
+            return first.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page }).then(() => click(first, "btn_1")).then(() => {
+                var second = persistentWorker();
+                var later = fakeClient("https://x/", true);
+                return second.dispatch("message", { data: { type: "countly_push_ready" }, source: later }).then(() => {
+                    var actions = actionsHandedTo(later);
+                    expect(actions.length).to.equal(1);
+                    expect(actions[0].buttonIndex).to.equal(1);
+                    expect(actions[0].recorded).to.not.equal(true);
+                    return second.dispatch("message", { data: { type: "countly_push_ack", aid: actions[0].aid } });
+                }).then(() => click(second, "btn_2")).then(() => {
+                    // the restarted worker also still knows how to reach the server
+                    expect(second.self.fetch.calls.length).to.equal(1);
+                    expect(formBody(second.self.fetch.calls[0]).app_key).to.equal("app-key-1");
+                    var third = persistentWorker();
+                    var last = fakeClient("https://x/", true);
+                    return third.dispatch("message", { data: { type: "countly_push_ready" }, source: last }).then(() => {
+                        // the acknowledged click is gone; the one recorded directly is only there for the listener
+                        expect(actionsHandedTo(last).map((m) => m.recorded)).to.deep.equal([true]);
+                    });
+                });
+            });
+        });
+    });
+
+    it("Bounds the persisted queue to the newest CLY_MAX_PENDING clicks", () => {
+        cy.then(() => deleteDb()).then(() => {
+            // no server details, so every click is kept for a page
+            var worker = persistentWorker();
+            var chain = Promise.resolve();
+            for (let n = 0; n <= pushConstants.MAX_SEEN_ACTION_IDS; n++) {
+                const id = MESSAGE_ID.slice(0, 22) + String(n).padStart(2, "0");
+                chain = chain.then(() => worker.dispatch("notificationclick", { notification: { close() { }, data: { i: id, l: "https://x/open", b: [] } }, action: "" }));
+            }
+            return chain.then(() => {
+                var restarted = persistentWorker();
+                var page = fakeClient("https://x/", true);
+                return restarted.dispatch("message", { data: { type: "countly_push_ready" }, source: page }).then(() => {
+                    var ids = actionsHandedTo(page).map((m) => m.messageId.slice(-2));
+                    expect(ids.length).to.equal(pushConstants.MAX_SEEN_ACTION_IDS);
+                    expect(ids).to.include(String(pushConstants.MAX_SEEN_ACTION_IDS).padStart(2, "0"));
+                });
+            });
         });
     });
 });
