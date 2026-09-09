@@ -1,6 +1,7 @@
 
 
 import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, urlParseRE } from "./Constants.js";
+import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     getMultiSelectValues,
     secureRandom,
@@ -129,6 +130,7 @@ class CountlyClass {
     #initContentSent;
     #initTimestamp;
     #isSCDisabled;
+    #connectionTestRunning = false;
     #lastRequestDuration;
     #backoffEndTime;
     #isInBackoff;
@@ -421,6 +423,7 @@ class CountlyClass {
         params.dow = date.getDay();
         params.av = this.app_version;
         params.method = "sc";
+        var scStart = Date.now();
         this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
             if (err) {
                 // error has been logged by the request function
@@ -429,10 +432,20 @@ class CountlyClass {
             try {
                 var config = JSON.parse(responseText);
                 this.#log(logLevelEnums.INFO, "server_config, Config fetched successfully:[" + JSON.stringify(config) + "]");
+                // the connection test flag is read here, from a live response, and stripped
+                // before anything caches or mirrors the config. It is never persisted, so a
+                // page load or another tab can never replay a battery
+                var armed = !!(config && config.ct);
+                if (config && typeof config.ct !== "undefined") {
+                    delete config.ct;
+                }
                 if (config) {
                     this.#populateServerConfig(config);
                 }
                 this.#setValueInStorage("cly_config", JSON.stringify(config));
+                if (armed) {
+                    this.#runConnectionTest(Date.now() - scStart);
+                }
             }
             catch (ex) {
                 this.#log(logLevelEnums.ERROR, "server_config, Had an issue while parsing the response: " + ex);
@@ -441,6 +454,41 @@ class CountlyClass {
         setTimeout(() => {
             this.#getAndSetServerConfig();
         }, this.#SCInterval * 60 * 60 * 1000);
+    }
+
+    /**
+     * Run the connection test battery the server armed, then report through the request queue.
+     * Probes are bare parameterless GETs that never reach application work, so this needs no
+     * consent and can write nothing. Nothing about the run is persisted: the only guard is the
+     * in-memory flag below, which stops a second armed response from starting a parallel run.
+     * @private
+     * @param {Number} scMs - latency of the config fetch that delivered the flag
+     */
+    #runConnectionTest = (scMs) => {
+        if (this.#connectionTestRunning) {
+            this.#log(logLevelEnums.DEBUG, "connection_test, A battery is already in flight, ignoring this delivery");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "connection_test, Server armed a connection test, running the battery");
+        this.#connectionTestRunning = true;
+
+        runConnectionTest({
+            url: this.url,
+            sdkName: this.#sdkName,
+            sdkVersion: this.#sdkVersion,
+            sc: { status: 200, ms: scMs },
+            // the Tier 2 routes send no CORS headers, so a browser can only reach them
+            // opaquely; elsewhere they are irrelevant
+            tier2: isBrowser ? "cors-first" : "unsupported",
+            probe: probeViaFetch
+        }).then((report) => {
+            this.#connectionTestRunning = false;
+            this.#log(logLevelEnums.INFO, "connection_test, Battery finished, queueing report:[" + JSON.stringify(report) + "]");
+            this.#toRequestQueue({ ct_results: JSON.stringify(capReport(report)) });
+        }).catch((error) => {
+            this.#connectionTestRunning = false;
+            this.#log(logLevelEnums.ERROR, "connection_test, Battery failed: " + error);
+        });
     }
 
     /**

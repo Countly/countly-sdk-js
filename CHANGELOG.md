@@ -1,5 +1,6 @@
-## 26.1.3
+## NEXT RELEASE
 
+* Added support for server initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
 * Added support for Feedback Widgets and Content working with certain proxy configurations.
 
 ## 26.1.2
