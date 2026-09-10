@@ -160,25 +160,33 @@ describe("Log gathering delivery", () => {
     it("moves full batches into the request queue on its own and accounts for every line", () => {
         hp.haltAndClearStorage(() => {
             initWithDirective({ e: true, i: GATHER_ID, b: 10 });
-            // adoption itself can already have drained full batches: the init lines that
-            // follow the directive each top the buffer up past the batch size
-            var shippedBefore = gatheredBatches(Countly._internals.getRequestQueue()).reduce((total, batch) => total + batch.l.length, 0);
-            var adopted = Countly._internals.getLogBuffer().length;
-            var added = 25;
-            logLines(added);
-            var remaining = Countly._internals.getLogBuffer().length;
-            expect(remaining).to.be.lessThan(10);
-            cy.fetch_local_request_queue().then((rq) => {
-                var batches = gatheredBatches(rq);
-                expect(batches.length).to.be.greaterThan(1);
-                var shipped = 0;
-                batches.forEach((batch) => {
-                    expect(batch.i).to.equal(GATHER_ID);
-                    expect(batch.d).to.equal(0);
-                    expect(batch.l.length).to.equal(10);
-                    shipped += batch.l.length;
+            // in a browser the first requests wait for the client hints, so let them reach the queue
+            cy.wait(hp.sWait2).then(() => {
+                var added = 25;
+                logLines(added);
+                expect(Countly._internals.getLogBuffer().length).to.be.lessThan(10);
+                cy.wait(hp.sWait2).then(() => {
+                    cy.fetch_local_request_queue().then((rq) => {
+                        var batches = gatheredBatches(rq);
+                        expect(batches.length).to.be.greaterThan(1);
+                        var shippedLines = [];
+                        batches.forEach((batch) => {
+                            expect(batch.i).to.equal(GATHER_ID);
+                            expect(batch.d).to.equal(0);
+                            expect(batch.l.length).to.equal(10);
+                            shippedLines = shippedLines.concat(batch.l.map((line) => line.m));
+                        });
+                        // identity rather than counts: the SDK keeps logging on its own in the
+                        // background, so every generated line must show up exactly once across
+                        // what was shipped and what is still buffered
+                        var everywhere = shippedLines.concat(Countly._internals.getLogBuffer().map((line) => line.m));
+                        for (var i = 0; i < added; i++) {
+                            var marker = "log_gathering_test, line number [" + i + "]";
+                            var seen = everywhere.filter((m) => m.indexOf(marker) !== -1).length;
+                            expect(seen, "line " + i + " is neither lost nor duplicated").to.equal(1);
+                        }
+                    });
                 });
-                expect(shipped + remaining, "no line is lost or duplicated by the upload path").to.equal(shippedBefore + adopted + added);
             });
         });
     });
