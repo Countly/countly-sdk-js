@@ -461,6 +461,16 @@ describe("Web push service worker", () => {
         return worker.dispatch("notificationclick", { notification: { close() { }, data: data }, action: action || "" });
     }
 
+    // signing the report goes through crypto.subtle, which settles after the dispatch promise in
+    // some browsers, so wait for the fetch itself rather than for the event handler
+    function untilFetched(worker, attempts) {
+        attempts = typeof attempts === "number" ? attempts : 50;
+        if (worker.self.fetch.calls.length > 0 || attempts <= 0) {
+            return Promise.resolve(worker);
+        }
+        return new Promise((resolve) => setTimeout(resolve, 20)).then(() => untilFetched(worker, attempts - 1));
+    }
+
     function actionsHandedTo(page) {
         return page.messages.filter((m) => m.type === "countly_push_action");
     }
@@ -557,7 +567,8 @@ describe("Web push service worker", () => {
         var salt = "pepper";
         cy.then(() => configuredWorker((self) => {
             self.crypto = window.crypto;
-        })).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: Object.assign({ salt: salt }, REPORTING_CONFIG) } }).then(() => click(worker)).then(() => {
+        })).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: Object.assign({ salt: salt }, REPORTING_CONFIG) } }).then(() => click(worker)).then(() => untilFetched(worker)).then(() => {
+            expect(worker.self.fetch.calls.length, "the signed report was sent").to.equal(1);
             var body = worker.self.fetch.calls[0].init.body;
             var marker = "&checksum256=";
             var at = body.lastIndexOf(marker);

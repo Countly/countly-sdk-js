@@ -1293,6 +1293,10 @@ class CountlyClass {
      *  @param {?ServiceWorker} [worker] - the worker to address, typically the `source` of a message being replied to
      */
     #postToPushWorker = (message, worker) => {
+        // no service worker API at all (private windows, some webviews): there is nobody to talk to
+        if (!this.#isPushSupported(false)) {
+            return;
+        }
         var supplied = this.push_service_worker_registration && this.push_service_worker_registration.active;
         var target = (worker && typeof worker.postMessage === "function") ? worker : (navigator.serviceWorker.controller || supplied);
         if (target && typeof target.postMessage === "function") {
@@ -2261,8 +2265,10 @@ class CountlyClass {
         var swScope = opts.push_service_worker_scope || this.#getValueFromStorage(pushStorageKeys.scope) || this.push_service_worker_scope;
         // a token the server may still hold, even if the registration or subscription is already gone
         var hadRegisteredToken = !!this.#getValueFromStorage(pushStorageKeys.endpoint);
+        // without the service worker API there is no subscription to drop, only the stored token
+        var registration = this.#isPushSupported(false) ? navigator.serviceWorker.getRegistration(swScope) : Promise.resolve(null);
 
-        return navigator.serviceWorker.getRegistration(swScope).then((swReg) => {
+        return registration.then((swReg) => {
             return swReg ? swReg.pushManager.getSubscription() : null;
         }).then((subscription) => {
             return subscription ? subscription.unsubscribe().then(() => true) : false;
