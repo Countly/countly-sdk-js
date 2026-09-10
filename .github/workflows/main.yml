@@ -17,14 +17,73 @@ permissions:
   pull-requests: write
 
 jobs:
-  cypress:
-    name: Cypress (${{ matrix.browser }})
+  build:
+    name: Build bundles
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build ESM, CJS and UMD bundles
+        run: npm run build
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  node:
+    name: Node ${{ matrix.node }} runtime
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22, 24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # the bundles are consumed as-is, so no dependency install: the smoke test only needs Node itself
+      - name: Smoke test the bundles in a non-browser runtime
+        run: npm run test:node
+
+  cypress:
+    name: Cypress ${{ matrix.browser }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        browser: [chrome, firefox]
+        os: [ubuntu-24.04]
+        browser: [chrome, firefox, edge, electron]
+        include:
+          - os: windows-latest
+            browser: chrome
 
     steps:
       - name: Checkout
@@ -36,39 +95,39 @@ jobs:
           node-version: 22
           cache: npm
 
-      # Cypress 13.6 drives Firefox over CDP, which Firefox dropped in 129, so the runner's
-      # current Firefox never connects. 128 ESR is the last line that still speaks CDP.
-      - name: Set up Firefox 128 ESR
-        id: firefox
-        if: matrix.browser == 'firefox'
-        uses: browser-actions/setup-firefox@v1
-        with:
-          firefox-version: 128.14.0esr
-
       - name: Run Cypress
         uses: cypress-io/github-action@v6
         with:
           # the action splits this itself, so quotes would reach cypress literally
-          command: npx cypress run --browser ${{ matrix.browser == 'firefox' && steps.firefox.outputs.firefox-path || matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
+          command: npx cypress run --browser ${{ matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
 
       - name: Test report
-        uses: dorny/test-reporter@v2
-        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always() && runner.os == 'Linux'
         with:
-          name: Cypress results (${{ matrix.browser }})
-          path: results/*.xml
-          reporter: java-junit
-          list-suites: failed
-          list-tests: failed
-          use-actions-summary: true
-          fail-on-error: false
-          fail-on-empty: false
+          check_name: Test results (${{ matrix.browser }}, ${{ matrix.os }})
+          files: results/*.xml
+          comment_mode: ${{ matrix.browser == 'chrome' && 'always' || 'off' }}
+          report_individual_runs: true
+          action_fail: false
+          action_fail_on_inconclusive: false
+
+      - name: Test report (Windows)
+        uses: EnricoMi/publish-unit-test-result-action/windows@v2
+        if: always() && runner.os == 'Windows'
+        with:
+          check_name: Test results (${{ matrix.browser }}, ${{ matrix.os }})
+          files: results/*.xml
+          comment_mode: off
+          report_individual_runs: true
+          action_fail: false
+          action_fail_on_inconclusive: false
 
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: cypress-screenshots-${{ matrix.browser }}
+          name: cypress-screenshots-${{ matrix.browser }}-${{ matrix.os }}
           path: cypress/screenshots
           if-no-files-found: ignore
 
@@ -76,17 +135,17 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: cypress-videos-${{ matrix.browser }}
+          name: cypress-videos-${{ matrix.browser }}-${{ matrix.os }}
           path: cypress/videos
           if-no-files-found: ignore
 
       - name: Coverage summary
-        if: always() && matrix.browser == 'chrome' && hashFiles('coverage/coverage-summary.json') != ''
+        if: always() && matrix.browser == 'chrome' && runner.os == 'Linux' && hashFiles('coverage/coverage-summary.json') != ''
         run: node .github/scripts/coverage-summary.mjs coverage/coverage-summary.json coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
-        if: always() && matrix.browser == 'chrome'
+        if: always() && matrix.browser == 'chrome' && runner.os == 'Linux'
         with:
           name: coverage-report
           path: |
@@ -97,7 +156,7 @@ jobs:
 
       - name: Coverage comment
         uses: marocchino/sticky-pull-request-comment@v2
-        if: always() && matrix.browser == 'chrome' && github.event_name == 'pull_request' && hashFiles('coverage/summary.md') != ''
+        if: always() && matrix.browser == 'chrome' && runner.os == 'Linux' && github.event_name == 'pull_request' && hashFiles('coverage/summary.md') != ''
         continue-on-error: true
         with:
           header: coverage
