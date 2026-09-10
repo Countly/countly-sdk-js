@@ -1,37 +1,93 @@
-name: Cypress Tests with Dependency and Artifact Caching
+name: Tests
 
 on:
   push:
-    branches: [master, staging]
+    branches: [main, master, staging]
   pull_request:
-    branches: [master, staging]
+    branches: [main, master, staging]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
 
 jobs:
-  install:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Cypress install
-        uses: cypress-io/github-action@v6
-        with:
-          # Disable running of tests within install job
-          runTests: false
-
-  cypress-run:
-    runs-on: ubuntu-22.04
-    needs: install
+  cypress:
+    name: Cypress (${{ matrix.browser }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
-      # don't fail the entire matrix on failure
       fail-fast: false
+      matrix:
+        browser: [chrome, firefox]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cypress run
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Run Cypress
         uses: cypress-io/github-action@v6
         with:
-          start: npx cypress run
-          browser: chrome
+          command: npx cypress run --browser ${{ matrix.browser }} --config video=true --reporter junit --reporter-options "mochaFile=results/${{ matrix.browser }}-[hash].xml"
+
+      - name: Test report
+        uses: dorny/test-reporter@v2
+        if: always()
+        with:
+          name: Cypress results (${{ matrix.browser }})
+          path: results/*.xml
+          reporter: java-junit
+          list-suites: failed
+          list-tests: failed
+          use-actions-summary: true
+          fail-on-error: false
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cypress-screenshots-${{ matrix.browser }}
+          path: cypress/screenshots
+          if-no-files-found: ignore
+
+      - name: Upload videos
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cypress-videos-${{ matrix.browser }}
+          path: cypress/videos
+          if-no-files-found: ignore
+
+      - name: Coverage summary
+        if: always() && matrix.browser == 'chrome' && hashFiles('coverage/coverage-summary.json') != ''
+        run: node .github/scripts/coverage-summary.mjs coverage/coverage-summary.json coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always() && matrix.browser == 'chrome'
+        with:
+          name: coverage-report
+          path: |
+            coverage/lcov-report
+            coverage/lcov.info
+            coverage/coverage-summary.json
+          if-no-files-found: ignore
+
+      - name: Coverage comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        if: always() && matrix.browser == 'chrome' && github.event_name == 'pull_request' && hashFiles('coverage/summary.md') != ''
+        continue-on-error: true
+        with:
+          header: coverage
+          path: coverage/summary.md

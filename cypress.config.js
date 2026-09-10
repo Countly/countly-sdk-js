@@ -9,6 +9,33 @@ export default defineConfig({
       const codeCoverageTask = require('@cypress/code-coverage/task');
       codeCoverageTask(on, config);
 
+      // Specs pull the SDK sources in directly, so instrumenting the spec bundle with istanbul
+      // is what produces the coverage the task above collects. CYPRESS_COVERAGE=false skips it.
+      if (config.env.coverage !== false) {
+        const webpackPreprocessor = require('@cypress/webpack-preprocessor');
+        on('file:preprocessor', webpackPreprocessor({
+          webpackOptions: {
+            mode: 'development',
+            devtool: false,
+            resolve: { extensions: ['.js'] },
+            module: {
+              rules: [{
+                test: /\.js$/,
+                exclude: /node_modules/,
+                // the package is "type": "module", so plain .js would need fully specified imports
+                type: 'javascript/auto',
+                resolve: { fullySpecified: false },
+                use: {
+                  loader: 'babel-loader',
+                  options: { presets: ['@babel/preset-env'], plugins: ['istanbul'] }
+                }
+              }]
+            }
+          },
+          watchOptions: {}
+        }));
+      }
+
       // Include any other plugin code...
       const http = require('http');
       let server = null;
