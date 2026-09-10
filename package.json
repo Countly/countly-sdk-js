@@ -6,7 +6,7 @@
   "main": "Countly.js",
   "scripts": {
     "test": "npm run build && npm run test:node && npm run cy:run",
-    "test:node": "node --test test/node/smoke.test.mjs",
+    "test:node": "node --test --test-force-exit test/node/smoke.test.mjs",
     "build": "rollup -c",
     "cy:run": "cypress run",
     "cy:open": "cypress open"
