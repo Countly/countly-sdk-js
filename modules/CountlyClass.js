@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     getMultiSelectValues,
@@ -44,6 +44,7 @@ class CountlyClass {
     #sessionStarted;
     #apiPath;
     #readPath;
+    #logTransportInProgress;
     #beatInterval;
     #requestQueue;
     #eventQueue;
@@ -125,6 +126,11 @@ class CountlyClass {
     #SCEventSegmentationBlacklist;
     #SCEventSegmentationWhitelist;
     #SCJourneyTriggerEvents;
+    #SCLogGathering;
+    #logBuffer;
+    #logBufferDropped;
+    #logCaptureInProgress;
+    #lastLogFlushTime;
     #initContentSent;
     #initTimestamp;
     #isSCDisabled;
@@ -236,6 +242,8 @@ class CountlyClass {
         this.#SCEventSegmentationBlacklist = {};
         this.#SCEventSegmentationWhitelist = {};
         this.#SCJourneyTriggerEvents = [];
+        // undecided until the server answers, so the init lines below are captured and adopted or dropped later
+        this.#resetLogGathering(false);
         this.#requestTimeoutDuration = 30000; // 30 seconds
         this.#contentFilterCallback = null;
         this.#isProcessingAsyncFromUserDataSave = false;
@@ -406,10 +414,12 @@ class CountlyClass {
     #getAndSetServerConfig = () => {
         if (this.device_id === "[CLY]_temp_id") {
             this.#log(logLevelEnums.INFO, "server_config, Device ID is temporary, not fetching server config");
+            this.#resolveProvisionalLogs("device id is temporary so no server config will be fetched");
             return;
         }
         if (this.#isSCDisabled) {
             this.#log(logLevelEnums.INFO, "server_config, SDK behavior sync is disabled, not fetching server config");
+            this.#resolveProvisionalLogs("SDK behavior settings sync is disabled");
             return;
         }
         this.#log(logLevelEnums.INFO, "server_config, Fetching server config");
@@ -429,6 +439,7 @@ class CountlyClass {
         this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
             if (err) {
                 // error has been logged by the request function
+                this.#resolveProvisionalLogs("server config request failed");
                 return;
             }
             try {
@@ -445,12 +456,15 @@ class CountlyClass {
                     this.#populateServerConfig(config);
                 }
                 this.#setValueInStorage("cly_config", JSON.stringify(config));
+                // only a live response decides log gathering, the stored config applied above never does
+                this.#applyLogGatheringConfig(config ? config.lg : undefined);
                 if (armed) {
                     this.#runConnectionTest(Date.now() - scStart);
                 }
             }
             catch (ex) {
                 this.#log(logLevelEnums.ERROR, "server_config, Had an issue while parsing the response: " + ex);
+                this.#resolveProvisionalLogs("server config response could not be parsed");
             }
         }, true, true);
         setTimeout(() => {
@@ -760,6 +774,7 @@ class CountlyClass {
 
         if (this.ignore_visitor) {
             this.#log(logLevelEnums.WARNING, "initialize, ignore_visitor:[" + this.ignore_visitor + "], this user will not be tracked");
+            this.#resolveProvisionalLogs("visitor is ignored so no server config will be fetched");
             return;
         }
 
@@ -1365,6 +1380,8 @@ class CountlyClass {
         this.#previousViewId = null;
         this.#freshUTMTags = null;
         this.#generatedRequests = [];
+        // decided, so nothing logged after halt is captured
+        this.#resetLogGathering(true);
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -6146,6 +6163,11 @@ class CountlyClass {
             this.#setValueInStorage("cly_event", this.#eventQueue);
         }
 
+        // a quiet SDK that never fills a batch still reports what it gathered
+        if (this.#SCLogGathering.enabled && this.#logBuffer.length > 0 && Date.now() - this.#lastLogFlushTime >= logGatheringDefaultValues.FLUSH_INTERVAL) {
+            this.#flushLogBuffer();
+        }
+
         // Check if we're in back-off period and update status
         var currentTime = getTimestamp();
         var skipRequestProcessing = false;
@@ -6596,26 +6618,37 @@ class CountlyClass {
      * @memberof Countly._internals
      */
     #log = (level, message, third) => {
-        if (this.debug && typeof console !== "undefined") {
-            // parse the arguments into a string if it is an object
-            if (third && typeof third === "object") {
+        var shouldPrint = this.debug && typeof console !== "undefined";
+        var levelChar = logLevelToWireChar[level] || "d";
+        var shouldCapture = this.#logLineWanted(levelChar);
+        if (!shouldPrint && !shouldCapture) {
+            return;
+        }
+        // parse the arguments into a string if it is an object
+        if (third && typeof third === "object") {
+            try {
                 third = JSON.stringify(third);
             }
-            // append app_key to the start of the message if it is not the first instance (for multi instancing)
-            if (!this.#global) {
-                message = "[" + this.app_key + "] " + message;
+            catch (ex) {
+                third = "[unserializable]";
             }
-            // if the provided level is not a proper log level re-assign it as [DEBUG]
-            if (!level) {
-                level = logLevelEnums.DEBUG;
-            }
-            // append level, message and args
-            var extraArguments = "";
-            if (third) {
-                extraArguments = " " + third;
-            }
+        }
+        // append app_key to the start of the message if it is not the first instance (for multi instancing)
+        if (!this.#global) {
+            message = "[" + this.app_key + "] " + message;
+        }
+        // if the provided level is not a proper log level re-assign it as [DEBUG]
+        if (!level) {
+            level = logLevelEnums.DEBUG;
+        }
+        var body = "[Countly] " + message + (third ? " " + third : "");
+        // the gathered line carries its level in its own field, so the prefix is left off
+        if (shouldCapture) {
+            this.#captureLogLine(levelChar, body);
+        }
+        if (shouldPrint) {
             // eslint-disable-next-line no-shadow
-            var log = level + "[Countly] " + message + extraArguments;
+            var log = level + body;
             // decide on the console
             if (level === logLevelEnums.ERROR) {
                 // eslint-disable-next-line no-console
@@ -6644,6 +6677,217 @@ class CountlyClass {
     }
 
     /**
+     * Tells whether a log line of the given level would be gathered right now.
+     * Every level is wanted while the server has not decided yet, so the init lines exist when a
+     * directive adopts them; lines produced while a log batch is being enqueued or sent are never
+     * wanted, or every batch would describe the previous one.
+     * @param {String} levelChar - wire character of the line's level
+     * @returns {Boolean} true when the line should be captured
+     */
+    #logLineWanted = (levelChar) => {
+        if (this.#logCaptureInProgress || this.#logTransportInProgress) {
+            return false;
+        }
+        var state = this.#SCLogGathering;
+        if (!state.decided) {
+            return true;
+        }
+        return state.enabled && state.levels.indexOf(levelChar) !== -1;
+    }
+
+    /**
+     * Runs fn with log capture paused when the request carries a log batch, so the lines that
+     * describe uploading gathered logs are never gathered themselves.
+     * @param {Object} params - request parameters
+     * @param {Function} fn - work to run
+     * @returns {*} whatever fn returns
+     */
+    #forRequest = (params, fn) => {
+        if (!params || !params.sdk_logs) {
+            return fn();
+        }
+        this.#logTransportInProgress = true;
+        try {
+            return fn();
+        }
+        finally {
+            this.#logTransportInProgress = false;
+        }
+    }
+
+    /**
+     * Puts log gathering back to its initial state and drops everything gathered.
+     * @param {Boolean} decided - true when no directive is expected any more, false to capture speculatively until the server answers
+     */
+    #resetLogGathering = (decided) => {
+        this.#SCLogGathering = {
+            enabled: false,
+            decided: decided,
+            gatherId: null,
+            levels: logGatheringDefaultValues.ALLOWED_LEVELS,
+            batchSize: logGatheringDefaultValues.BATCH_SIZE
+        };
+        this.#logBuffer = [];
+        this.#logBufferDropped = 0;
+        this.#logCaptureInProgress = false;
+        this.#logTransportInProgress = false;
+        this.#lastLogFlushTime = Date.now();
+    }
+
+    /**
+     * Drops every gathered line and the drop count, logging how many went.
+     * @param {String} reason - why the lines are dropped, for the log line
+     */
+    #dropLogBuffer = (reason) => {
+        var held = this.#logBuffer.length;
+        this.#logBuffer = [];
+        this.#logBufferDropped = 0;
+        if (held > 0) {
+            this.#log(logLevelEnums.DEBUG, "dropLogBuffer, " + reason + ", discarding [" + held + "] gathered lines");
+        }
+    }
+
+    /**
+     * Settles the provisional window as "not gathered" when it is certain no directive is coming.
+     * @param {String} reason - why the window closed, for the log line
+     */
+    #resolveProvisionalLogs = (reason) => {
+        if (this.#SCLogGathering.decided) {
+            return;
+        }
+        this.#SCLogGathering.decided = true;
+        this.#dropLogBuffer(reason);
+    }
+
+    /**
+     * Apply the operator driven internal log gathering configuration ('lg' key of a live server config response).
+     * Starts gathering, drops lines that belong to another gather id and flushes the tail once when gathering is switched off.
+     * @param {Object} lg - log gathering object of the server config, absent when the server is not gathering this device
+     */
+    #applyLogGatheringConfig = (lg) => {
+        var previousState = this.#SCLogGathering;
+        if (typeof lg === "undefined" || lg === null) {
+            lg = { e: false };
+        }
+        if (typeof lg !== "object" || Array.isArray(lg)) {
+            this.#log(logLevelEnums.WARNING, "applyLogGatheringConfig, Ignoring malformed log gathering configuration");
+            return;
+        }
+        var enabled = lg.e === true;
+        var receivedId = (typeof lg.i === "string" && lg.i.length > 0) ? lg.i : null;
+        var levels = logGatheringDefaultValues.ALLOWED_LEVELS;
+        if (typeof lg.l === "string") {
+            levels = "";
+            for (var lvl = 0; lvl < lg.l.length; lvl++) {
+                if (logGatheringDefaultValues.ALLOWED_LEVELS.indexOf(lg.l[lvl]) !== -1 && levels.indexOf(lg.l[lvl]) === -1) {
+                    levels += lg.l[lvl];
+                }
+            }
+            // a level string with nothing usable would arm a gather that captures nothing
+            if (levels.length === 0) {
+                levels = logGatheringDefaultValues.ALLOWED_LEVELS;
+            }
+        }
+        var batchSize = logGatheringDefaultValues.BATCH_SIZE;
+        if (typeof lg.b === "number" && isFinite(lg.b) && lg.b > 0) {
+            batchSize = Math.min(Math.max(Math.floor(lg.b), logGatheringDefaultValues.MIN_BATCH_SIZE), logGatheringDefaultValues.MAX_BUFFERED_LINES);
+        }
+        if (enabled && !receivedId) {
+            this.#log(logLevelEnums.WARNING, "applyLogGatheringConfig, Log gathering was enabled without a gather id, will not gather");
+            enabled = false;
+        }
+        var idChanged = !!receivedId && receivedId !== previousState.gatherId;
+        var wasUndecided = !previousState.decided;
+        this.#SCLogGathering = {
+            enabled: enabled,
+            decided: true,
+            // a stop carries no id, keep the old one so the tail can still be attributed
+            gatherId: receivedId || previousState.gatherId,
+            levels: levels,
+            batchSize: batchSize
+        };
+        if (wasUndecided) {
+            if (enabled) {
+                // provisional lines were captured at every level, apply the filter now that it is known
+                var kept = this.#logBuffer.filter((line) => levels.indexOf(line.l) !== -1);
+                this.#logBuffer = kept;
+                this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Adopting [" + kept.length + "] lines captured before the directive arrived, including init");
+            }
+            else {
+                this.#dropLogBuffer("not gathered");
+            }
+        }
+        else if (idChanged) {
+            this.#dropLogBuffer("gathered for the previous gather id");
+        }
+        if (enabled && (!previousState.enabled || idChanged)) {
+            this.#lastLogFlushTime = Date.now();
+            this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Log gathering started for id:[" + this.#SCLogGathering.gatherId + "], levels:[" + levels + "], batch size:[" + batchSize + "]");
+        }
+        else if (!enabled && previousState.enabled) {
+            // the server accepts one tail batch after a stop
+            this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Log gathering stopped, flushing the gathered lines");
+            this.#flushLogBuffer();
+        }
+    }
+
+    /**
+     * Buffer a single formatted log line for the ongoing gather. The caller has already checked that the line is wanted.
+     * @param {String} levelChar - wire character of the line's level
+     * @param {String} message - the fully formatted log line
+     */
+    #captureLogLine = (levelChar, message) => {
+        // a line quoting a batch would re-escape it into the next batch, and a sibling tab's queue write can carry one too
+        if (message.indexOf("sdk_logs") !== -1) {
+            return;
+        }
+        var line = message.length > logGatheringDefaultValues.MAX_MESSAGE_LENGTH ? message.substring(0, logGatheringDefaultValues.MAX_MESSAGE_LENGTH) : message;
+        var buffer = this.#logBuffer;
+        // not getMsTimestamp, it mutates the shared unique timestamp counter
+        buffer.push({ t: Date.now(), l: levelChar, m: line });
+        // the oldest lines go and the loss travels with the next batch as its drop count
+        if (buffer.length > logGatheringDefaultValues.MAX_BUFFERED_LINES) {
+            var overflow = buffer.length - logGatheringDefaultValues.MAX_BUFFERED_LINES;
+            buffer.splice(0, overflow);
+            this.#logBufferDropped += overflow;
+        }
+        // provisional lines have no gather id to be attributed to yet, so they wait
+        if (this.#SCLogGathering.decided && buffer.length >= this.#SCLogGathering.batchSize) {
+            this.#flushLogBuffer();
+        }
+    }
+
+    /**
+     * Move one batch of gathered log lines into the request queue. A batch the queue refuses goes back to the front of the buffer.
+     */
+    #flushLogBuffer = () => {
+        // uploading enqueues a request, the request code logs and logging comes back here
+        if (this.#logCaptureInProgress) {
+            return;
+        }
+        var state = this.#SCLogGathering;
+        var buffer = this.#logBuffer;
+        if (!state.decided || !state.gatherId || buffer.length === 0) {
+            return;
+        }
+        this.#logCaptureInProgress = true;
+        try {
+            var batch = buffer.splice(0, state.batchSize);
+            var dropped = this.#logBufferDropped;
+            this.#logBufferDropped = 0;
+            this.#lastLogFlushTime = Date.now();
+            this.#log(logLevelEnums.INFO, "flushLogBuffer, Sending [" + batch.length + "] gathered log lines, [" + buffer.length + "] still buffered, [" + dropped + "] dropped");
+            if (!this.#toRequestQueue({ sdk_logs: JSON.stringify({ i: state.gatherId, d: dropped, l: batch }) })) {
+                buffer.unshift(...batch);
+                this.#logBufferDropped += dropped;
+            }
+        }
+        finally {
+            this.#logCaptureInProgress = false;
+        }
+    }
+
+    /**
      *  Decides to use which type of request method
      *  @memberof Countly._internals
      *  @param {String} functionName - Name of the function making the request for more detailed logging
@@ -6653,7 +6897,7 @@ class CountlyClass {
      *  @param {Boolean} useBroadResponseValidator - if true that means the expected response is either a JSON object or a JSON array, if false only JSON 
      *  @param {Boolean} forced - if true that means the request is forced and should be made regardless of the networking config
      */
-    #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator, forced) => {
+    #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator, forced) => this.#forRequest(params, () => {
         if (!this.#SCNetwork && !forced) {
             this.#log(logLevelEnums.DEBUG, "Network request is disabled by the SCNetwork");
             return;
@@ -6693,7 +6937,7 @@ class CountlyClass {
         else {
             this.#sendXmlHttpRequest(functionName, url, params, callback, useBroadResponseValidator);
         }
-    }
+    })
 
     /**
      *  Making xml HTTP request
@@ -6709,12 +6953,12 @@ class CountlyClass {
         try {
             this.#log(logLevelEnums.DEBUG, "Sending XML HTTP request");
             var xhr = new XMLHttpRequest();
-            xhr.ontimeout = () => {
+            xhr.ontimeout = () => this.#forRequest(params, () => {
                 this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
                 if (typeof callback === "function") {
                     callback(true, params, 'timeout');
                 }
-            };
+            });
             params = params || {};
             var isImage = params._forceImageUpload || (params.__imageUpload === true) || (params.imageData && (params.imageName || params.imageType));
             var paramSource = params;
@@ -6770,7 +7014,7 @@ class CountlyClass {
                 var requestStartTime = getTimestamp();
                 
                 // fallback on error
-                xhr.onreadystatechange = () => {
+                xhr.onreadystatechange = () => this.#forRequest(params, () => {
                     if (xhr.readyState === 4) {
                         // Calculate request duration for back-off mechanism
                         var requestEndTime = getTimestamp();
@@ -6803,7 +7047,7 @@ class CountlyClass {
                             }
                         }
                     }
-                };
+                });
                 if (isImage) {
                     var formData = this.#prepareImageUploadFormData(params, saltedData);
                     if (!formData) {
@@ -6976,7 +7220,7 @@ class CountlyClass {
                     clearTimeout(timeoutId);
                     response = res;
                     return response.text();
-                }).then((data) => {
+                }).then((data) => this.#forRequest(params, () => {
                     var requestEndTime = getTimestamp();
                     var requestDuration = requestEndTime - requestStartTime;
                     this.#lastRequestDuration = requestDuration;
@@ -7009,7 +7253,7 @@ class CountlyClass {
                             callback(true, params, response.status, data);
                         }
                     }
-                }).catch((error) => {
+                })).catch((error) => this.#forRequest(params, () => {
                     clearTimeout(timeoutId);
                     if (error.name === 'AbortError') {
                         this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
@@ -7023,7 +7267,7 @@ class CountlyClass {
                             callback(true, params);
                         }
                     }
-                });
+                }));
             });
         }
         catch (e) {
@@ -7454,6 +7698,10 @@ class CountlyClass {
             case "cly_config":
                 this.#serverConfigCache = this.deserialize(newValue || "{}");
                 this.#populateServerConfig(this.#serverConfigCache);
+                // a live server response always carries 'lg', so a mirrored config that has one came from another tab's fetch
+                if (this.#serverConfigCache && typeof this.#serverConfigCache.lg !== "undefined") {
+                    this.#applyLogGatheringConfig(this.#serverConfigCache.lg);
+                }
                 break;
             case "cly_id":
                 this.device_id = newValue;
@@ -7557,6 +7805,10 @@ class CountlyClass {
         setFakeRequestHandler: (handler) => { this.#fakeRequestHandler = handler; },
         getFakeRequestHandler: () => this.#fakeRequestHandler,
         closeContent: () => this.#closeContentFrame(),
+        getLogBuffer: () => this.#logBuffer,
+        getLogGatheringState: () => this.#SCLogGathering,
+        getDroppedLogCount: () => this.#logBufferDropped,
+        flushLogBuffer: () => this.#flushLogBuffer(),
         sendPushToken: this.#sendPushToken,
         urlBase64ToUint8Array: this.#urlBase64ToUint8Array,
         isPushSupported: this.#isPushSupported

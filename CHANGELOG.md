@@ -7,6 +7,9 @@
 * `enable_push_notifications` gives up with reason "timeout" when the browser never finishes creating the subscription (seen on iOS 18.7), so a later call can retry instead of joining the stuck one; `push_subscribe_timeout` (milliseconds, default 30000) sets the wait. The silent registration at load now logs its outcome.
 * With `debug: true` the service worker logs every push, click and close too, and forwards the lines to the page as `[SW]` entries. A host worker turns this on with `self.COUNTLY_PUSH_DEBUG = true`.
 * Added support for server initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
+* Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
+
+* Mitigated an issue where a log line carrying an object that could not be serialized would throw while `debug` was enabled.
 
 ## 26.1.3
 
