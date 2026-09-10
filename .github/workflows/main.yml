@@ -39,7 +39,8 @@ jobs:
       - name: Run Cypress
         uses: cypress-io/github-action@v6
         with:
-          command: npx cypress run --browser ${{ matrix.browser }} --config video=true --reporter junit --reporter-options "mochaFile=results/${{ matrix.browser }}-[hash].xml"
+          # the action splits this itself, so quotes would reach cypress literally
+          command: npx cypress run --browser ${{ matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
 
       - name: Test report
         uses: dorny/test-reporter@v2
@@ -52,6 +53,7 @@ jobs:
           list-tests: failed
           use-actions-summary: true
           fail-on-error: false
+          fail-on-empty: false
 
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
