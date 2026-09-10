@@ -27,7 +27,12 @@ export default defineConfig({
                 resolve: { fullySpecified: false },
                 use: {
                   loader: 'babel-loader',
-                  options: { presets: ['@babel/preset-env'], plugins: ['istanbul'] }
+                  options: {
+                    // commonjs + add-module-exports keeps `require("../../Countly.js")` returning the
+                    // default export, as Cypress's built-in preprocessor does
+                    presets: [['@babel/preset-env', { modules: 'commonjs' }]],
+                    plugins: ['istanbul', 'add-module-exports']
+                  }
                 }
               }]
             }

@@ -36,11 +36,20 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Cypress 13.6 drives Firefox over CDP, which Firefox dropped in 129, so the runner's
+      # current Firefox never connects. 128 ESR is the last line that still speaks CDP.
+      - name: Set up Firefox 128 ESR
+        id: firefox
+        if: matrix.browser == 'firefox'
+        uses: browser-actions/setup-firefox@v1
+        with:
+          firefox-version: 128.14.0esr
+
       - name: Run Cypress
         uses: cypress-io/github-action@v6
         with:
           # the action splits this itself, so quotes would reach cypress literally
-          command: npx cypress run --browser ${{ matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
+          command: npx cypress run --browser ${{ matrix.browser == 'firefox' && steps.firefox.outputs.firefox-path || matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
 
       - name: Test report
         uses: dorny/test-reporter@v2
