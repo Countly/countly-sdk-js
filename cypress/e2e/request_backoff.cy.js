@@ -42,9 +42,11 @@ describe("Request Back-off Mechanism Tests", () => {
     it("1_Basic test checking server works", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 0);
-            cy.task("startServer");
-            initMain();
-            Countly.add_event({key: "test_1"});
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain();
+                Countly.add_event({key: "test_1"});
+            });
                 cy.wait(3000).then(() => {
                     cy.fetch_local_request_queue().then((rq) => {
                         cy.log("Request Queue: " + JSON.stringify(rq));
@@ -57,9 +59,11 @@ describe("Request Back-off Mechanism Tests", () => {
     it("2_Basic timeout test", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 31000);
-            cy.task("startServer");
-            initMain();
-            Countly.add_event({ key: "test_1" });
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain();
+                Countly.add_event({ key: "test_1" });
+            });
             cy.wait(40000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -72,9 +76,11 @@ describe("Request Back-off Mechanism Tests", () => {
     it("3_Initial backoff test Delay", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 11000);
-            cy.task("startServer");
-            initMain();
-            Countly.add_event({ key: "test_1" });
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain();
+                Countly.add_event({ key: "test_1" });
+            });
             cy.wait(15000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -134,9 +140,11 @@ describe("Request Back-off Mechanism Tests", () => {
     it("3_B_backoff turned off Delay", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 11000);
-            cy.task("startServer");
-            initMain(undefined, undefined, undefined, true);
-            Countly.add_event({ key: "test_1" });
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain(undefined, undefined, undefined, true);
+                Countly.add_event({ key: "test_1" });
+            });
             cy.wait(15000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -158,9 +166,11 @@ describe("Request Back-off Mechanism Tests", () => {
     it("3_C_sc backoff turned off Delay", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 11000);
-            cy.task("startServer");
-            initMain(undefined, undefined, undefined, undefined, {c:{ bom: false}});
-            Countly.add_event({ key: "test_1" });
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain(undefined, undefined, undefined, undefined, {c:{ bom: false}});
+                Countly.add_event({ key: "test_1" });
+            });
             cy.wait(15000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -182,9 +192,11 @@ describe("Request Back-off Mechanism Tests", () => {
     it("3_D_sc timeout and duration Delay", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 3500);
-            cy.task("startServer");
-            initMain(undefined, undefined, undefined, undefined, { c: { bom_at: 3, bom_d: 15 } });
-            Countly.add_event({ key: "test_1" });
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain(undefined, undefined, undefined, undefined, { c: { bom_at: 3, bom_d: 15 } });
+                Countly.add_event({ key: "test_1" });
+            });
             cy.wait(5000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -245,10 +257,12 @@ describe("Request Back-off Mechanism Tests", () => {
     it("3_E_sc timeout, duration and age Delay", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 3500);
-            cy.task("startServer");
-            var oldTimestamp = Math.floor(Date.now() / 1000) - 2 * 60 * 60; // 2 hours ago
-            initMain(undefined, oldTimestamp, undefined, undefined, { c: { bom_at: 3, bom_d: 15, bom_ra: 1 } });
-            Countly.add_event({ key: "test_1" });
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                var oldTimestamp = Math.floor(Date.now() / 1000) - 2 * 60 * 60; // 2 hours ago
+                initMain(undefined, oldTimestamp, undefined, undefined, { c: { bom_at: 3, bom_d: 15, bom_ra: 1 } });
+                Countly.add_event({ key: "test_1" });
+            });
             cy.wait(5000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -297,13 +311,15 @@ describe("Request Back-off Mechanism Tests", () => {
     it("3_F_sc request queue percentage Delay", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 3500);
-            cy.task("startServer");
-            initMain(undefined, undefined, undefined, undefined, { c: { bom_at: 3, bom_d: 15, bom_rqp: 0.1 } });
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain(undefined, undefined, undefined, undefined, { c: { bom_at: 3, bom_d: 15, bom_rqp: 0.1 } });
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+            });
             cy.wait(12000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -316,20 +332,22 @@ describe("Request Back-off Mechanism Tests", () => {
     it("4_No backoff if queue is crowded Delay_FullQueue", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 31000);
-            cy.task("startServer");
-            initMain();
-            Countly.add_event({ key: "test_1" });
-            Countly.userData.set("key", "value");
-            Countly.userData.save();
-            Countly.add_event({ key: "test_1" });
-            Countly.userData.set("key", "value");
-            Countly.userData.save();
-            Countly.add_event({ key: "test_1" });
-            Countly.userData.set("key", "value");
-            Countly.userData.save();
-            Countly.add_event({ key: "test_1" });
-            Countly.userData.set("key", "value");
-            Countly.userData.save();
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain();
+                Countly.add_event({ key: "test_1" });
+                Countly.userData.set("key", "value");
+                Countly.userData.save();
+                Countly.add_event({ key: "test_1" });
+                Countly.userData.set("key", "value");
+                Countly.userData.save();
+                Countly.add_event({ key: "test_1" });
+                Countly.userData.set("key", "value");
+                Countly.userData.save();
+                Countly.add_event({ key: "test_1" });
+                Countly.userData.set("key", "value");
+                Countly.userData.save();
+            });
             cy.wait(42000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -362,25 +380,27 @@ describe("Request Back-off Mechanism Tests", () => {
     it("5_No backoff if queue is crowded Delay_FullQueue_OldRequest", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 31000);
-            cy.task("startServer");
-            var oldTimestamp = Math.floor(Date.now() / 1000) - 10 * 365 * 24 * 60 * 60; // 10 years old timestamp in ms
-            initMain(undefined, oldTimestamp);
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                var oldTimestamp = Math.floor(Date.now() / 1000) - 10 * 365 * 24 * 60 * 60; // 10 years old timestamp in ms
+                initMain(undefined, oldTimestamp);
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+            });
             cy.wait(42000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -407,18 +427,20 @@ describe("Request Back-off Mechanism Tests", () => {
     it("6_No backoff if queue is crowded Delay_OldRequest", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 11000);
-            cy.task("startServer");
-            var oldTimestamp = Math.floor(Date.now() / 1000) - 25 * 60 * 60; // 25 hours old timestamp in ms
-            initMain(undefined, oldTimestamp, true);
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1"});
-            Countly.attempt_to_send_stored_requests();
-            Countly.test_mode_rq(false);
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                var oldTimestamp = Math.floor(Date.now() / 1000) - 25 * 60 * 60; // 25 hours old timestamp in ms
+                initMain(undefined, oldTimestamp, true);
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1"});
+                Countly.attempt_to_send_stored_requests();
+                Countly.test_mode_rq(false);
+            });
             cy.wait(45000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -432,26 +454,28 @@ describe("Request Back-off Mechanism Tests", () => {
     it("7_No backoff if queue is crowded FullQueue_OldRequest", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 0);
-            cy.task("startServer");
-            var oldTimestamp = Math.floor(Date.now() / 1000) - 25 * 60 * 60; // 25 hours old timestamp in ms
-            initMain(undefined, oldTimestamp, true);
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.test_mode_rq(false);
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                var oldTimestamp = Math.floor(Date.now() / 1000) - 25 * 60 * 60; // 25 hours old timestamp in ms
+                initMain(undefined, oldTimestamp, true);
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.test_mode_rq(false);
+            });
             cy.wait(10000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -465,18 +489,20 @@ describe("Request Back-off Mechanism Tests", () => {
     it("8_No backoff OldRequest", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 0);
-            cy.task("startServer");
-            var oldTimestamp = Math.floor(Date.now() / 1000) - 25 * 60 * 60; // 25 hours old timestamp in ms
-            initMain(undefined, oldTimestamp, true);
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.test_mode_rq(false);
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                var oldTimestamp = Math.floor(Date.now() / 1000) - 25 * 60 * 60; // 25 hours old timestamp in ms
+                initMain(undefined, oldTimestamp, true);
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.test_mode_rq(false);
+            });
             cy.wait(10000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
@@ -490,25 +516,27 @@ describe("Request Back-off Mechanism Tests", () => {
     it("9_No backoff FullQueue", () => {
         hp.haltAndClearStorage(() => {
             cy.task("setResponseDelay", 0);
-            cy.task("startServer");
-            initMain(undefined, undefined, true);
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.add_event({ key: "test_1" });
-            Countly.attempt_to_send_stored_requests();
-            Countly.test_mode_rq(false);
+            // the SDK starts sending as soon as it is initialized, so the server has to be up first
+            cy.task("startServer").then(() => {
+                initMain(undefined, undefined, true);
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.add_event({ key: "test_1" });
+                Countly.attempt_to_send_stored_requests();
+                Countly.test_mode_rq(false);
+            });
             cy.wait(10000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
