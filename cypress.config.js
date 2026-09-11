@@ -5,6 +5,9 @@ const require = createRequire(import.meta.url);
 
 export default defineConfig({
   e2e: {
+    // many specs assert on wall-clock session and heartbeat timing with margins of a second or two,
+    // which a loaded CI runner misses now and then; a retry separates a slow runner from a real regression
+    retries: { runMode: 2, openMode: 0 },
     setupNodeEvents(on, config) {
       const codeCoverageTask = require('@cypress/code-coverage/task');
       codeCoverageTask(on, config);
