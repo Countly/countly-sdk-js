@@ -95,20 +95,11 @@ jobs:
           node-version: 22
           cache: npm
 
-      # Cypress 13.17 cannot launch the runner's current Firefox (ENOENT on the rust_mozprofile
-      # it creates), 128 ESR is the newest line it drives without that failure
-      - name: Set up Firefox 128 ESR
-        id: firefox
-        if: matrix.browser == 'firefox'
-        uses: browser-actions/setup-firefox@v1
-        with:
-          firefox-version: 128.14.0esr
-
       - name: Run Cypress
         uses: cypress-io/github-action@v6
         with:
           # the action splits this itself, so quotes would reach cypress literally
-          command: npx cypress run --browser ${{ matrix.browser == 'firefox' && steps.firefox.outputs.firefox-path || matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
+          command: npx cypress run --browser ${{ matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
 
       - name: Test report
         uses: EnricoMi/publish-unit-test-result-action@v2

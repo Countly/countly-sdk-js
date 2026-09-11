@@ -1,5 +1,4 @@
 /* eslint-disable require-jsdoc */
-const exp = require("constants");
 var Countly = require("../../Countly.js");
 var hp = require("../support/helper");
 
