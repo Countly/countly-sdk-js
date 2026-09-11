@@ -73,17 +73,34 @@ jobs:
         run: npm run test:node
 
   cypress:
-    name: Cypress ${{ matrix.browser }} on ${{ matrix.os }}
+    name: Cypress ${{ matrix.browser }} ${{ matrix.shard }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04]
         browser: [chrome, firefox, edge, electron]
+        # request_backoff.cy.js is real-time back-off behaviour and alone takes as long as every
+        # other spec together, so it gets its own job and the rest run in parallel with it
+        shard: [core, backoff]
         include:
           - os: windows-latest
             browser: chrome
+            shard: core
+          - os: windows-latest
+            browser: chrome
+            shard: backoff
+          - os: macos-latest
+            browser: chrome
+            shard: core
+          - os: macos-latest
+            browser: chrome
+            shard: backoff
+    env:
+      # only one leg pays for instrumentation and produces the coverage report
+      COVERAGE_LEG: ${{ matrix.browser == 'chrome' && matrix.shard == 'core' && matrix.os == 'ubuntu-24.04' }}
+      SHARD_ARGS: ${{ matrix.shard == 'backoff' && '--spec cypress/e2e/request_backoff.cy.js' || '--config excludeSpecPattern=cypress/e2e/request_backoff.cy.js' }}
 
     steps:
       - name: Checkout
@@ -97,17 +114,19 @@ jobs:
 
       - name: Run Cypress
         uses: cypress-io/github-action@v6
+        env:
+          CYPRESS_COVERAGE: ${{ env.COVERAGE_LEG }}
         with:
           # the action splits this itself, so quotes would reach cypress literally
-          command: npx cypress run --browser ${{ matrix.browser }} --config video=true --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-[hash].xml
+          command: npx cypress run --browser ${{ matrix.browser }} ${{ env.SHARD_ARGS }} --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-${{ matrix.shard }}-[hash].xml
 
       - name: Test report
         uses: EnricoMi/publish-unit-test-result-action@v2
         if: always() && runner.os == 'Linux'
         with:
-          check_name: Test results (${{ matrix.browser }}, ${{ matrix.os }})
+          check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
           files: results/*.xml
-          comment_mode: ${{ matrix.browser == 'chrome' && 'always' || 'off' }}
+          comment_mode: ${{ env.COVERAGE_LEG == 'true' && 'always' || 'off' }}
           report_individual_runs: true
           action_fail: false
           action_fail_on_inconclusive: false
@@ -116,7 +135,18 @@ jobs:
         uses: EnricoMi/publish-unit-test-result-action/windows@v2
         if: always() && runner.os == 'Windows'
         with:
-          check_name: Test results (${{ matrix.browser }}, ${{ matrix.os }})
+          check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
+          files: results/*.xml
+          comment_mode: off
+          report_individual_runs: true
+          action_fail: false
+          action_fail_on_inconclusive: false
+
+      - name: Test report (macOS)
+        uses: EnricoMi/publish-unit-test-result-action/macos@v2
+        if: always() && runner.os == 'macOS'
+        with:
+          check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
           files: results/*.xml
           comment_mode: off
           report_individual_runs: true
@@ -127,7 +157,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: junit-${{ matrix.browser }}-${{ matrix.os }}
+          name: junit-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
           path: results
           if-no-files-found: ignore
 
@@ -135,25 +165,20 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: cypress-screenshots-${{ matrix.browser }}-${{ matrix.os }}
+          name: cypress-screenshots-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
           path: cypress/screenshots
           if-no-files-found: ignore
 
-      - name: Upload videos
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: cypress-videos-${{ matrix.browser }}-${{ matrix.os }}
-          path: cypress/videos
-          if-no-files-found: ignore
-
-      - name: Coverage summary
-        if: always() && matrix.browser == 'chrome' && runner.os == 'Linux' && hashFiles('coverage/coverage-summary.json') != ''
-        run: node .github/scripts/coverage-summary.mjs coverage/coverage-summary.json coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
+      # the per-spec reports only merge json; the html report is built once here
+      - name: Coverage report
+        if: always() && env.COVERAGE_LEG == 'true' && hashFiles('.nyc_output/out.json') != ''
+        run: |
+          npx nyc report --reporter=lcov --reporter=json-summary --report-dir=coverage
+          node .github/scripts/coverage-summary.mjs coverage/coverage-summary.json coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
-        if: always() && matrix.browser == 'chrome' && runner.os == 'Linux'
+        if: always() && env.COVERAGE_LEG == 'true'
         with:
           name: coverage-report
           path: |
@@ -164,7 +189,7 @@ jobs:
 
       - name: Coverage comment
         uses: marocchino/sticky-pull-request-comment@v2
-        if: always() && matrix.browser == 'chrome' && runner.os == 'Linux' && github.event_name == 'pull_request' && hashFiles('coverage/summary.md') != ''
+        if: always() && env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request' && hashFiles('coverage/summary.md') != ''
         continue-on-error: true
         with:
           header: coverage

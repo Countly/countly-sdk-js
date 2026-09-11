@@ -2,6 +2,6 @@
     "all": false,
     "include": ["Countly.js", "countly_sw.js", "modules/**/*.js"],
     "exclude": ["cypress/**", "dist/**", "examples/**", "test_workers/**", "node_modules/**"],
-    "reporter": ["text-summary", "lcov", "json-summary"],
+    "reporter": ["text-summary"],
     "report-dir": "coverage"
 }

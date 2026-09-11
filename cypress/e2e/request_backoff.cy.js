@@ -191,13 +191,15 @@ describe("Request Back-off Mechanism Tests", () => {
     });
     it("3_D_sc timeout and duration Delay", () => {
         hp.haltAndClearStorage(() => {
-            cy.task("setResponseDelay", 3500);
+            // request durations are measured in whole seconds, so a 3.5s delay reads as 3 or 4 and only
+            // sometimes exceeds bom_at 3; 4s always does
+            cy.task("setResponseDelay", 4000);
             // the SDK starts sending as soon as it is initialized, so the server has to be up first
             cy.task("startServer").then(() => {
                 initMain(undefined, undefined, undefined, undefined, { c: { bom_at: 3, bom_d: 15 } });
                 Countly.add_event({ key: "test_1" });
             });
-            cy.wait(5000).then(() => {
+            cy.wait(6000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
                     expect(rq.length).to.equal(0);
@@ -207,7 +209,7 @@ describe("Request Back-off Mechanism Tests", () => {
                     cy.wait(5000).then(() => {
                         cy.task("getRequests").then((reqs) => {
                             cy.log("Server Requests: " + JSON.stringify(reqs));
-                            expect(reqs.length).to.equal(4);
+                            expect(reqs.length, "server saw: " + JSON.stringify(reqs.map((r) => r.body.slice(0, 60)))).to.equal(4);
                             let found_test_1 = 0;
                             let found_sc = 0;
                             let found_feedback = 0;
@@ -234,7 +236,8 @@ describe("Request Back-off Mechanism Tests", () => {
                         cy.fetch_local_request_queue().then((rq) => {
                             cy.log("Request Queue: " + JSON.stringify(rq));
                             expect(rq.length).to.equal(1);
-                            cy.wait(9000).then(() => {
+                            // bom_d 15 counted from the slow request's completion, leave a margin past it
+                            cy.wait(11000).then(() => {
                                 cy.fetch_local_request_queue().then((rq) => {
                                     cy.log("Request Queue: " + JSON.stringify(rq));
                                     expect(rq.length).to.equal(0);
@@ -441,7 +444,8 @@ describe("Request Back-off Mechanism Tests", () => {
                 Countly.attempt_to_send_stored_requests();
                 Countly.test_mode_rq(false);
             });
-            cy.wait(45000).then(() => {
+            // four queued requests at 11s each need 44s plus heartbeat and network overhead
+            cy.wait(50000).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
                     expect(rq.length).to.equal(0);
