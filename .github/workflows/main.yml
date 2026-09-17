@@ -1,37 +1,196 @@
-name: Cypress Tests with Dependency and Artifact Caching
+name: Tests
 
 on:
   push:
-    branches: [master, staging]
+    branches: [main, master, staging]
   pull_request:
-    branches: [master, staging]
+    branches: [main, master, staging]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
 
 jobs:
-  install:
-    runs-on: ubuntu-22.04
+  build:
+    name: Build bundles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cypress install
-        uses: cypress-io/github-action@v6
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          # Disable running of tests within install job
-          runTests: false
+          node-version: 22
+          cache: npm
 
-  cypress-run:
-    runs-on: ubuntu-22.04
-    needs: install
+      - name: Install
+        run: npm ci
+
+      - name: Build ESM, CJS and UMD bundles
+        run: npm run build
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  node:
+    name: Node ${{ matrix.node }} runtime
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
-      # don't fail the entire matrix on failure
       fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # the bundles are consumed as-is, so no dependency install: the smoke test only needs Node itself
+      - name: Smoke test the bundles in a non-browser runtime
+        run: npm run test:node
+
+  cypress:
+    name: Cypress ${{ matrix.browser }} ${{ matrix.shard }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        browser: [chrome, firefox, edge, electron]
+        # request_backoff.cy.js is real-time back-off behaviour and alone takes as long as every
+        # other spec together, so it gets its own job and the rest run in parallel with it
+        shard: [core, backoff]
+        include:
+          - os: windows-latest
+            browser: chrome
+            shard: core
+          - os: windows-latest
+            browser: chrome
+            shard: backoff
+          - os: macos-latest
+            browser: chrome
+            shard: core
+          - os: macos-latest
+            browser: chrome
+            shard: backoff
+    env:
+      # only one leg pays for instrumentation and produces the coverage report
+      COVERAGE_LEG: ${{ matrix.browser == 'chrome' && matrix.shard == 'core' && matrix.os == 'ubuntu-24.04' }}
+      SHARD_ARGS: ${{ matrix.shard == 'backoff' && '--spec cypress/e2e/request_backoff.cy.js' || '--config excludeSpecPattern=cypress/e2e/request_backoff.cy.js' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cypress run
-        uses: cypress-io/github-action@v6
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          start: npx cypress run
-          browser: chrome
+          node-version: 22
+          cache: npm
+
+      - name: Run Cypress
+        uses: cypress-io/github-action@v6
+        env:
+          CYPRESS_COVERAGE: ${{ env.COVERAGE_LEG }}
+        with:
+          # the action splits this itself, so quotes would reach cypress literally
+          command: npx cypress run --browser ${{ matrix.browser }} ${{ env.SHARD_ARGS }} --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-${{ matrix.shard }}-[hash].xml
+
+      - name: Test report
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always() && runner.os == 'Linux'
+        with:
+          check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
+          files: results/*.xml
+          comment_mode: ${{ env.COVERAGE_LEG == 'true' && 'always' || 'off' }}
+          report_individual_runs: true
+          action_fail: false
+          action_fail_on_inconclusive: false
+
+      - name: Test report (Windows)
+        uses: EnricoMi/publish-unit-test-result-action/windows@v2
+        if: always() && runner.os == 'Windows'
+        with:
+          check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
+          files: results/*.xml
+          comment_mode: off
+          report_individual_runs: true
+          action_fail: false
+          action_fail_on_inconclusive: false
+
+      - name: Test report (macOS)
+        uses: EnricoMi/publish-unit-test-result-action/macos@v2
+        if: always() && runner.os == 'macOS'
+        with:
+          check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
+          files: results/*.xml
+          comment_mode: off
+          report_individual_runs: true
+          action_fail: false
+          action_fail_on_inconclusive: false
+
+      - name: Upload junit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
+          path: results
+          if-no-files-found: ignore
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cypress-screenshots-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
+          path: cypress/screenshots
+          if-no-files-found: ignore
+
+      # the per-spec reports only merge json; the html report is built once here
+      - name: Coverage report
+        if: always() && env.COVERAGE_LEG == 'true' && hashFiles('.nyc_output/out.json') != ''
+        run: |
+          npx nyc report --reporter=lcov --reporter=json-summary --report-dir=coverage
+          node .github/scripts/coverage-summary.mjs coverage/coverage-summary.json coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always() && env.COVERAGE_LEG == 'true'
+        with:
+          name: coverage-report
+          path: |
+            coverage/lcov-report
+            coverage/lcov.info
+            coverage/coverage-summary.json
+          if-no-files-found: ignore
+
+      - name: Coverage comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        if: always() && env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request' && hashFiles('coverage/summary.md') != ''
+        continue-on-error: true
+        with:
+          header: coverage
+          path: coverage/summary.md

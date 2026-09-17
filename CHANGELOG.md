@@ -8,6 +8,9 @@
 * With `debug: true` the service worker logs every push, click and close too, and forwards the lines to the page as `[SW]` entries. A host worker turns this on with `self.COUNTLY_PUSH_DEBUG = true`.
 * The service worker now honours two fields the server may send with a notification: `tag` replaces an earlier notification carrying the same tag instead of stacking a second one, and `requireInteraction` keeps the notification on screen until the user acts on it (Chrome and Edge; other browsers ignore it).
 * Added support for server initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
+* Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
+
+* Mitigated an issue where a log line carrying an object that could not be serialized would throw while `debug` was enabled.
 
 ## 26.1.3
 

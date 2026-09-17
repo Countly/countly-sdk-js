@@ -55,6 +55,32 @@ var logLevelEnums = {
     DEBUG: "[DEBUG] ",
     VERBOSE: "[VERBOSE] ",
 };
+
+/**
+ * Maps the internal log level to the single character the server expects on the wire
+ */
+var logLevelToWireChar = {
+    "[ERROR] ": "e",
+    "[WARNING] ": "w",
+    "[INFO] ": "i",
+    "[DEBUG] ": "d",
+    "[VERBOSE] ": "v",
+};
+
+/**
+ * Default and limit values for the operator driven internal log gathering ('lg' server config key)
+ */
+var logGatheringDefaultValues = {
+    ALLOWED_LEVELS: "ewidv",
+    BATCH_SIZE: 100,
+    MIN_BATCH_SIZE: 10,
+    // buffer cap while undecided, and so also the largest batch the server may ask for
+    MAX_BUFFERED_LINES: 500,
+    // milliseconds between time based flushes, checked on the heartbeat
+    FLUSH_INTERVAL: 60000,
+    MAX_MESSAGE_LENGTH: 4096,
+};
+
 /**
  * 
  *device ID type:
@@ -188,4 +214,4 @@ var SDK_NAME = "javascript_native_web";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };
