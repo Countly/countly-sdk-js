@@ -135,6 +135,40 @@ describe("Web push service worker", () => {
         });
     });
 
+    it("Replaces the notification on screen when the payload carries a tag", () => {
+        var worker = loadWorker(source);
+        var payload = { title: "Hi", message: "Body", tag: "order-updates", c: { i: MESSAGE_ID } };
+        cy.then(() => worker.dispatch("push", pushEvent(payload))).then(() => {
+            var shown = worker.self.registration.shown[0];
+            expect(shown.options.tag).to.equal("order-updates");
+            // without renotify the replacement is silent, which is not what an operator asked for
+            expect(shown.options.renotify).to.equal(true);
+        });
+    });
+
+    it("Leaves tag and renotify off when the payload has no tag", () => {
+        var worker = loadWorker(source);
+        cy.then(() => worker.dispatch("push", pushEvent({ title: "Hi", message: "Body", c: { i: MESSAGE_ID } }))).then(() => {
+            var shown = worker.self.registration.shown[0];
+            expect(shown.options.tag).to.equal(undefined);
+            expect(shown.options.renotify).to.equal(undefined);
+        });
+    });
+
+    it("Keeps the notification on screen when the payload asks for it", () => {
+        var worker = loadWorker(source);
+        cy.then(() => worker.dispatch("push", pushEvent({ title: "Hi", message: "Body", requireInteraction: true, c: { i: MESSAGE_ID } }))).then(() => {
+            expect(worker.self.registration.shown[0].options.requireInteraction).to.equal(true);
+        });
+    });
+
+    it("Does not ask to keep the notification on screen by default", () => {
+        var worker = loadWorker(source);
+        cy.then(() => worker.dispatch("push", pushEvent({ title: "Hi", message: "Body", c: { i: MESSAGE_ID } }))).then(() => {
+            expect(worker.self.registration.shown[0].options.requireInteraction).to.equal(undefined);
+        });
+    });
+
     it("Hands a click to exactly one page and forgets it once acknowledged", () => {
         var worker = loadWorker(source);
         var other = fakeClient("https://x/other", false);

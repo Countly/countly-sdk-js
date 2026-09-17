@@ -553,6 +553,16 @@ self.addEventListener("push", function (event) {
     if (payload.icon) {
         options.icon = payload.icon;
     }
+    // An operator collapse key: a newer notification with the same tag replaces the one on
+    // screen. renotify alerts the user again, which is why the message was sent in the first
+    // place; the browser refuses renotify without a tag, so the two travel together.
+    if (typeof payload.tag === "string" && payload.tag) {
+        options.tag = payload.tag;
+        options.renotify = true;
+    }
+    if (payload.requireInteraction) {
+        options.requireInteraction = true;
+    }
     if (countly.m) {
         options.image = countly.m;
     }
