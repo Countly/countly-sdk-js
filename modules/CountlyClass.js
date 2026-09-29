@@ -89,6 +89,7 @@ class CountlyClass {
     #inContentZone;
     #contentZoneTimer;
     #contentIframeID;
+    #globalContentSegmentation;
     #crashFilterCallback;
     #serverConfigCache;
     #SCNetwork;
@@ -206,6 +207,7 @@ class CountlyClass {
         this.#inContentZone = false;
         this.#contentZoneTimer = null;
         this.#contentIframeID = "cly-content-iframe";
+        this.#globalContentSegmentation = {};
         this.#crashFilterCallback = null;
         this.#SCNetwork = true;
         this.#SCSizeReqQueue = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
@@ -4256,6 +4258,7 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating lower than 1. Changing it back to 1 now.");
             event.segmentation.rating = 1;
         }
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
         this.#log(logLevelEnums.INFO, "recordRatingWidgetWithID, Reporting Rating Widget: ", event);
         this.#add_cly_events(event);
     };
@@ -4380,6 +4383,8 @@ class CountlyClass {
             // add response to the segmentation
             event.segmentation = addNewProperties(event.segmentation, widgetResult, props);
         }
+
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
 
         // add event
         this.#log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Reporting " + type + ": ", event);
@@ -4793,6 +4798,8 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Segmentation is not an object or empty");
             feedbackWidgetSegmentation = null;
         }
+        // the widget page reports its own events, so the global segmentation has to travel with the widget
+        feedbackWidgetSegmentation = this.#withGlobalContentSegmentation(feedbackWidgetSegmentation);
 
         try {
             var url = this.url;
@@ -4846,7 +4853,7 @@ class CountlyClass {
             const resInfo = this.#getResolution(true);
             customObjectToSendWithTheWidget.width = resInfo.width;
             customObjectToSendWithTheWidget.height = resInfo.height;
-            url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
+            url += "&custom=" + encodeURIComponent(JSON.stringify(customObjectToSendWithTheWidget));
             // Origin is passed to the popup so that it passes it back in the postMessage event
             // Only web SDK passes origin and web
             url += "&origin=" + passedOrigin;
@@ -5341,6 +5348,61 @@ class CountlyClass {
         exitContentZone: () => {
             this.#exitContentZoneInternal();
         },
+        setGlobalContentSegmentation: (segmentation) => {
+            this.#setGlobalContentSegmentationInternal(segmentation);
+        },
+    };
+
+    /**
+     * Internal method to set the segmentation that is added to every content and feedback widget event
+     * Keeps a sanitized copy, so the object the developer keeps can be changed without changing this one
+     * Only string, number and boolean values and arrays of them are kept, like the other SDKs do, and the internal limits are applied here
+     * @private
+     * @param {Object} [segmentation] - key/value pairs to add, null or an empty object clears the stored ones
+     */
+    #setGlobalContentSegmentationInternal = (segmentation) => {
+        this.#log(logLevelEnums.INFO, "content.setGlobalContentSegmentation, Setting the global content segmentation:", segmentation);
+        if (!segmentation || typeof segmentation !== "object" || Array.isArray(segmentation) || Object.keys(segmentation).length === 0) {
+            this.#log(logLevelEnums.DEBUG, "content.setGlobalContentSegmentation, Segmentation is not an object or empty, clearing the stored one");
+            this.#globalContentSegmentation = {};
+            return;
+        }
+        var isSupportedValue = (value) => typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+        var sanitized = {};
+        Object.keys(segmentation).forEach((key) => {
+            var value = segmentation[key];
+            if (Array.isArray(value)) {
+                sanitized[key] = value.filter(isSupportedValue);
+                if (sanitized[key].length !== value.length) {
+                    this.#log(logLevelEnums.DEBUG, "content.setGlobalContentSegmentation, Dropping the elements of the key: [" + key + "] that are not a string, number or boolean");
+                }
+                return;
+            }
+            if (!isSupportedValue(value)) {
+                this.#log(logLevelEnums.WARNING, "content.setGlobalContentSegmentation, Dropping the key: [" + key + "] because its value is not a string, number, boolean or an array of them");
+                return;
+            }
+            sanitized[key] = value;
+        });
+        this.#globalContentSegmentation = truncateObject(sanitized, this.#SCLimitKeyLength, this.#SCLimitValueSize, this.#SCLimitSegmentationValues, "setGlobalContentSegmentation", this.#log);
+    };
+
+    /**
+     * Internal method to put the global content segmentation underneath a segmentation of its own
+     * The given entries win and come first, so a global value can never replace an answer or a key the event provides,
+     * and the segmentation limit drops global keys before the event's own
+     * @private
+     * @param {Object} [segmentation] - segmentation the content or feedback widget event provides itself
+     * @returns {Object} the merged segmentation, or the given one when there is nothing to add
+     */
+    #withGlobalContentSegmentation = (segmentation) => {
+        var globalKeys = Object.keys(this.#globalContentSegmentation);
+        if (globalKeys.length === 0) {
+            return segmentation;
+        }
+        var merged = segmentation && typeof segmentation === "object" ? createNewObjectFromProperties(segmentation, Object.keys(segmentation)) : {};
+        var missingKeys = globalKeys.filter((key) => !Object.prototype.hasOwnProperty.call(merged, key));
+        return addNewProperties(merged, this.#globalContentSegmentation, missingKeys);
     };
 
     /**
@@ -5603,17 +5665,18 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for event");
                 this.#closeContentFrame();
             }
-            if (!Array.isArray(event)) {
-                if (typeof event === "object") {
-                    event = [event];
-                } else {
-                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof event + "]");
-                    return;
+            if (typeof event !== "object") {
+                this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof event + "]");
+                return;
+            }
+            var events = Array.isArray(event) ? event : [event];
+            for (var i = 0; i < events.length; i++) {
+                if (!events[i] || typeof events[i] !== "object") {
+                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Skipping an event that is not an object: [" + events[i] + "]");
+                    continue;
                 }
-            };
-            // event is expected to be an array of events
-            for (var i = 0; i < event.length; i++) {
-                this.#add_cly_events(event[i]); // let this method handle the event
+                events[i].segmentation = this.#withGlobalContentSegmentation(events[i].segmentation);
+                this.#add_cly_events(events[i]); // let this method handle the event
             }
         }
 
