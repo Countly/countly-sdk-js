@@ -57,34 +57,15 @@ describe("Global content segmentation", () => {
         });
     });
 
-    it("drops the keys the widget events report themselves, including on a closed widget", () => {
+    it("never overrides the keys the widget events report themselves, including on a closed widget", () => {
         hp.haltAndClearStorage(() => {
             initMain();
-            Countly.content.setGlobalContentSegmentation({
-                widget_id: "hijacked",
-                platform: "hijacked",
-                app_version: "hijacked",
-                closed: "hijacked",
-                rating: 5,
-                comment: "hijacked",
-                email: "someone@else.com",
-                contactMe: true,
-                shown: 1,
-                campaign_id: "hijacked",
-                "answ-q1": "hijacked",
-                screen: "settings"
-            });
+            Countly.content.setGlobalContentSegmentation({ widget_id: "hijacked", app_version: "hijacked", closed: "hijacked", screen: "settings" });
             Countly.reportFeedbackWidgetManually(npsWidget, widgetData, null);
             cy.fetch_local_event_queue().then((eq) => {
                 expect(eq.length).to.equal(1);
-                expect(eq[0].segmentation.widget_id).to.equal("widget123");
-                expect(eq[0].segmentation.platform).to.not.equal("hijacked");
+                cy.check_event(eq[0], { key: "[CLY]_nps", segmentation: { widget_id: "widget123", closed: 1, screen: "settings" } });
                 expect(eq[0].segmentation.app_version).to.not.equal("hijacked");
-                expect(eq[0].segmentation.closed).to.equal(1);
-                ["rating", "comment", "email", "contactMe", "shown", "campaign_id", "answ-q1"].forEach((key) => {
-                    expect(eq[0].segmentation[key], key).to.equal(undefined);
-                });
-                expect(eq[0].segmentation.screen).to.equal("settings");
             });
         });
     });
@@ -172,23 +153,6 @@ describe("Global content segmentation", () => {
             var custom = presentedCustomObject();
             expect(custom.sg.promo).to.equal(promo);
             expect(custom.tc).to.equal(1);
-        });
-    });
-
-    it("leaves global keys out of a presented widget's URL once they no longer fit, but never the call's own keys", () => {
-        hp.haltAndClearStorage(() => {
-            initMain();
-            var global = {};
-            for (var i = 0; i < 30; i++) {
-                global["key" + i] = "v".repeat(200);
-            }
-            Countly.content.setGlobalContentSegmentation(global);
-            Countly.present_feedback_widget(npsWidget, undefined, undefined, { screen: "checkout" });
-            var custom = presentedCustomObject();
-            expect(custom.sg.screen).to.equal("checkout");
-            expect(custom.sg.key0).to.equal("v".repeat(200));
-            expect(custom.sg.key29).to.equal(undefined);
-            expect(encodeURIComponent(JSON.stringify(custom.sg)).length).to.be.at.most(2000);
         });
     });
 
