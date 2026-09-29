@@ -40,11 +40,22 @@ var internalEventKeyEnums = {
 
 var internalEventKeyEnumsArray = Object.values(internalEventKeyEnums);
 /**
- * The segmentation keys content and feedback widget events fill in themselves. A global content
- * segmentation value for one of them is dropped when it is set, so the developer is told about it
- * once instead of it silently losing to the event on some events and not on others.
+ * The segmentation keys content and feedback widget events fill in themselves, or that the server reads
+ * as a widget answer or uses to route a widget event. A global content segmentation value for one of them
+ * is dropped when it is set, so it can never pose as an answer on an event that leaves the key out.
  */
-var reservedContentSegmentationKeys = ["platform", "app_version", "widget_id", "closed"];
+var reservedContentSegmentationKeys = ["platform", "app_version", "widget_id", "closed", "rating", "comment", "email", "contactMe", "shown", "campaign_id"];
+/**
+ * Survey answers are keyed as this prefix plus the question id, so global content segmentation keys
+ * starting with it are dropped as well
+ */
+var reservedContentSegmentationKeyPrefix = "answ-";
+/**
+ * The most characters a presented widget's segmentation may take in the widget URL once encoded before
+ * global content segmentation keys are left out. The widget page repeats that segmentation in its own GET
+ * request, so both requests have to stay well under the 8 KB request line common server defaults accept.
+ */
+var maxWidgetSegmentationUrlLength = 2000;
 /**
  * 
  *log level Enums:
@@ -220,4 +231,4 @@ var SDK_NAME = "javascript_native_web";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, reservedContentSegmentationKeys, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, reservedContentSegmentationKeys, reservedContentSegmentationKeyPrefix, maxWidgetSegmentationUrlLength, urlParseRE };

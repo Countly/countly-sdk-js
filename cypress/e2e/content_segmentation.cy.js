@@ -5,21 +5,22 @@ var hp = require("../support/helper.js");
 const npsWidget = { _id: "widget123", type: "nps" };
 const widgetData = { true: true };
 
-function initMain() {
-    Countly.init({
+function initMain(config) {
+    Countly.init(Object.assign({
         app_key: "YOUR_APP_KEY",
         url: "https://your.domain.count.ly",
         test_mode: true,
         test_mode_eq: true,
         debug: true
-    });
+    }, config));
 }
 
 function presentedCustomObject() {
     var iframe = document.getElementById("countly-surveys-iframe");
     expect(iframe, "surveys iframe should be created").to.exist;
-    var src = iframe.getAttribute("src");
-    return JSON.parse(decodeURIComponent(src.split("&custom=")[1].split("&origin=")[0]));
+    // read the way the widget pages read it
+    var match = /[?&]custom=([^&#]*)/.exec(iframe.getAttribute("src"));
+    return JSON.parse(decodeURIComponent(match[1].replace(/\+/g, " ")));
 }
 
 describe("Global content segmentation", () => {
@@ -31,12 +32,7 @@ describe("Global content segmentation", () => {
             cy.fetch_local_event_queue().then((eq) => {
                 expect(eq.length).to.equal(1);
                 cy.check_commons(eq[0]);
-                expect(eq[0].key).to.equal("[CLY]_nps");
-                expect(eq[0].segmentation.screen).to.equal("checkout");
-                expect(eq[0].segmentation.step).to.equal(3);
-                expect(eq[0].segmentation.rating).to.equal(4);
-                expect(eq[0].segmentation.comment).to.equal("all good");
-                expect(eq[0].segmentation.widget_id).to.equal("widget123");
+                cy.check_event(eq[0], { key: "[CLY]_nps", segmentation: { screen: "checkout", step: 3, rating: 4, comment: "all good", widget_id: "widget123" } });
             });
         });
     });
@@ -69,6 +65,13 @@ describe("Global content segmentation", () => {
                 platform: "hijacked",
                 app_version: "hijacked",
                 closed: "hijacked",
+                rating: 5,
+                comment: "hijacked",
+                email: "someone@else.com",
+                contactMe: true,
+                shown: 1,
+                campaign_id: "hijacked",
+                "answ-q1": "hijacked",
                 screen: "settings"
             });
             Countly.reportFeedbackWidgetManually(npsWidget, widgetData, null);
@@ -78,7 +81,44 @@ describe("Global content segmentation", () => {
                 expect(eq[0].segmentation.platform).to.not.equal("hijacked");
                 expect(eq[0].segmentation.app_version).to.not.equal("hijacked");
                 expect(eq[0].segmentation.closed).to.equal(1);
+                ["rating", "comment", "email", "contactMe", "shown", "campaign_id", "answ-q1"].forEach((key) => {
+                    expect(eq[0].segmentation[key], key).to.equal(undefined);
+                });
                 expect(eq[0].segmentation.screen).to.equal("settings");
+            });
+        });
+    });
+
+    it("keeps only string, number and boolean values or arrays of them, and copies the arrays", () => {
+        hp.haltAndClearStorage(() => {
+            initMain();
+            var tags = ["new", 2, { nested: true }];
+            Countly.content.setGlobalContentSegmentation({ screen: "home", count: 2, beta: false, tags: tags, user: { tier: "free" }, callback: () => {}, empty: null });
+            tags.push("later");
+            Countly.reportFeedbackWidgetManually(npsWidget, widgetData, { rating: 4 });
+            cy.fetch_local_event_queue().then((eq) => {
+                expect(eq.length).to.equal(1);
+                cy.check_event(eq[0], { key: "[CLY]_nps", segmentation: { screen: "home", count: 2, beta: false, rating: 4 } });
+                expect(eq[0].segmentation.tags).to.deep.equal(["new", 2]);
+                expect(eq[0].segmentation.user).to.equal(undefined);
+                expect(eq[0].segmentation.callback).to.equal(undefined);
+                expect(eq[0].segmentation.empty).to.equal(undefined);
+            });
+        });
+    });
+
+    it("gives way to the event's own keys when the segmentation limit is hit", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ max_segmentation_values: 5 });
+            Countly.content.setGlobalContentSegmentation({ g1: 1, g2: 2, g3: 3 });
+            Countly.reportFeedbackWidgetManually(npsWidget, widgetData, { rating: 4, comment: "all good" });
+            cy.fetch_local_event_queue().then((eq) => {
+                expect(eq.length).to.equal(1);
+                // widget_id, app_version, rating and comment leave room for one global key
+                cy.check_event(eq[0], { key: "[CLY]_nps", segmentation: { widget_id: "widget123", rating: 4, comment: "all good", g1: 1 } });
+                expect(Object.keys(eq[0].segmentation).length).to.equal(5);
+                expect(eq[0].segmentation.g2).to.equal(undefined);
+                expect(eq[0].segmentation.g3).to.equal(undefined);
             });
         });
     });
@@ -95,9 +135,7 @@ describe("Global content segmentation", () => {
                 var ratings = eq.filter((e) => e.key === "[CLY]_star_rating");
                 expect(ratings.length).to.equal(1);
                 cy.check_commons(ratings[0]);
-                expect(ratings[0].segmentation.screen).to.equal("pricing");
-                expect(ratings[0].segmentation.rating).to.equal(3);
-                expect(ratings[0].segmentation.widget_id).to.equal("rating123");
+                cy.check_event(ratings[0], { key: "[CLY]_star_rating", segmentation: { screen: "pricing", rating: 3, widget_id: "rating123" } });
             });
         });
     });
@@ -122,6 +160,35 @@ describe("Global content segmentation", () => {
             var custom = presentedCustomObject();
             expect(custom.sg.screen).to.equal("checkout");
             expect(custom.sg.step).to.equal(2);
+        });
+    });
+
+    it("reaches a presented widget intact when a value has URL characters in it", () => {
+        hp.haltAndClearStorage(() => {
+            initMain();
+            var promo = "50% off & free #1 C++ ?x=y";
+            Countly.content.setGlobalContentSegmentation({ promo: promo });
+            Countly.present_feedback_widget(npsWidget);
+            var custom = presentedCustomObject();
+            expect(custom.sg.promo).to.equal(promo);
+            expect(custom.tc).to.equal(1);
+        });
+    });
+
+    it("leaves global keys out of a presented widget's URL once they no longer fit, but never the call's own keys", () => {
+        hp.haltAndClearStorage(() => {
+            initMain();
+            var global = {};
+            for (var i = 0; i < 30; i++) {
+                global["key" + i] = "v".repeat(200);
+            }
+            Countly.content.setGlobalContentSegmentation(global);
+            Countly.present_feedback_widget(npsWidget, undefined, undefined, { screen: "checkout" });
+            var custom = presentedCustomObject();
+            expect(custom.sg.screen).to.equal("checkout");
+            expect(custom.sg.key0).to.equal("v".repeat(200));
+            expect(custom.sg.key29).to.equal(undefined);
+            expect(encodeURIComponent(JSON.stringify(custom.sg)).length).to.be.at.most(2000);
         });
     });
 

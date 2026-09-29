@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, reservedContentSegmentationKeys, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, reservedContentSegmentationKeys, reservedContentSegmentationKeyPrefix, maxWidgetSegmentationUrlLength, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     getMultiSelectValues,
@@ -4798,8 +4798,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Segmentation is not an object or empty");
             feedbackWidgetSegmentation = null;
         }
-        // the widget page reports its own events, so the global segmentation has to travel with the widget
-        feedbackWidgetSegmentation = this.#withGlobalContentSegmentation(feedbackWidgetSegmentation);
+        feedbackWidgetSegmentation = this.#withGlobalWidgetUrlSegmentation(feedbackWidgetSegmentation);
 
         try {
             var url = this.url;
@@ -4853,7 +4852,7 @@ class CountlyClass {
             const resInfo = this.#getResolution(true);
             customObjectToSendWithTheWidget.width = resInfo.width;
             customObjectToSendWithTheWidget.height = resInfo.height;
-            url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
+            url += "&custom=" + encodeURIComponent(JSON.stringify(customObjectToSendWithTheWidget));
             // Origin is passed to the popup so that it passes it back in the postMessage event
             // Only web SDK passes origin and web
             url += "&origin=" + passedOrigin;
@@ -5356,42 +5355,80 @@ class CountlyClass {
     /**
      * Internal method to set the segmentation that is added to every content and feedback widget event
      * Keeps a sanitized copy, so the object the developer keeps can be changed without changing this one
+     * Only string, number and boolean values and arrays of them are kept, like the other SDKs do
      * @private
      * @param {Object} [segmentation] - key/value pairs to add, null or an empty object clears the stored ones
      */
     #setGlobalContentSegmentationInternal = (segmentation) => {
-        this.#log(logLevelEnums.INFO, "content.setGlobalContentSegmentation, Setting the global content segmentation:[" + JSON.stringify(segmentation) + "]");
-        if (!segmentation || typeof segmentation !== "object" || Object.keys(segmentation).length === 0) {
+        this.#log(logLevelEnums.INFO, "content.setGlobalContentSegmentation, Setting the global content segmentation:", segmentation);
+        if (!segmentation || typeof segmentation !== "object" || Array.isArray(segmentation) || Object.keys(segmentation).length === 0) {
             this.#log(logLevelEnums.DEBUG, "content.setGlobalContentSegmentation, Segmentation is not an object or empty, clearing the stored one");
             this.#globalContentSegmentation = {};
             return;
         }
+        var isSupportedValue = (value) => typeof value === "string" || typeof value === "number" || typeof value === "boolean";
         var sanitized = {};
         Object.keys(segmentation).forEach((key) => {
-            if (reservedContentSegmentationKeys.indexOf(key) !== -1) {
-                this.#log(logLevelEnums.WARNING, "content.setGlobalContentSegmentation, Dropping the key: [" + key + "] because the events provide it themselves");
+            var value = segmentation[key];
+            if (reservedContentSegmentationKeys.indexOf(key) !== -1 || key.indexOf(reservedContentSegmentationKeyPrefix) === 0) {
+                this.#log(logLevelEnums.WARNING, "content.setGlobalContentSegmentation, Dropping the key: [" + key + "] because the events or their answers provide it");
                 return;
             }
-            sanitized[key] = segmentation[key];
+            if (Array.isArray(value)) {
+                sanitized[key] = value.filter(isSupportedValue);
+                if (sanitized[key].length !== value.length) {
+                    this.#log(logLevelEnums.DEBUG, "content.setGlobalContentSegmentation, Dropping the elements of the key: [" + key + "] that are not a string, number or boolean");
+                }
+                return;
+            }
+            if (!isSupportedValue(value)) {
+                this.#log(logLevelEnums.WARNING, "content.setGlobalContentSegmentation, Dropping the key: [" + key + "] because its value is not a string, number, boolean or an array of them");
+                return;
+            }
+            sanitized[key] = value;
         });
         this.#globalContentSegmentation = truncateObject(sanitized, this.#SCLimitKeyLength, this.#SCLimitValueSize, this.#SCLimitSegmentationValues, "setGlobalContentSegmentation", this.#log);
     };
 
     /**
      * Internal method to put the global content segmentation underneath a segmentation of its own
-     * The given entries win, so a global value can never replace an answer or a key the event provides
+     * The given entries win and come first, so a global value can never replace an answer or a key the event provides,
+     * and the segmentation limit drops global keys before the event's own
      * @private
      * @param {Object} [segmentation] - segmentation the content or feedback widget event provides itself
      * @returns {Object} the merged segmentation, or the given one when there is nothing to add
      */
     #withGlobalContentSegmentation = (segmentation) => {
-        var globalSegmentation = this.#globalContentSegmentation;
-        if (!globalSegmentation || Object.keys(globalSegmentation).length === 0) {
+        var globalKeys = Object.keys(this.#globalContentSegmentation);
+        if (globalKeys.length === 0) {
             return segmentation;
         }
-        var merged = createNewObjectFromProperties(globalSegmentation, Object.keys(globalSegmentation));
-        if (segmentation && typeof segmentation === "object") {
-            merged = addNewProperties(merged, segmentation, Object.keys(segmentation));
+        var merged = segmentation && typeof segmentation === "object" ? createNewObjectFromProperties(segmentation, Object.keys(segmentation)) : {};
+        var missingKeys = globalKeys.filter((key) => !Object.prototype.hasOwnProperty.call(merged, key));
+        return addNewProperties(merged, this.#globalContentSegmentation, missingKeys);
+    };
+
+    /**
+     * Internal method to add the global content segmentation to the segmentation a presented widget carries in its URL
+     * The widget page reports its own events, so the global segmentation has to travel with the widget. Global keys are
+     * left out from the last one until the encoded segmentation fits maxWidgetSegmentationUrlLength, the given entries never are
+     * @private
+     * @param {Object|null} segmentation - segmentation given to the presenting call
+     * @returns {Object|null} the merged segmentation, or the given one when there is nothing to add
+     */
+    #withGlobalWidgetUrlSegmentation = (segmentation) => {
+        var merged = this.#withGlobalContentSegmentation(segmentation);
+        if (merged === segmentation) {
+            return merged;
+        }
+        var globalOnlyKeys = Object.keys(merged).filter((key) => !segmentation || typeof segmentation[key] === "undefined");
+        var droppedCount = 0;
+        while (globalOnlyKeys.length > 0 && encodeURIComponent(JSON.stringify(merged)).length > maxWidgetSegmentationUrlLength) {
+            delete merged[globalOnlyKeys.pop()];
+            droppedCount++;
+        }
+        if (droppedCount > 0) {
+            this.#log(logLevelEnums.WARNING, "present_feedback_widget, Left out [" + droppedCount + "] global content segmentation keys to keep the widget URL within [" + maxWidgetSegmentationUrlLength + "] characters");
         }
         return merged;
     };
@@ -5656,20 +5693,18 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for event");
                 this.#closeContentFrame();
             }
-            if (!Array.isArray(event)) {
-                if (typeof event === "object") {
-                    event = [event];
-                } else {
-                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof event + "]");
-                    return;
+            if (typeof event !== "object") {
+                this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof event + "]");
+                return;
+            }
+            var events = Array.isArray(event) ? event : [event];
+            for (var i = 0; i < events.length; i++) {
+                if (!events[i] || typeof events[i] !== "object") {
+                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Skipping an event that is not an object: [" + events[i] + "]");
+                    continue;
                 }
-            };
-            // event is expected to be an array of events
-            for (var i = 0; i < event.length; i++) {
-                if (event[i] && typeof event[i] === "object") {
-                    event[i].segmentation = this.#withGlobalContentSegmentation(event[i].segmentation);
-                }
-                this.#add_cly_events(event[i]); // let this method handle the event
+                events[i].segmentation = this.#withGlobalContentSegmentation(events[i].segmentation);
+                this.#add_cly_events(events[i]); // let this method handle the event
             }
         }
 
