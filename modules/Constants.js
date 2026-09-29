@@ -40,6 +40,12 @@ var internalEventKeyEnums = {
 
 var internalEventKeyEnumsArray = Object.values(internalEventKeyEnums);
 /**
+ * The segmentation keys content and feedback widget events fill in themselves. A global content
+ * segmentation value for one of them is dropped when it is set, so the developer is told about it
+ * once instead of it silently losing to the event on some events and not on others.
+ */
+var reservedContentSegmentationKeys = ["platform", "app_version", "widget_id", "closed"];
+/**
  * 
  *log level Enums:
  *Error - this is a issues that needs attention right now.
@@ -214,4 +220,4 @@ var SDK_NAME = "javascript_native_web";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, reservedContentSegmentationKeys, urlParseRE };

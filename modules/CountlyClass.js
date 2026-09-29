@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, reservedContentSegmentationKeys, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     getMultiSelectValues,
@@ -89,6 +89,7 @@ class CountlyClass {
     #inContentZone;
     #contentZoneTimer;
     #contentIframeID;
+    #globalContentSegmentation;
     #crashFilterCallback;
     #serverConfigCache;
     #SCNetwork;
@@ -206,6 +207,7 @@ class CountlyClass {
         this.#inContentZone = false;
         this.#contentZoneTimer = null;
         this.#contentIframeID = "cly-content-iframe";
+        this.#globalContentSegmentation = {};
         this.#crashFilterCallback = null;
         this.#SCNetwork = true;
         this.#SCSizeReqQueue = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
@@ -4256,6 +4258,7 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating lower than 1. Changing it back to 1 now.");
             event.segmentation.rating = 1;
         }
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
         this.#log(logLevelEnums.INFO, "recordRatingWidgetWithID, Reporting Rating Widget: ", event);
         this.#add_cly_events(event);
     };
@@ -4380,6 +4383,8 @@ class CountlyClass {
             // add response to the segmentation
             event.segmentation = addNewProperties(event.segmentation, widgetResult, props);
         }
+
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
 
         // add event
         this.#log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Reporting " + type + ": ", event);
@@ -4793,6 +4798,8 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Segmentation is not an object or empty");
             feedbackWidgetSegmentation = null;
         }
+        // the widget page reports its own events, so the global segmentation has to travel with the widget
+        feedbackWidgetSegmentation = this.#withGlobalContentSegmentation(feedbackWidgetSegmentation);
 
         try {
             var url = this.url;
@@ -5341,6 +5348,52 @@ class CountlyClass {
         exitContentZone: () => {
             this.#exitContentZoneInternal();
         },
+        setGlobalContentSegmentation: (segmentation) => {
+            this.#setGlobalContentSegmentationInternal(segmentation);
+        },
+    };
+
+    /**
+     * Internal method to set the segmentation that is added to every content and feedback widget event
+     * Keeps a sanitized copy, so the object the developer keeps can be changed without changing this one
+     * @private
+     * @param {Object} [segmentation] - key/value pairs to add, null or an empty object clears the stored ones
+     */
+    #setGlobalContentSegmentationInternal = (segmentation) => {
+        this.#log(logLevelEnums.INFO, "content.setGlobalContentSegmentation, Setting the global content segmentation:[" + JSON.stringify(segmentation) + "]");
+        if (!segmentation || typeof segmentation !== "object" || Object.keys(segmentation).length === 0) {
+            this.#log(logLevelEnums.DEBUG, "content.setGlobalContentSegmentation, Segmentation is not an object or empty, clearing the stored one");
+            this.#globalContentSegmentation = {};
+            return;
+        }
+        var sanitized = {};
+        Object.keys(segmentation).forEach((key) => {
+            if (reservedContentSegmentationKeys.indexOf(key) !== -1) {
+                this.#log(logLevelEnums.WARNING, "content.setGlobalContentSegmentation, Dropping the key: [" + key + "] because the events provide it themselves");
+                return;
+            }
+            sanitized[key] = segmentation[key];
+        });
+        this.#globalContentSegmentation = truncateObject(sanitized, this.#SCLimitKeyLength, this.#SCLimitValueSize, this.#SCLimitSegmentationValues, "setGlobalContentSegmentation", this.#log);
+    };
+
+    /**
+     * Internal method to put the global content segmentation underneath a segmentation of its own
+     * The given entries win, so a global value can never replace an answer or a key the event provides
+     * @private
+     * @param {Object} [segmentation] - segmentation the content or feedback widget event provides itself
+     * @returns {Object} the merged segmentation, or the given one when there is nothing to add
+     */
+    #withGlobalContentSegmentation = (segmentation) => {
+        var globalSegmentation = this.#globalContentSegmentation;
+        if (!globalSegmentation || Object.keys(globalSegmentation).length === 0) {
+            return segmentation;
+        }
+        var merged = createNewObjectFromProperties(globalSegmentation, Object.keys(globalSegmentation));
+        if (segmentation && typeof segmentation === "object") {
+            merged = addNewProperties(merged, segmentation, Object.keys(segmentation));
+        }
+        return merged;
     };
 
     /**
@@ -5613,6 +5666,9 @@ class CountlyClass {
             };
             // event is expected to be an array of events
             for (var i = 0; i < event.length; i++) {
+                if (event[i] && typeof event[i] === "object") {
+                    event[i].segmentation = this.#withGlobalContentSegmentation(event[i].segmentation);
+                }
                 this.#add_cly_events(event[i]); // let this method handle the event
             }
         }
