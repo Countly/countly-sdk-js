@@ -19,9 +19,9 @@
         // The matching private key never leaves the server.
         Countly.push_vapid_public_key = "YOUR_VAPID_PUBLIC_KEY";
 
-        // Service worker hosted at the site root. Required for the scope below to be granted.
+        // Service worker hosted at the site root: a copy of lib/countly_sw.js from countly-sdk-web.
+        // The SDK registers it under its own scope, /countly-push/; keep your pages out of that folder.
         Countly.push_service_worker_path = "/countly_sw.js";
-        Countly.push_service_worker_scope = "/";
 
         if (Countly.app_key === "YOUR_APP_KEY" || Countly.url === "https://your.server.ly") {
             console.warn("Please do not use default set of app key and server url");
@@ -48,7 +48,6 @@
                     debug: Countly.debug,
                     push_vapid_public_key: Countly.push_vapid_public_key,
                     push_service_worker_path: Countly.push_service_worker_path,
-                    push_service_worker_scope: Countly.push_service_worker_scope,
                     // Hear about every notification: "received" (shown), "clicked" (body or button),
                     // "closed" (dismissed). The click is recorded as [CLY]_push_action either way.
                     push_notification_listener: function (e) {
@@ -115,7 +114,8 @@
             <code>token_session</code> request containing the
             <code>web_token</code> JSON. To simulate a click-through, open
             DevTools → Application → Service Workers and use the "Push" button
-            to inject a payload such as
+            of the <code>countly_sw.js</code> worker, whose scope is
+            <code>/countly-push/</code>, to inject a payload such as
             <code>{"title":"Hi","message":"Test","c":{"i":"507f1f77bcf86cd799439011"}}</code>.
             The <code>i</code> value must be a 24-character message id: the server drops
             <code>[CLY]_push_action</code> events whose id has any other length.

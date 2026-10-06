@@ -3,15 +3,9 @@
  * Countly reference service worker for web push notifications.
  *
  * Handles the W3C Push API `push` event by displaying a notification, `notificationclick` by
- * opening the target URL and asking one page to record the [CLY]_push_action event (or recording
- * it here when no page is open),
- * `notificationclose` so the page's push listener hears about dismissals, and
- * `pushsubscriptionchange` so a browser-initiated subscription rotation gets re-registered with
- * the server. On `install`/`activate` it takes control of the open pages right away: without
- * that, the page that registered it is not controlled until it reloads, so its ready/ack messages
- * would go nowhere and an action it recorded would be redelivered — and counted again — after the
- * reload. It also lets a new version of this file replace the old one without waiting for every
- * tab of the site to close.
+ * opening the target URL and recording the [CLY]_push_action event, `notificationclose` so the
+ * page's push listener hears about dismissals, and `pushsubscriptionchange` so a browser-initiated
+ * subscription rotation gets re-registered with the server.
  *
  * Payload shape (mirrors iOS/Android — see CountlyNotificationService.m and ModulePush.java):
  *   {
@@ -27,38 +21,17 @@
  *     },
  *     ...any custom key/values added to the message
  *   }
- * The whole payload is kept as `notification.data.p`, so a click or a close can hand it to the page.
  *
- * Configuration. The page SDK passes its settings in the query string of this file's URL when it
- * registers it (`/countly_sw.js?cly_debug=1`), because a push may wake the worker with no page
- * open to ask. A host worker that imports this file sets the equivalent globals before the
- * importScripts() call:
+ * Import it into a host worker at a pinned version (`countly-sdk-web@<version>/lib/countly_sw.js`)
+ * and pass that worker's registration to the SDK as `push_service_worker_registration`.
+ *
+ * Globals a host worker can set before its importScripts() call:
  *   self.COUNTLY_PUSH_DEBUG = true;             // log every step and forward the lines to the pages
  *   self.COUNTLY_PUSH_LIFECYCLE = false;        // keep the host's own install/activate behaviour
- * A page with debug on also says so in its handshake, which turns debug on until the browser stops
- * the idle worker. Only http(s) URLs are ever opened by a click.
- *
- * Recording clicks without a page. A click may open a page without the SDK on it, or nothing at
- * all, so the page SDK also hands over what a [CLY]_push_action request needs (server URL, app key,
- * device id, SDK name and version, salt) in its handshake and whenever those change. With them the
- * worker sends the event itself when no page is open; without them, or when the server cannot be
- * reached, it keeps the click until a page announces itself. Pending clicks and those details live
- * in IndexedDB, the only storage a worker has, so they survive the browser stopping the idle
- * worker; memory is the fallback where IndexedDB is unavailable.
- *
- * Developers who already maintain their own service worker import this file into it —
- * `importScripts("https://cdn.jsdelivr.net/npm/countly-sdk-web@<version>/lib/countly_sw.js")`
- * (pin the version) or a self-hosted copy — and pass their worker's registration to the SDK as
- * `push_service_worker_registration`. Inside a host worker every handler below only acts on
- * Countly's own pushes and notifications (recognised by the `c.i` message id) and leaves
- * everything else to the host.
- *
- * The CLY_* constants mirror pushMessageTypes, pushWorkerParams, pushConstants and SDK_VERSION in
- * modules/Constants.js by hand (a worker cannot import that file); cypress/e2e/web_push_sw.cy.js
- * fails when they drift. The message types are a wire contract between a cached worker and a page
- * SDK of a possibly different version: never rename them.
+ *   self.COUNTLY_PUSH_PERSIST = false;          // the site runs the SDK with storage "none"
  */
 
+// Most of these mirror modules/Constants.js by hand; never rename a message type, other SDK versions use it.
 var CLY_SW_VERSION = "26.1.3";
 
 var CLY_ACTION = "countly_push_action";
@@ -70,47 +43,84 @@ var CLY_CLOSED = "countly_push_closed";
 var CLY_LOG = "countly_push_log";
 var CLY_CONFIG = "countly_push_config";
 var CLY_PARAM_DEBUG = "cly_debug";
+var CLY_PARAM_PERSIST = "cly_persist";
 var CLY_MAX_ACTIONS = 2; // Countly messages carry at most two buttons
 var CLY_MAX_PENDING = 20;
+var CLY_OFFER_WINDOW_MS = 10000;
+var CLY_REPORT_TIMEOUT_MS = 10000;
 var CLY_PUSH_ACTION_EVENT = "[CLY]_push_action";
+var CLY_TOKEN_PROVIDER = "WEB";
 var CLY_DB_NAME = "countly_push";
 var CLY_DB_VERSION = 1;
 var CLY_STORE_ACTIONS = "actions";
 var CLY_STORE_CONFIG = "config";
 var CLY_CONFIG_KEY = "reporting";
+var CLY_OWNER_KEY = "owner";
 
 /**
- * In-memory copy of what this worker keeps: clicks no page has confirmed recording yet, and the
- * page's server details. matchAll returns every window on the origin, including ones with no
- * Countly SDK on them, so a click is only forgotten once a page acknowledges it. IndexedDB holds
- * the durable copy (see clyDb); this object is the whole store where IndexedDB is unavailable.
+ * In-memory copy of the pending clicks, the page's server details and the owner of new clicks.
  */
-var clyMemory = { actions: [], config: null };
+var clyMemory = { actions: [], config: null, owner: null };
 var clyDbBroken = false;
+// set once IndexedDB refused to save the server details: from then on the copy in memory is the newest
+var clyConfigUnsaved = false;
 
 /**
- * Open the worker's database, creating its two stores on first use. Resolves null, never
- * rejects, where IndexedDB is missing or refuses (some private modes), after which everything
- * stays in memory for the rest of this worker's life.
+ * Kept clicks handed to a page in the last CLY_OFFER_WINDOW_MS: that page's id by action id.
+ */
+var clyOffers = {};
+
+/**
+ * Clicks this worker is still sending to the server itself: the pending attempt by action id.
+ */
+var clyReporting = {};
+
+/**
+ * Action ids of the clicks forgotten during this worker's life, even where IndexedDB kept a copy.
+ */
+var clyForgotten = {};
+
+/**
+ * Describe a failure with its type, the way the browser names it ("NotAllowedError: ...").
+ * @param {*} err - the thrown or rejected value
+ * @returns {string} "name: message", or the message or value alone
+ */
+function clyErrorText(err) {
+    if (err && err.message) {
+        return err.name ? err.name + ": " + err.message : String(err.message);
+    }
+    return String(err);
+}
+
+/**
+ * Open the worker's database, creating its two stores on first use.
+ * @param {boolean} [existingOnly] - open only an existing database, also while persisting is off
  * @returns {Promise<?IDBDatabase>} an open connection, or null
  */
-function clyOpenDb() {
-    if (clyDbBroken || !self.indexedDB) {
+function clyOpenDb(existingOnly) {
+    if (clyDbBroken || !self.indexedDB || (!clyPersist && !existingOnly)) {
         return Promise.resolve(null);
     }
     return new Promise(function (resolve) {
         var settled = false;
+        var notCreated = false;
         var request;
         try {
             request = self.indexedDB.open(CLY_DB_NAME, CLY_DB_VERSION);
         }
         catch (e) {
             clyDbBroken = true;
-            clyLog("warn", "IndexedDB is unavailable, pending clicks live in memory only: " + (e && e.message ? e.message : e));
+            clyLog("warn", "IndexedDB is unavailable, pending clicks live in memory only: " + clyErrorText(e));
             resolve(null);
             return;
         }
-        request.onupgradeneeded = function () {
+        request.onupgradeneeded = function (event) {
+            if (existingOnly && event.oldVersion === 0) {
+                // aborting the upgrade of a database that did not exist leaves no database behind
+                notCreated = true;
+                request.transaction.abort();
+                return;
+            }
             var db = request.result;
             if (!db.objectStoreNames.contains(CLY_STORE_ACTIONS)) {
                 db.createObjectStore(CLY_STORE_ACTIONS, { keyPath: "aid" });
@@ -128,8 +138,13 @@ function clyOpenDb() {
             resolve(request.result);
         };
         request.onerror = function () {
+            if (notCreated) {
+                settled = true;
+                resolve(null);
+                return;
+            }
             clyDbBroken = true;
-            clyLog("warn", "IndexedDB could not be opened, pending clicks live in memory only: " + (request.error ? request.error.message : "unknown error"));
+            clyLog("warn", "IndexedDB could not be opened, pending clicks live in memory only: " + clyErrorText(request.error || "unknown error"));
             settled = true;
             resolve(null);
         };
@@ -141,30 +156,22 @@ function clyOpenDb() {
 }
 
 /**
- * Run one operation against a store and settle with the request's result once the transaction
- * has committed. Each call opens and closes its own connection: the browser may stop this worker
- * between two events anyway, and an idle connection would only block a future upgrade. Resolves
- * undefined, never rejects, when the database is unavailable or the operation fails, so callers
- * fall back to clyMemory.
+ * Run an operation against a store in one transaction, rejecting when it fails.
  * @param {string} storeName - object store to use
  * @param {string} mode - "readonly" | "readwrite"
  * @param {Function} operation - gets the store, returns the IDBRequest to wait for (or nothing)
- * @returns {Promise<*>} the request's result, or undefined
+ * @param {boolean} [existingOnly] - use only an existing database, also while persisting is off
+ * @returns {Promise<*>} the request's result, or undefined without a database
  */
-function clyDb(storeName, mode, operation) {
-    return clyOpenDb().then(function (db) {
+function clyDbRun(storeName, mode, operation, existingOnly) {
+    return clyOpenDb(existingOnly).then(function (db) {
         if (!db) {
             return undefined;
         }
         return new Promise(function (resolve, reject) {
             var transaction = db.transaction(storeName, mode);
-            var request = operation(transaction.objectStore(storeName));
+            var request;
             var result;
-            if (request) {
-                request.onsuccess = function () {
-                    result = request.result;
-                };
-            }
             transaction.oncomplete = function () {
                 db.close();
                 resolve(result);
@@ -173,25 +180,59 @@ function clyDb(storeName, mode, operation) {
                 db.close();
                 reject(transaction.error || new Error("IndexedDB transaction failed"));
             };
+            try {
+                request = operation(transaction.objectStore(storeName));
+            }
+            catch (err) {
+                // operation() may throw, and a connection left open would block every later open
+                db.close();
+                reject(err);
+                return;
+            }
+            if (request) {
+                request.onsuccess = function () {
+                    result = request.result;
+                };
+            }
         });
-    }).catch(function (err) {
-        clyLog("warn", "IndexedDB operation failed, continuing with memory: " + (err && err.message ? err.message : err));
+    });
+}
+
+/**
+ * Run an operation like clyDbRun, but log a failure and settle undefined instead of rejecting.
+ * @param {string} storeName - object store to use
+ * @param {string} mode - "readonly" | "readwrite"
+ * @param {Function} operation - gets the store, returns the IDBRequest to wait for (or nothing)
+ * @returns {Promise<*>} the request's result, or undefined
+ */
+function clyDb(storeName, mode, operation) {
+    return clyDbRun(storeName, mode, operation).catch(function (err) {
+        clyLog("warn", "IndexedDB operation failed, continuing with memory: " + clyErrorText(err));
         return undefined;
     });
 }
 
 /**
- * Every pending click, oldest first: what IndexedDB holds plus anything only in memory.
+ * The scope of the registration this worker runs under.
+ * @returns {string} the scope URL, or "" when unknown
+ */
+function clyScope() {
+    return (self.registration && self.registration.scope) || "";
+}
+
+/**
+ * Every pending click of this worker's scope, oldest first; a copy in memory wins over IndexedDB's.
  * @returns {Promise<Object[]>} pending actions
  */
 function clyAllActions() {
+    var scope = clyScope();
     return clyDb(CLY_STORE_ACTIONS, "readonly", function (store) {
         return store.getAll();
     }).then(function (stored) {
         var seen = {};
         var all = [];
-        (stored || []).concat(clyMemory.actions).forEach(function (action) {
-            if (!seen[action.aid]) {
+        clyMemory.actions.concat(stored || []).forEach(function (action) {
+            if (!seen[action.aid] && !clyForgotten[action.aid] && (!action.scope || action.scope === scope)) {
                 seen[action.aid] = true;
                 all.push(action);
             }
@@ -209,6 +250,7 @@ function clyAllActions() {
  * @returns {Promise} settles once removed
  */
 function clyForget(aid) {
+    clyForgotten[aid] = true;
     clyMemory.actions = clyMemory.actions.filter(function (pending) {
         return pending.aid !== aid;
     });
@@ -231,6 +273,69 @@ function clyUrlParam(name) {
 }
 
 var clyDebug = self.COUNTLY_PUSH_DEBUG === true || clyUrlParam(CLY_PARAM_DEBUG) === "1";
+
+/**
+ * Whether server details and kept clicks go to IndexedDB; false for a site with storage "none".
+ */
+var clyPersist = self.COUNTLY_PUSH_PERSIST !== false && clyUrlParam(CLY_PARAM_PERSIST) !== "0";
+
+/**
+ * Delete what IndexedDB holds for this worker's scope, moving its kept clicks to memory first.
+ * @returns {Promise} settles once done; never rejects
+ */
+function clyDropStored() {
+    var scope = clyScope();
+    return Promise.all([
+        clyDbRun(CLY_STORE_CONFIG, "readwrite", function (store) {
+            store.delete(clyOwnerKey());
+            return store.delete(clyConfigKey());
+        }, true),
+        clyDbRun(CLY_STORE_ACTIONS, "readwrite", function (store) {
+            store.getAll().onsuccess = function (event) {
+                (event.target.result || []).forEach(function (action) {
+                    if (action.scope && action.scope !== scope) {
+                        return;
+                    }
+                    store.delete(action.aid);
+                    var inMemory = clyMemory.actions.some(function (kept) {
+                        return kept.aid === action.aid;
+                    });
+                    if (!inMemory && !clyForgotten[action.aid]) {
+                        clyMemory.actions.push(action);
+                    }
+                });
+                clyMemory.actions.sort(function (a, b) {
+                    return (a.ts || 0) - (b.ts || 0);
+                });
+                clyMemory.actions = clyMemory.actions.slice(-CLY_MAX_PENDING);
+            };
+        }, true)
+    ]).then(function () {
+        clyLog("debug", "IndexedDB holds nothing of this scope any more, everything stays in memory");
+    }, function (err) {
+        clyLog("warn", "could not delete what IndexedDB holds for this scope: " + clyErrorText(err));
+    });
+}
+
+/**
+ * Turn storing in IndexedDB off when a page says persist: false, and back on otherwise.
+ * @param {*} persist - the persist field of the page's message
+ * @returns {Promise} settles once done; never rejects
+ */
+function clyFollowPersist(persist) {
+    if (persist === false) {
+        if (clyPersist) {
+            clyPersist = false;
+            clyLog("debug", "a page asked to keep the server details and clicks in memory only");
+        }
+        return clyDropStored();
+    }
+    if (!clyPersist) {
+        clyPersist = true;
+        clyLog("debug", "a page let the server details and clicks be stored in IndexedDB again");
+    }
+    return Promise.resolve();
+}
 
 /**
  * Collect the window clients this worker could deliver a push action to.
@@ -298,6 +403,20 @@ function clyMayOpen(url) {
 }
 
 /**
+ * Tell whether two URLs are the same once both are normalised the way the browser reports them.
+ * @param {string} a - one URL
+ * @param {string} b - the other URL
+ * @returns {boolean} true when they name the same page
+ */
+function clySameUrl(a, b) {
+    try {
+        return new URL(a).href === new URL(b).href;
+    } catch (e) {
+        return a === b;
+    }
+}
+
+/**
  * Choose the single client that should record a push action: the one already on the target URL
  * (it is the one about to be focused), else a focused one, else the first available.
  * @param {WindowClient[]} clientList - open window clients
@@ -308,7 +427,7 @@ function clyPickActionTarget(clientList, url) {
     var i;
     if (url) {
         for (i = 0; i < clientList.length; i++) {
-            if (clientList[i].url === url) {
+            if (clySameUrl(clientList[i].url, url)) {
                 return clientList[i];
             }
         }
@@ -346,28 +465,134 @@ function clyRemember(actionMessage) {
 }
 
 /**
- * The server details the last page handed over, if any.
- * @returns {Promise<?Object>} url, app_key, device_id, t, sdk_name, sdk_version, av, salt
+ * Mark a kept click as recorded here, or drop its saved copy where IndexedDB refuses the mark.
+ * @param {Object} action - the kept click, as given to clyRemember
+ * @returns {Promise} settles once done; never rejects
+ */
+function clyMarkRecorded(action) {
+    action.recorded = true;
+    return clyDbRun(CLY_STORE_ACTIONS, "readwrite", function (store) {
+        return store.put(action);
+    }).catch(function (err) {
+        clyLog("warn", "could not save that a click was recorded, dropping its saved copy: " + clyErrorText(err));
+        return clyDb(CLY_STORE_ACTIONS, "readwrite", function (store) {
+            return store.delete(action.aid);
+        });
+    });
+}
+
+/**
+ * Hand a kept click to a page, unless another page got it less than CLY_OFFER_WINDOW_MS ago.
+ * @param {Object} action - the kept click
+ * @param {Client} client - the page that announced itself
+ * @returns {boolean} true when the click was handed over
+ */
+function clyOffer(action, client) {
+    var offer = clyOffers[action.aid];
+    if (offer && offer.client !== client.id) {
+        return false;
+    }
+    var current = { client: client.id };
+    clyOffers[action.aid] = current;
+    self.setTimeout(function () {
+        if (clyOffers[action.aid] === current) {
+            delete clyOffers[action.aid];
+        }
+    }, CLY_OFFER_WINDOW_MS);
+    client.postMessage(action);
+    return true;
+}
+
+/**
+ * The key this worker's server details are kept under in the config store.
+ * @returns {string} CLY_CONFIG_KEY, followed by the scope where there is one
+ */
+function clyConfigKey() {
+    var scope = clyScope();
+    return scope ? CLY_CONFIG_KEY + " " + scope : CLY_CONFIG_KEY;
+}
+
+/**
+ * The server details the last page of this worker's scope handed over, if any.
+ * @returns {Promise<?Object>} url, app_key, device_id, t, sdk_name, sdk_version, av, salt, vapid_key
  */
 function clyConfig() {
+    if (clyConfigUnsaved) {
+        return Promise.resolve(clyMemory.config);
+    }
     return clyDb(CLY_STORE_CONFIG, "readonly", function (store) {
-        return store.get(CLY_CONFIG_KEY);
+        return store.get(clyConfigKey());
     }).then(function (stored) {
         return stored || clyMemory.config;
     });
 }
 
 /**
- * Keep (or, for null, drop) the server details a page handed over.
+ * The key the owner of new clicks is kept under in the config store.
+ * @returns {string} CLY_OWNER_KEY, followed by the scope where there is one
+ */
+function clyOwnerKey() {
+    var scope = clyScope();
+    return scope ? CLY_OWNER_KEY + " " + scope : CLY_OWNER_KEY;
+}
+
+/**
+ * The owner of new clicks as the last page of this worker's scope named it, if any.
+ * @returns {Promise<?Object>} { owner }, owner being { device_id, t } or null; null when no page said
+ */
+function clyOwnerRecord() {
+    if (clyConfigUnsaved) {
+        return Promise.resolve(clyMemory.owner);
+    }
+    return clyDb(CLY_STORE_CONFIG, "readonly", function (store) {
+        return store.get(clyOwnerKey());
+    }).then(function (stored) {
+        return stored || clyMemory.owner;
+    });
+}
+
+/**
+ * Keep (or, for null, drop) the server details a page handed over, with the owner of new clicks.
  * @param {?Object} config - the details, or null when the page must not have clicks recorded
+ * @param {?Object} [owner] - { device_id, t } of the page's user, or null when no new click may be recorded
  * @returns {Promise} settles once stored
  */
-function clyStoreConfig(config) {
+function clyStoreConfig(config, owner) {
     clyMemory.config = config || null;
+    clyMemory.owner = owner === undefined ? null : { owner: owner };
     clyLog("debug", config ? "server details updated by a page" : "server details withdrawn by a page");
-    return clyDb(CLY_STORE_CONFIG, "readwrite", function (store) {
-        return config ? store.put(config, CLY_CONFIG_KEY) : store.delete(CLY_CONFIG_KEY);
+    return clyDbRun(CLY_STORE_CONFIG, "readwrite", function (store) {
+        if (owner === undefined) {
+            store.delete(clyOwnerKey());
+        }
+        else {
+            store.put({ owner: owner }, clyOwnerKey());
+        }
+        return config ? store.put(config, clyConfigKey()) : store.delete(clyConfigKey());
+    }).catch(function (err) {
+        clyConfigUnsaved = true;
+        clyLog("warn", "could not save the server details, dropping the saved copy: " + clyErrorText(err));
+        return clyDb(CLY_STORE_CONFIG, "readwrite", function (store) {
+            store.delete(clyOwnerKey());
+            return store.delete(clyConfigKey());
+        });
     });
+}
+
+/**
+ * The owner to keep with a new click, from the server details held or else the owner record.
+ * @param {?Object} config - the server details held when the click is made
+ * @param {?Object} ownerRecord - what clyOwnerRecord held when the click is made
+ * @returns {(?Object|undefined)} { device_id, t, recordable } or { device_id, t }, null, or undefined
+ */
+function clyClickOwner(config, ownerRecord) {
+    if (config) {
+        return { device_id: config.device_id, t: config.t, recordable: true };
+    }
+    if (ownerRecord) {
+        return ownerRecord.owner ? { device_id: ownerRecord.owner.device_id, t: ownerRecord.owner.t } : null;
+    }
+    return undefined;
 }
 
 /**
@@ -400,56 +625,193 @@ function clyRequestBody(params, salt) {
 }
 
 /**
- * Record a click from here, the way the page SDK would have: the same [CLY]_push_action event,
- * the same request fields, the same checksum. Only possible once a page has handed over its
- * server details; resolves false, so the click is kept for a page, when it has not or when the
- * server cannot be reached.
- * @param {Object} action - the click, as built by the notificationclick handler
- * @returns {Promise<boolean>} true when the server accepted the event
+ * fetch() with a deadline, cancelling the request where AbortController exists.
+ * @param {string} url - where to send the request
+ * @param {Object} init - fetch options
+ * @returns {Promise<Response>} the response; rejects on a network error or after CLY_REPORT_TIMEOUT_MS
  */
-function clyReport(action) {
-    return clyConfig().then(function (config) {
-        if (!config || typeof self.fetch !== "function") {
-            return false;
-        }
-        var now = new Date();
-        var event = {
-            key: CLY_PUSH_ACTION_EVENT,
-            count: 1,
-            segmentation: { i: action.messageId, b: action.buttonIndex, p: "w" },
-            timestamp: now.getTime(),
-            hour: now.getHours(),
-            dow: now.getDay()
-        };
-        var params = {
-            app_key: config.app_key,
-            device_id: config.device_id,
-            t: config.t,
-            sdk_name: config.sdk_name,
-            sdk_version: config.sdk_version,
-            av: config.av,
-            timestamp: now.getTime(),
-            hour: now.getHours(),
-            dow: now.getDay(),
-            tz: -now.getTimezoneOffset(),
-            events: JSON.stringify([event])
-        };
-        if (self.navigator && self.navigator.userAgent) {
-            params.metrics = JSON.stringify({ _ua: self.navigator.userAgent });
-        }
-        return clyRequestBody(params, config.salt).then(function (body) {
-            return self.fetch(config.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body });
-        }).then(function (response) {
-            if (!response || !response.ok) {
-                throw new Error("server answered " + (response ? response.status : "nothing"));
+function clyFetch(url, init) {
+    var controller = typeof self.AbortController === "function" ? new self.AbortController() : null;
+    if (controller) {
+        init.signal = controller.signal;
+    }
+    return new Promise(function (resolve, reject) {
+        var timer = self.setTimeout(function () {
+            if (controller) {
+                controller.abort();
             }
-            clyLog("debug", "click on message [" + action.messageId + "] recorded from the worker");
-            return true;
-        }).catch(function (err) {
-            clyLog("debug", "could not record the click from the worker (" + (err && err.message ? err.message : err) + ")");
-            return false;
+            reject(new Error("no answer within " + CLY_REPORT_TIMEOUT_MS + " ms"));
+        }, CLY_REPORT_TIMEOUT_MS);
+        self.fetch(url, init).then(function (response) {
+            self.clearTimeout(timer);
+            resolve(response);
+        }, function (err) {
+            self.clearTimeout(timer);
+            reject(err);
         });
     });
+}
+
+/**
+ * Send a request from here with the fields the page SDK adds to each of its own requests.
+ * @param {Object} config - the server details a page handed over
+ * @param {Object} fields - what the request is about: events, or a token_session
+ * @returns {Promise} resolves once the server answered 2xx, rejects otherwise
+ */
+function clySend(config, fields) {
+    if (typeof self.fetch !== "function") {
+        return Promise.reject(new Error("no fetch in this worker"));
+    }
+    var now = new Date();
+    var params = {
+        app_key: config.app_key,
+        device_id: config.device_id,
+        t: config.t,
+        sdk_name: config.sdk_name,
+        sdk_version: config.sdk_version,
+        av: config.av,
+        timestamp: now.getTime(),
+        hour: now.getHours(),
+        dow: now.getDay(),
+        tz: -now.getTimezoneOffset()
+    };
+    Object.keys(fields).forEach(function (key) {
+        params[key] = fields[key];
+    });
+    if (self.navigator && self.navigator.userAgent) {
+        params.metrics = JSON.stringify({ _ua: self.navigator.userAgent });
+    }
+    return clyRequestBody(params, config.salt).then(function (body) {
+        return clyFetch(config.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body });
+    }).then(function (response) {
+        if (!response || !response.ok) {
+            throw new Error("server answered " + (response ? response.status : "nothing"));
+        }
+    });
+}
+
+/**
+ * Record a click from here as the [CLY]_push_action event a page would have queued.
+ * @param {Object} action - the click, as built by the notificationclick handler
+ * @param {?Object} config - the server details held when the click was made
+ * @returns {Promise<boolean>} true when the server accepted the event
+ */
+function clyReport(action, config) {
+    if (!config) {
+        return Promise.resolve(false);
+    }
+    var now = new Date();
+    var event = {
+        key: CLY_PUSH_ACTION_EVENT,
+        count: 1,
+        segmentation: { i: action.messageId, b: action.buttonIndex, p: "w" },
+        timestamp: now.getTime(),
+        hour: now.getHours(),
+        dow: now.getDay()
+    };
+    return clySend(config, { events: JSON.stringify([event]) }).then(function () {
+        clyLog("debug", "click on message [" + action.messageId + "] recorded from the worker");
+        return true;
+    }, function (err) {
+        clyLog("debug", "could not record the click from the worker (" + clyErrorText(err) + ")");
+        return false;
+    });
+}
+
+/**
+ * Send a token_session for a subscription the browser replaced, the way the page SDK registers one.
+ * @param {Object} config - the server details a page handed over
+ * @param {PushSubscription} subscription - the subscription that replaced the registered one
+ * @returns {Promise<boolean>} true when the server accepted it
+ */
+function clyRegisterToken(config, subscription) {
+    var fields = { token_session: 1, token_provider: CLY_TOKEN_PROVIDER };
+    try {
+        fields.web_token = JSON.stringify(subscription.toJSON());
+    }
+    catch (e) {
+        clyLog("warn", "could not read the new subscription: " + clyErrorText(e));
+        return Promise.resolve(false);
+    }
+    if (self.navigator && self.navigator.language) {
+        fields.locale = self.navigator.language;
+    }
+    return clySend(config, fields).then(function () {
+        clyLog("debug", "new subscription registered from the worker");
+        return true;
+    }, function (err) {
+        clyLog("warn", "could not register the new subscription from the worker, leaving it to the pages (" + clyErrorText(err) + ")");
+        return false;
+    });
+}
+
+/**
+ * Decode the base64url VAPID public key a page hands over into bytes, ignoring whitespace.
+ * @param {string} key - base64url encoded key
+ * @returns {?Uint8Array} the key's bytes, or null when it is not valid base64url
+ */
+function clyKeyBytes(key) {
+    var base64 = String(key).replace(/\s/g, "").replace(/-/g, "+").replace(/_/g, "/");
+    var raw;
+    try {
+        raw = atob(base64 + "===".slice((base64.length + 3) % 4));
+    } catch (e) {
+        return null;
+    }
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) {
+        bytes[i] = raw.charCodeAt(i);
+    }
+    return bytes;
+}
+
+/**
+ * Tell whether two application server keys hold the same bytes.
+ * @param {?(ArrayBuffer|Uint8Array)} a - one key
+ * @param {?(ArrayBuffer|Uint8Array)} b - the other key
+ * @returns {boolean} true when both are present and equal
+ */
+function clySameKey(a, b) {
+    if (!a || !b) {
+        return false;
+    }
+    var x = new Uint8Array(a);
+    var y = new Uint8Array(b);
+    if (x.length !== y.length) {
+        return false;
+    }
+    for (var i = 0; i < x.length; i++) {
+        if (x[i] !== y[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Keep a click no page is open for, record it from here and mark it recorded on success.
+ * @param {Object} action - the click, as built by the notificationclick handler
+ * @param {?Object} config - the server details held when the click was made
+ * @returns {Promise<Object>} the click, once its outcome is known; never rejects
+ */
+function clyReportKept(action, config) {
+    var attempt = clyRemember(action).then(function () {
+        return clyReport(action, config);
+    }).then(function (recorded) {
+        if (recorded) {
+            return clyMarkRecorded(action);
+        }
+        clyLog("debug", "no page open, keeping the action for the next page that announces itself");
+        return undefined;
+    }).catch(function (err) {
+        clyLog("warn", "could not record the click from the worker, keeping it for the next page: " + clyErrorText(err));
+        return undefined;
+    }).then(function () {
+        delete clyReporting[action.aid];
+        return action;
+    });
+    clyReporting[action.aid] = attempt;
+    return attempt;
 }
 
 /**
@@ -464,14 +826,14 @@ function clyNavigate(target, openUrl) {
     if (!openUrl) {
         return Promise.resolve();
     }
-    if (target && target.url === openUrl && "focus" in target) {
+    if (target && clySameUrl(target.url, openUrl) && "focus" in target) {
         navigation = target.focus();
     }
     else if (self.clients.openWindow) {
         navigation = self.clients.openWindow(openUrl);
     }
     return Promise.resolve(navigation).catch(function (err) {
-        clyLog("warn", "could not open [" + openUrl + "]: " + (err && err.message ? err.message : err));
+        clyLog("warn", "could not open [" + openUrl + "]: " + clyErrorText(err));
     });
 }
 
@@ -580,16 +942,15 @@ self.addEventListener("push", function (event) {
         self.registration.showNotification(title, options).then(function () {
             clyLog("debug", "notification shown for message [" + countly.i + "]");
         }, function (err) {
-            clyLog("error", "showNotification failed for message [" + countly.i + "]: " + (err && err.message ? err.message : err));
+            clyLog("error", "showNotification failed for message [" + countly.i + "]: " + clyErrorText(err));
         }),
         clyBroadcast(received)
     ]));
 });
 
 /**
- * Hand the click to one page for recording, then focus or open the target URL. A URL that
- * clyMayOpen refuses is not opened, but the click is still recorded. Notifications without
- * Countly's message id were shown by another handler in this worker and are left alone.
+ * Hand the click to one page for recording, or record it here when no page is open, then focus or
+ * open the target URL.
  */
 self.addEventListener("notificationclick", function (event) {
     var data = event.notification.data;
@@ -615,13 +976,17 @@ self.addEventListener("notificationclick", function (event) {
     }
     clyLog("debug", "notification clicked for message [" + data.i + "], button " + buttonIndex + (url ? ", url [" + url + "]" : ""));
 
+    var clickedAt = Date.now();
     var actionMessage = clyDescribe(event.notification);
     actionMessage.type = CLY_ACTION;
     actionMessage.buttonIndex = buttonIndex;
     actionMessage.buttonTitle = buttonTitle;
     actionMessage.url = url;
     // lets a page drop the message if it also received it through the pending queue
-    actionMessage.aid = data.i + "_" + buttonIndex + "_" + Date.now();
+    actionMessage.aid = data.i + "_" + buttonIndex + "_" + clickedAt;
+    actionMessage.scope = clyScope();
+    // a page that records the click later, possibly days later, records it at this time
+    actionMessage.ts = clickedAt;
 
     var openUrl = url && clyMayOpen(url) ? url : "";
 
@@ -631,25 +996,19 @@ self.addEventListener("notificationclick", function (event) {
             // report the same click and inflate the campaign's actioned count.
             var target = clyPickActionTarget(clientList, openUrl);
             var navigation = clyNavigate(target, openUrl);
-            var recording;
-            if (target) {
-                recording = clyRemember(actionMessage).then(function () {
-                    target.postMessage(actionMessage);
-                    clyLog("debug", "action handed to page [" + target.url + "], waiting for its acknowledgement");
-                });
-            }
-            else {
-                recording = clyReport(actionMessage).then(function (recorded) {
-                    if (recorded) {
-                        // kept for the next page's listener only; `recorded` tells it not to count it again
-                        actionMessage.recorded = true;
-                    }
-                    else {
-                        clyLog("debug", "no page open, keeping the action for the next page that announces itself");
-                    }
-                    return clyRemember(actionMessage);
-                });
-            }
+            var recording = Promise.all([clyConfig(), clyOwnerRecord()]).then(function (held) {
+                var owner = clyClickOwner(held[0], held[1]);
+                if (owner !== undefined) {
+                    actionMessage.owner = owner;
+                }
+                if (target) {
+                    return clyRemember(actionMessage).then(function () {
+                        target.postMessage(actionMessage);
+                        clyLog("debug", "action handed to page [" + target.url + "], waiting for its acknowledgement");
+                    });
+                }
+                return clyReportKept(actionMessage, held[0]);
+            });
             return Promise.all([recording, navigation]);
         })
     );
@@ -667,15 +1026,12 @@ self.addEventListener("notificationclose", function (event) {
 });
 
 /**
- * Page-to-worker messages: an acknowledgement forgets a pending action; a config message keeps
- * (or drops) the page's server details; a ready handshake does the same with the details it
- * carries, hands the page every pending action and, when the page runs with debug on, turns debug
- * on here too (the only way a host worker that imported this file learns it). A handshake without
- * a `config` field comes from an older page SDK and leaves the stored details alone.
+ * Page-to-worker messages: acknowledgements, server details and ready handshakes. A handshake
+ * without a `config` field comes from an older page SDK and leaves the stored details alone.
  */
 self.addEventListener("message", function (event) {
     var data = event.data;
-    if (!data) {
+    if (!data || (data.scope && data.scope !== clyScope())) {
         return;
     }
     var work = null;
@@ -686,7 +1042,7 @@ self.addEventListener("message", function (event) {
         });
     }
     else if (data.type === CLY_CONFIG) {
-        work = clyStoreConfig(data.config);
+        work = Promise.all([clyFollowPersist(data.persist), clyStoreConfig(data.config, data.owner)]);
     }
     else if (data.type === CLY_READY && event.source) {
         if (data.debug === true && !clyDebug) {
@@ -694,13 +1050,20 @@ self.addEventListener("message", function (event) {
             clyLog("debug", "debug logging turned on by a page");
         }
         var source = event.source;
-        work = (data.config === undefined ? Promise.resolve() : clyStoreConfig(data.config)).then(clyAllActions).then(function (pending) {
-            clyLog("debug", "page announced itself, " + pending.length + " pending action(s)");
+        work = (data.config === undefined ? Promise.resolve() : Promise.all([clyFollowPersist(data.persist), clyStoreConfig(data.config, data.owner)])).then(clyAllActions).then(function (pending) {
+            return Promise.all(pending.map(function (action) {
+                return clyReporting[action.aid] || action;
+            }));
+        }).then(function (pending) {
+            var handed = 0;
             // Left in place until acknowledged: only the pages that run the SDK reply, so a window
             // that cannot record the action does not consume it. The page drops duplicates by `aid`.
             for (var i = 0; i < pending.length; i++) {
-                source.postMessage(pending[i]);
+                if (clyOffer(pending[i], source)) {
+                    handed++;
+                }
             }
+            clyLog("debug", "page announced itself, " + pending.length + " pending action(s), " + handed + " handed over");
         });
     }
     if (work && typeof event.waitUntil === "function") {
@@ -709,38 +1072,42 @@ self.addEventListener("message", function (event) {
 });
 
 /**
- * Chrome (138+) fires this with neither subscription attached; a subscribe() without the
- * application server key is a guaranteed rejection, so that case is left to the pages, which know
- * the configured key and re-register on the subscription change message.
+ * Get a working subscription back, register it if it has Countly's key, and tell the open pages.
  */
 self.addEventListener("pushsubscriptionchange", function (event) {
-    // The browser dropped the old subscription. Re-subscribe with the same application
-    // server key and let the pages know so they queue a fresh token_session.
     var oldSubscription = event.oldSubscription || {};
-    var applicationServerKey = (oldSubscription.options && oldSubscription.options.applicationServerKey) || null;
-    var resubscribed;
-    if (event.newSubscription) {
-        clyLog("debug", "subscription rotated by the browser, new subscription attached");
-        resubscribed = Promise.resolve(event.newSubscription);
-    }
-    else if (applicationServerKey) {
-        clyLog("debug", "subscription dropped by the browser, re-subscribing with the previous key");
-        resubscribed = self.registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: applicationServerKey
-        });
-    }
-    else {
-        clyLog("debug", "subscription dropped by the browser without a key, leaving the re-subscribe to the pages");
-        resubscribed = Promise.resolve(null);
-    }
-
-    event.waitUntil(
-        resubscribed.catch(function (err) {
-            clyLog("error", "re-subscribe failed: " + (err && err.message ? err.message : err));
+    var oldKey = (oldSubscription.options && oldSubscription.options.applicationServerKey) || null;
+    event.waitUntil(clyConfig().then(function (config) {
+        var countlyKey = config && config.vapid_key ? clyKeyBytes(config.vapid_key) : null;
+        var subscribeKey = null;
+        var resubscribed;
+        if (event.newSubscription) {
+            clyLog("debug", "subscription rotated by the browser, new subscription attached");
+            resubscribed = Promise.resolve(event.newSubscription);
+        }
+        else if (oldKey || countlyKey) {
+            subscribeKey = oldKey || countlyKey;
+            clyLog("debug", "subscription dropped by the browser, re-subscribing with " + (oldKey ? "the previous key" : "the key the page registered"));
+            resubscribed = self.registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: subscribeKey
+            });
+        }
+        else {
+            clyLog("debug", "subscription dropped by the browser without a key, leaving the re-subscribe to the pages");
+            resubscribed = Promise.resolve(null);
+        }
+        return resubscribed.catch(function (err) {
+            clyLog("error", "re-subscribe failed: " + clyErrorText(err));
             return null;
-        }).then(function () {
-            return clyBroadcast({ type: CLY_SUBSCRIPTION_CHANGE });
-        })
-    );
+        }).then(function (subscription) {
+            var key = subscription && ((subscription.options && subscription.options.applicationServerKey) || subscribeKey);
+            if (!subscription || !clySameKey(key, countlyKey)) {
+                return false;
+            }
+            return clyRegisterToken(config, subscription);
+        });
+    }).then(function () {
+        return clyBroadcast({ type: CLY_SUBSCRIPTION_CHANGE });
+    }));
 });
