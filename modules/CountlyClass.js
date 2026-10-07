@@ -130,6 +130,7 @@ class CountlyClass {
     #logBuffer;
     #logBufferDropped;
     #logCaptureInProgress;
+    #logUploadBlocked;
     #lastLogFlushTime;
     #initContentSent;
     #initTimestamp;
@@ -7314,6 +7315,7 @@ class CountlyClass {
         this.#logBufferDropped = 0;
         this.#logCaptureInProgress = false;
         this.#logTransportInProgress = false;
+        this.#logUploadBlocked = false;
         this.#lastLogFlushTime = Date.now();
     }
 
@@ -7435,9 +7437,21 @@ class CountlyClass {
             this.#logBufferDropped += overflow;
         }
         // provisional lines have no gather id to be attributed to yet, so they wait
-        if (this.#SCLogGathering.decided && buffer.length >= this.#SCLogGathering.batchSize) {
+        // a buffer held back for consent is past its batch size on every line, the timed flush retries it instead
+        if (this.#SCLogGathering.decided && !this.#logUploadBlocked && buffer.length >= this.#SCLogGathering.batchSize) {
             this.#flushLogBuffer();
         }
+    }
+
+    /**
+     * Tells whether the gathered lines may leave the device. Gathered lines quote what the SDK was
+     * called with, so a batch can carry event keys, segmentation, user profile properties and view
+     * names. Per line attribution is not workable here: every line comes through one #log call that
+     * carries no feature, so the whole upload is gated on the broadest check instead.
+     * @returns {Boolean} true when consent covers the data a gathered batch may carry
+     */
+    #logUploadConsented = () => {
+        return this.check_consent(featureEnums.EVENTS) && this.check_consent(featureEnums.USERS);
     }
 
     /**
@@ -7455,6 +7469,16 @@ class CountlyClass {
         }
         this.#logCaptureInProgress = true;
         try {
+            if (!this.#logUploadConsented()) {
+                // the lines are held, not dropped: consent may still arrive, and nothing else leaves the device either
+                this.#lastLogFlushTime = Date.now();
+                if (!this.#logUploadBlocked) {
+                    this.#logUploadBlocked = true;
+                    this.#log(logLevelEnums.DEBUG, "flushLogBuffer, No events and users consent, holding the gathered lines instead of uploading them");
+                }
+                return;
+            }
+            this.#logUploadBlocked = false;
             var batch = buffer.splice(0, state.batchSize);
             var dropped = this.#logBufferDropped;
             this.#logBufferDropped = 0;

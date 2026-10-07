@@ -236,6 +236,86 @@ describe("Log gathering delivery", () => {
     });
 });
 
+describe("Log gathering consent", () => {
+    it("holds the gathered lines while the consent their data needs is missing", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true, device_id: "consent_device" });
+            Countly.add_consent("sessions");
+            expect(Countly._internals.getLogGatheringState()).to.include({ enabled: true, gatherId: GATHER_ID });
+
+            Countly.add_event({ key: "secret_event_key", segmentation: { secret_segment: "secret_value" } });
+            Countly.user_details({ name: "secret_user_name" });
+            Countly.track_view("secret_view_name");
+
+            var buffer = Countly._internals.getLogBuffer();
+            expect(buffer.some((line) => line.m.indexOf("secret_event_key") !== -1), "the gathered copy of the line still carries what the method was called with").to.equal(true);
+            var held = buffer.length;
+
+            Countly._internals.flushLogBuffer();
+            expect(Countly._internals.getLogBuffer().length, "the lines wait for consent rather than being dropped").to.be.at.least(held);
+            cy.fetch_local_request_queue().then((rq) => {
+                expect(gatheredBatches(rq).length, "no batch leaves the device").to.equal(0);
+                var wire = JSON.stringify(rq);
+                ["secret_event_key", "secret_segment", "secret_value", "secret_user_name", "secret_view_name"].forEach((secret) => {
+                    expect(wire, "[" + secret + "] never reaches the server").to.not.contain(secret);
+                });
+            });
+        });
+    });
+
+    it("uploads as before once events and users consent are given", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true, device_id: "consent_device" });
+            Countly.add_consent("sessions");
+            Countly._internals.flushLogBuffer();
+            cy.fetch_local_request_queue().then((rq) => {
+                expect(gatheredBatches(rq).length).to.equal(0);
+
+                Countly.add_consent(["events", "users"]);
+                Countly._internals.flushLogBuffer();
+                cy.fetch_local_request_queue().then((withConsent) => {
+                    var batches = gatheredBatches(withConsent);
+                    expect(batches.length).to.equal(1);
+                    expect(batches[0].i).to.equal(GATHER_ID);
+                    expect(batches[0].l.length).to.be.greaterThan(0);
+                    expect(Countly._internals.getLogBuffer().length).to.equal(0);
+                });
+            });
+        });
+    });
+
+    it("keeps printing the local developer log while the upload is held", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true, device_id: "consent_device" });
+            Countly._internals.flushLogBuffer();
+
+            var printed = [];
+            var originalDebug = console.debug;
+            console.debug = function(line) {
+                printed.push(line);
+            };
+            try {
+                Countly._internals.log("[DEBUG] ", "log_gathering_test, called with [secret_value]");
+            }
+            finally {
+                console.debug = originalDebug;
+            }
+            expect(printed.length).to.equal(1);
+            expect(printed[0], "the local log is untouched by the upload gate").to.contain("secret_value");
+        });
+    });
+
+    it("needs no consent at all when the app does not require consent", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 });
+            Countly._internals.flushLogBuffer();
+            cy.fetch_local_request_queue().then((rq) => {
+                expect(gatheredBatches(rq).length).to.equal(1);
+            });
+        });
+    });
+});
+
 describe("Log gathering lifecycle", () => {
     it("stops on a later live response, ships the tail with the old id and captures nothing more", () => {
         hp.haltAndClearStorage(() => {

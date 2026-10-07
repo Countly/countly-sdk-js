@@ -14,7 +14,7 @@
   * `push_subscribe_timeout` init option for setting how long `enable_push_notifications` waits for the browser, in milliseconds (default `30000`)
   * `countly_sw.js` service worker (`lib/countly_sw.js`), to be served from your site's root or imported into your own service worker
 * Added support for server initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
-* Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
+* Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches. Gathered lines can quote event keys, segmentation, user properties and view names, so they are only uploaded while both `events` and `users` consent are given.
 
 * Mitigated an issue where a log line carrying an object that could not be serialized would throw while `debug` was enabled.
 
