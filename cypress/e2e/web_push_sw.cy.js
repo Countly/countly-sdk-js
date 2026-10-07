@@ -5,18 +5,45 @@
 const MESSAGE_ID = "507f1f77bcf86cd799439011";
 const { SDK_VERSION, pushMessageTypes, pushWorkerParams, pushConstants, internalEventKeyEnums } = require("../../modules/Constants.js");
 
+var clientCount = 0;
+
+// like postMessage, a page gets a copy of the message as it was when posted
 function fakeClient(url, focused) {
+    clientCount++;
     return {
+        id: "client-" + clientCount,
         url: url,
         focused: !!focused,
         messages: [],
         focusCalls: 0,
         postMessage(message) {
-            this.messages.push(message);
+            this.messages.push(structuredClone(message));
         },
         focus() {
             this.focusCalls++;
             return Promise.resolve(this);
+        }
+    };
+}
+
+// timers the worker sets through self.setTimeout, run by the test when it decides the time is up
+function manualTimers() {
+    var pending = [];
+    return {
+        setTimeout(callback) {
+            pending.push(callback);
+            return pending.length;
+        },
+        clearTimeout(id) {
+            pending[id - 1] = null;
+        },
+        runAll() {
+            pending.slice().forEach((callback, i) => {
+                if (callback) {
+                    pending[i] = null;
+                    callback();
+                }
+            });
         }
     };
 }
@@ -30,6 +57,12 @@ function loadWorker(source, setup) {
         skipWaiting() {
             this.skipWaitingCalls++;
             return Promise.resolve();
+        },
+        setTimeout(callback, ms) {
+            return window.setTimeout(callback, ms);
+        },
+        clearTimeout(id) {
+            window.clearTimeout(id);
         },
         addEventListener(type, callback) {
             (handlers[type] = handlers[type] || []).push(callback);
@@ -60,7 +93,14 @@ function loadWorker(source, setup) {
                 subscribeCalls: [],
                 subscribe(options) {
                     this.subscribeCalls.push(options);
-                    return Promise.resolve({ endpoint: "https://push.example/new", options: options });
+                    return Promise.resolve({
+                        endpoint: "https://push.example/new",
+                        expirationTime: null,
+                        options: options,
+                        toJSON() {
+                            return { endpoint: this.endpoint, expirationTime: null, keys: { p256dh: "p256dh-new", auth: "auth-new" } };
+                        }
+                    });
                 }
             }
         }
@@ -222,6 +262,20 @@ describe("Web push service worker", () => {
         });
     });
 
+    it("Focuses the tab already showing the click's URL when the message leaves out the trailing slash", () => {
+        var worker = loadWorker(source);
+        // browsers report window URLs normalised, so the home page is "https://x/" however it was linked
+        var other = fakeClient("https://x/other", true);
+        var home = fakeClient("https://x/", false);
+        worker.self.clients.list = [other, home];
+        cy.then(() => worker.dispatch("notificationclick", { notification: { close() { }, data: { i: MESSAGE_ID, l: "https://x", b: [] } }, action: "" })).then(() => {
+            expect(worker.self.clients.opened).to.deep.equal([]);
+            expect(home.focusCalls).to.equal(1);
+            expect(home.messages.filter((m) => m.type === "countly_push_action").length).to.equal(1);
+            expect(other.messages.length).to.equal(0);
+        });
+    });
+
     it("Does not attempt a re-subscribe without an application server key", () => {
         var worker = loadWorker(source);
         var page = fakeClient("https://x/", true);
@@ -305,19 +359,30 @@ describe("Web push service worker", () => {
     });
 
     it("Keeps the page-to-worker contract in sync with modules/Constants.js", () => {
+        // the worker cannot import Constants.js, so these values are duplicated by hand
+        var copies = {
+            CLY_ACTION: pushMessageTypes.ACTION,
+            CLY_SUBSCRIPTION_CHANGE: pushMessageTypes.SUBSCRIPTION_CHANGE,
+            CLY_READY: pushMessageTypes.READY,
+            CLY_ACK: pushMessageTypes.ACK,
+            CLY_RECEIVED: pushMessageTypes.RECEIVED,
+            CLY_CLOSED: pushMessageTypes.CLOSED,
+            CLY_LOG: pushMessageTypes.LOG,
+            CLY_CONFIG: pushMessageTypes.CONFIG,
+            CLY_PARAM_DEBUG: pushWorkerParams.debug,
+            CLY_PARAM_PERSIST: pushWorkerParams.persist,
+            CLY_MAX_PENDING: pushConstants.MAX_SEEN_ACTION_IDS,
+            CLY_TOKEN_PROVIDER: pushConstants.TOKEN_PROVIDER,
+            CLY_PUSH_ACTION_EVENT: internalEventKeyEnums.PUSH_ACTION,
+            CLY_SW_VERSION: SDK_VERSION
+        };
         cy.then(() => {
-            // the worker cannot import Constants.js, so these strings are duplicated by hand
-            Object.keys(pushMessageTypes).forEach((name) => {
-                expect(source, "message type " + name).to.include('"' + pushMessageTypes[name] + '"');
-            });
-            Object.keys(pushWorkerParams).forEach((name) => {
-                expect(source, "worker url parameter " + name).to.include('"' + pushWorkerParams[name] + '"');
-            });
-            expect(source).to.include("CLY_MAX_ACTIONS = 2");
-            expect(source).to.include("CLY_MAX_PENDING = " + pushConstants.MAX_SEEN_ACTION_IDS);
-            // the event the worker records on its own must be the one the page SDK records
-            expect(source).to.include('CLY_PUSH_ACTION_EVENT = "' + internalEventKeyEnums.PUSH_ACTION + '"');
-            expect(source).to.include('CLY_SW_VERSION = "' + SDK_VERSION + '"');
+            var reads = Object.keys(copies).map((name) => JSON.stringify(name) + ": typeof " + name + " === 'undefined' ? undefined : " + name);
+            var worker = loadWorker(source + "\n;self.copies = {" + reads.join(", ") + "};");
+            expect(worker.self.copies).to.deep.equal(copies);
+            // a message type added to Constants.js needs its worker copy listed above
+            var copiedTypes = Object.keys(copies).map((name) => copies[name]).filter((value) => Object.values(pushMessageTypes).indexOf(value) !== -1);
+            expect(copiedTypes.sort()).to.deep.equal(Object.values(pushMessageTypes).sort());
         });
     });
 
@@ -392,11 +457,21 @@ describe("Web push service worker", () => {
         });
     });
 
-    it("Reports a notification the browser refused to show", () => {
+    it("Reports a notification the browser refused to show, naming the error", () => {
         var worker = loadWorker(source);
-        worker.self.registration.showNotification = () => Promise.reject(new Error("no permission"));
+        // what Chrome rejects showNotification() with once the permission is gone
+        worker.self.registration.showNotification = () => Promise.reject(new TypeError("No notification permission has been granted for this origin."));
         cy.then(() => capture(() => worker.dispatch("push", pushEvent({ title: "Hi", c: { i: MESSAGE_ID } })))).then((out) => {
-            expect(out.lines.some((l) => l.indexOf("error:") === 0 && l.indexOf("no permission") !== -1)).to.equal(true);
+            expect(out.lines.some((l) => l.indexOf("error:") === 0 && l.indexOf("TypeError: No notification permission") !== -1)).to.equal(true);
+        });
+    });
+
+    it("Names the error when re-subscribing after a rotation fails", () => {
+        var worker = loadWorker(source);
+        worker.self.registration.pushManager.subscribe = () => Promise.reject(new DOMException("Registration failed - push service error", "AbortError"));
+        var key = new Uint8Array([4, 1, 2, 3]).buffer;
+        cy.then(() => capture(() => worker.dispatch("pushsubscriptionchange", { oldSubscription: { options: { applicationServerKey: key } } }))).then((out) => {
+            expect(out.lines.some((l) => l.indexOf("error:") === 0 && l.indexOf("AbortError: Registration failed") !== -1)).to.equal(true);
         });
     });
 
@@ -690,6 +765,646 @@ describe("Web push service worker", () => {
                     expect(ids).to.include(String(pushConstants.MAX_SEEN_ACTION_IDS).padStart(2, "0"));
                 });
             });
+        });
+    });
+
+    it("Keeps the server details and pending clicks of each worker scope apart", () => {
+        cy.then(() => deleteDb()).then(() => {
+            // two apps on one site, each with a worker of its own scope; the workers share one IndexedDB
+            var shopA = persistentWorker((self) => {
+                self.registration.scope = "https://x/a/";
+            });
+            var shopB = persistentWorker((self) => {
+                self.registration.scope = "https://x/b/";
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            var pageA = fakeClient("https://x/a/", true);
+            var pageB = fakeClient("https://x/b/", true);
+            return shopA.dispatch("message", { data: { type: "countly_push_ready", config: Object.assign({}, REPORTING_CONFIG, { app_key: "app-a" }) }, source: pageA })
+                .then(() => shopB.dispatch("message", { data: { type: "countly_push_ready", config: Object.assign({}, REPORTING_CONFIG, { app_key: "app-b" }) }, source: pageB }))
+                .then(() => click(shopB, "btn_1"))
+                .then(() => click(shopA))
+                .then(() => {
+                    expect(shopA.self.fetch.calls.length).to.equal(1);
+                    expect(formBody(shopA.self.fetch.calls[0]).app_key).to.equal("app-a");
+                    var laterA = fakeClient("https://x/a/", true);
+                    var laterB = fakeClient("https://x/b/", true);
+                    return shopA.dispatch("message", { data: { type: "countly_push_ready" }, source: laterA })
+                        .then(() => shopB.dispatch("message", { data: { type: "countly_push_ready" }, source: laterB }))
+                        .then(() => {
+                            expect(actionsHandedTo(laterA).map((m) => m.recorded)).to.deep.equal([true]);
+                            expect(actionsHandedTo(laterB).map((m) => m.buttonIndex)).to.deep.equal([1]);
+                        });
+                });
+        });
+    });
+
+    it("Leaves its server details alone when a page meant them for the worker of another scope", () => {
+        cy.then(() => deleteDb()).then(() => {
+            // one page runs two apps; B has no worker of its own yet, so its messages reach A's worker
+            var shopA = persistentWorker((self) => {
+                self.registration.scope = "https://x/a/";
+            });
+            var page = fakeClient("https://x/a/", true);
+            return shopA.dispatch("message", { data: { type: "countly_push_ready", config: Object.assign({}, REPORTING_CONFIG, { app_key: "app-a" }), scope: "https://x/a/" }, source: page })
+                .then(() => shopA.dispatch("message", { data: { type: "countly_push_ready", config: Object.assign({}, REPORTING_CONFIG, { app_key: "app-b" }), scope: "https://x/b/" }, source: page }))
+                .then(() => click(shopA))
+                .then(() => {
+                    expect(shopA.self.fetch.calls.length).to.equal(1);
+                    expect(formBody(shopA.self.fetch.calls[0]).app_key).to.equal("app-a");
+                    return shopA.dispatch("message", { data: { type: "countly_push_config", config: null, scope: "https://x/b/" } });
+                })
+                .then(() => click(shopA, "btn_1"))
+                .then(() => {
+                    expect(shopA.self.fetch.calls.length).to.equal(2);
+                    expect(formBody(shopA.self.fetch.calls[1]).app_key).to.equal("app-a");
+                });
+        });
+    });
+
+    // ---- handing kept clicks over: one page at a time, at the time they were made ------------
+
+    function announce(worker, page) {
+        return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: page });
+    }
+
+    it("Keeps a click before sending it, so a worker stopped mid-request leaves it to the next page", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var timers = manualTimers();
+            // a request still on its way when the browser stops the worker
+            var first = persistentWorker((self) => {
+                self.setTimeout = timers.setTimeout;
+                self.clearTimeout = timers.clearTimeout;
+                self.fetch = fakeFetch(() => new Promise(() => { }));
+            });
+            var page = fakeClient("https://x/", true);
+            return first.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page }).then(() => {
+                click(first, "btn_1");
+                return untilFetched(first);
+            }).then(() => {
+                var restarted = persistentWorker();
+                var later = fakeClient("https://x/", true);
+                return announce(restarted, later).then(() => {
+                    var actions = actionsHandedTo(later);
+                    expect(actions.length).to.equal(1);
+                    expect(actions[0].buttonIndex).to.equal(1);
+                    expect(actions[0].recorded).to.not.equal(true);
+                });
+            });
+        });
+    });
+
+    it("Gives up on a server that does not answer and leaves the click to the next page", () => {
+        var timers = manualTimers();
+        cy.then(() => configuredWorker((self) => {
+            self.setTimeout = timers.setTimeout;
+            self.clearTimeout = timers.clearTimeout;
+            self.AbortController = window.AbortController;
+            self.fetch = fakeFetch(() => new Promise(() => { }));
+        })).then((worker) => {
+            var settled = false;
+            click(worker).then(() => {
+                settled = true;
+            });
+            return untilFetched(worker).then(() => {
+                // the deadline passes without an answer
+                timers.runAll();
+                return new Promise((resolve) => setTimeout(resolve, 50));
+            }).then(() => {
+                expect(settled).to.equal(true);
+                expect(worker.self.fetch.calls[0].init.signal.aborted).to.equal(true);
+                var page = fakeClient("https://x/", true);
+                return announce(worker, page).then(() => {
+                    var actions = actionsHandedTo(page);
+                    expect(actions.length).to.equal(1);
+                    expect(actions[0].recorded).to.not.equal(true);
+                });
+            });
+        });
+    });
+
+    it("Hands a click it is still sending to a page announcing itself only once the server has answered", () => {
+        var answer = null;
+        cy.then(() => configuredWorker((self) => {
+            self.fetch = fakeFetch(() => new Promise((resolve) => {
+                answer = resolve;
+            }));
+        })).then((worker) => {
+            var page = fakeClient("https://x/", true);
+            var clicked = click(worker);
+            return untilFetched(worker).then(() => {
+                // the window this click opened loads while the worker still waits for the server
+                var announced = announce(worker, page);
+                setTimeout(() => answer({ ok: true }), 50);
+                return Promise.all([clicked, announced]);
+            }).then(() => {
+                var actions = actionsHandedTo(page);
+                expect(actions.length).to.equal(1);
+                expect(actions[0].recorded).to.equal(true);
+            });
+        });
+    });
+
+    it("Sends the click it records itself without an event id or a view id", () => {
+        cy.then(() => configuredWorker()).then((worker) => click(worker, "btn_1").then(() => {
+            var event = JSON.parse(formBody(worker.self.fetch.calls[0]).events)[0];
+            expect(Object.keys(event).sort()).to.deep.equal(["count", "dow", "hour", "key", "segmentation", "timestamp"]);
+        }));
+    });
+
+    it("Keeps the click for a page, and says why, when the request for it cannot be built", () => {
+        // a lone surrogate cannot be URL-encoded, so building the request throws before anything is sent
+        var config = Object.assign({}, REPORTING_CONFIG, { device_id: "device-\uD83D" });
+        var reason = null;
+        try {
+            encodeURIComponent(config.device_id);
+        }
+        catch (err) {
+            // the browser's own error type and wording; the wording differs between engines
+            reason = err.name + ": " + err.message;
+        }
+        cy.then(() => configuredWorker((self) => {
+            self.COUNTLY_PUSH_DEBUG = true;
+        })).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: config } }).then(() => capture(() => click(worker))).then((out) => {
+            expect(reason).to.be.a("string");
+            expect(out.lines.some((l) => l.indexOf("[Countly]") !== -1 && l.indexOf(reason) !== -1)).to.equal(true);
+            var page = fakeClient("https://x/", true);
+            return announce(worker, page).then(() => {
+                var actions = actionsHandedTo(page);
+                expect(actions.length).to.equal(1);
+                expect(actions[0].recorded).to.not.equal(true);
+            });
+        }));
+    });
+
+    it("Hands a kept click to one page at a time when several announce themselves together", () => {
+        var timers = manualTimers();
+        // no server details, so the click is kept for a page
+        var worker = loadWorker(source, (self) => {
+            self.setTimeout = timers.setTimeout;
+            self.clearTimeout = timers.clearTimeout;
+        });
+        var first = fakeClient("https://x/a", false);
+        var second = fakeClient("https://x/b", false);
+        cy.then(() => click(worker)).then(() => announce(worker, first)).then(() => announce(worker, second)).then(() => {
+            expect(actionsHandedTo(first).length).to.equal(1);
+            expect(actionsHandedTo(second).length).to.equal(0);
+            // the page holding it announces itself again once push consent is given
+            return announce(worker, first);
+        }).then(() => {
+            expect(actionsHandedTo(first).length).to.equal(2);
+            // that page never acknowledged it, so once the window has passed the next page gets it
+            timers.runAll();
+            return announce(worker, second);
+        }).then(() => {
+            expect(actionsHandedTo(second).length).to.equal(1);
+        });
+    });
+
+    // the browser's IndexedDB, rolling back each write for which refuse(storeName, op, value) is true
+    function refusingWrites(refuse) {
+        return {
+            open(name, version) {
+                var request = window.indexedDB.open(name, version);
+                request.addEventListener("success", () => {
+                    var db = request.result;
+                    var transaction = db.transaction.bind(db);
+                    db.transaction = (storeName, mode) => {
+                        var tx = transaction(storeName, mode);
+                        if (mode !== "readwrite") {
+                            return tx;
+                        }
+                        var objectStore = tx.objectStore.bind(tx);
+                        tx.objectStore = (n) => {
+                            var store = objectStore(n);
+                            ["put", "delete"].forEach((op) => {
+                                var original = store[op].bind(store);
+                                store[op] = function (value) {
+                                    var pending = original.apply(null, arguments);
+                                    if (refuse(storeName, op, value)) {
+                                        tx.abort();
+                                    }
+                                    return pending;
+                                };
+                            });
+                            return store;
+                        };
+                        return tx;
+                    };
+                });
+                return request;
+            }
+        };
+    }
+
+    // a worker that was told about device-1 while IndexedDB worked, before failing.ops took effect
+    function workerWithFailingSaves(failing) {
+        var worker = persistentWorker((self) => {
+            self.indexedDB = refusingWrites((storeName, op) => storeName === "config" && failing.ops.indexOf(op) !== -1);
+        });
+        var page = fakeClient("https://x/", true);
+        return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page }).then(() => worker);
+    }
+
+    it("Reports with the newest server details even when saving them failed", () => {
+        var failing = { ops: [] };
+        cy.then(() => deleteDb()).then(() => workerWithFailingSaves(failing)).then((worker) => {
+            failing.ops = ["put"];
+            return worker.dispatch("message", { data: { type: "countly_push_config", config: Object.assign({}, REPORTING_CONFIG, { device_id: "device-2" }) } }).then(() => click(worker)).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(1);
+                expect(formBody(worker.self.fetch.calls[0]).device_id).to.equal("device-2");
+            });
+        });
+    });
+
+    it("Stops reporting once the page withdrew the details, even when forgetting them failed", () => {
+        var failing = { ops: [] };
+        cy.then(() => deleteDb()).then(() => workerWithFailingSaves(failing)).then((worker) => {
+            failing.ops = ["delete"];
+            return worker.dispatch("message", { data: { type: "countly_push_config", config: null } }).then(() => click(worker)).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(0);
+            });
+        });
+    });
+
+    it("Leaves a restarted worker no details rather than the ones it failed to replace", () => {
+        var failing = { ops: [] };
+        cy.then(() => deleteDb()).then(() => workerWithFailingSaves(failing)).then((worker) => {
+            failing.ops = ["put"];
+            return worker.dispatch("message", { data: { type: "countly_push_config", config: Object.assign({}, REPORTING_CONFIG, { device_id: "device-2" }) } });
+        }).then(() => {
+            var restarted = persistentWorker();
+            return click(restarted).then(() => {
+                expect(restarted.self.fetch.calls.length).to.equal(0);
+                var page = fakeClient("https://x/", true);
+                return restarted.dispatch("message", { data: { type: "countly_push_ready" }, source: page }).then(() => {
+                    expect(actionsHandedTo(page).filter((m) => m.recorded !== true).length).to.equal(1);
+                });
+            });
+        });
+    });
+
+    it("Does not hand back a click it sent itself as unrecorded when saving that mark failed", () => {
+        cy.then(() => deleteDb()).then(() => {
+            // IndexedDB takes the click, then refuses the write that marks it recorded
+            var worker = persistentWorker((self) => {
+                self.indexedDB = refusingWrites((storeName, op, value) => storeName === "actions" && op === "put" && !!value && value.recorded === true);
+            });
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page }).then(() => click(worker)).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(1);
+                var later = fakeClient("https://x/", true);
+                return announce(worker, later).then(() => {
+                    expect(actionsHandedTo(later).map((m) => m.recorded)).to.deep.equal([true]);
+                });
+            });
+        });
+    });
+
+    it("Leaves a restarted worker no unrecorded copy of a click it sent itself when saving that mark failed", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.indexedDB = refusingWrites((storeName, op, value) => storeName === "actions" && op === "put" && !!value && value.recorded === true);
+            });
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page }).then(() => click(worker)).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(1);
+                // browsers stop idle workers within seconds, so the next page usually talks to a fresh one
+                var restarted = persistentWorker();
+                var later = fakeClient("https://x/", true);
+                return announce(restarted, later).then(() => {
+                    expect(actionsHandedTo(later).filter((m) => m.recorded !== true)).to.deep.equal([]);
+                });
+            });
+        });
+    });
+
+    it("Does not hand a click over again once a page confirmed it, even when forgetting it failed", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.indexedDB = refusingWrites((storeName, op) => storeName === "actions" && op === "delete");
+            });
+            var page = fakeClient("https://x/", true);
+            worker.self.clients.list = [page];
+            return click(worker).then(() => {
+                var handed = actionsHandedTo(page);
+                expect(handed.length).to.equal(1);
+                return worker.dispatch("message", { data: { type: "countly_push_ack", aid: handed[0].aid } });
+            }).then(() => {
+                var later = fakeClient("https://x/", true);
+                return announce(worker, later).then(() => {
+                    expect(actionsHandedTo(later)).to.deep.equal([]);
+                });
+            });
+        });
+    });
+
+    // ---- registering a subscription the browser replaced --------------------------------------
+
+    // the app's VAPID public key as the dashboard hands it out: 0x04, then 64 bytes (all 7 here)
+    const VAPID_KEY = "BAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc";
+    const VAPID_BYTES = new Uint8Array([4].concat(new Array(64).fill(7)));
+    // another push provider's key, sharing the registration inside a host worker
+    const OTHER_KEY_BYTES = new Uint8Array([4].concat(new Array(64).fill(9)));
+
+    // a worker whose page has registered a subscription made with VAPID_KEY
+    function registeredWorker(setup) {
+        return configuredWorker(setup).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: Object.assign({ vapid_key: VAPID_KEY }, REPORTING_CONFIG) } }).then(() => worker));
+    }
+
+    it("Registers the subscription the browser replaced itself, with what the page told it about the server", () => {
+        cy.then(() => registeredWorker()).then((worker) => worker.dispatch("pushsubscriptionchange", { oldSubscription: { endpoint: "https://push.example/old", options: { applicationServerKey: VAPID_BYTES.buffer } } }).then(() => {
+            var calls = worker.self.fetch.calls;
+            expect(calls.length).to.equal(1);
+            expect(calls[0].url).to.equal("https://srv.example/i");
+            expect(calls[0].init.method).to.equal("POST");
+            var body = formBody(calls[0]);
+            expect(body).to.include({ token_session: "1", token_provider: "WEB", app_key: "app-key-1", device_id: "device-1", t: "0", sdk_name: "javascript_native_web", sdk_version: SDK_VERSION, av: "1.0" });
+            expect(JSON.parse(body.web_token)).to.deep.equal({ endpoint: "https://push.example/new", expirationTime: null, keys: { p256dh: "p256dh-new", auth: "auth-new" } });
+        }));
+    });
+
+    it("Subscribes again with the registered key when Chrome dropped the subscription without saying which", () => {
+        cy.then(() => registeredWorker()).then((worker) => {
+            var page = fakeClient("https://x/", true);
+            worker.self.clients.list = [page];
+            // Chrome 138+ after the permission was revoked and granted again: neither subscription attached
+            return worker.dispatch("pushsubscriptionchange", {}).then(() => {
+                var calls = worker.self.registration.pushManager.subscribeCalls;
+                expect(calls.length).to.equal(1);
+                expect(calls[0].userVisibleOnly).to.equal(true);
+                expect(Array.from(new Uint8Array(calls[0].applicationServerKey))).to.deep.equal(Array.from(VAPID_BYTES));
+                expect(worker.self.fetch.calls.length).to.equal(1);
+                expect(JSON.parse(formBody(worker.self.fetch.calls[0]).web_token).endpoint).to.equal("https://push.example/new");
+                expect(page.messages.filter((m) => m.type === "countly_push_subscription_change").length).to.equal(1);
+            });
+        });
+    });
+
+    it("Reads a registered key that still carries the line break it was configured with", () => {
+        cy.then(() => configuredWorker()).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: Object.assign({ vapid_key: " " + VAPID_KEY + "\r\n" }, REPORTING_CONFIG) } }).then(() => {
+            return worker.dispatch("pushsubscriptionchange", {});
+        }).then(() => {
+            var calls = worker.self.registration.pushManager.subscribeCalls;
+            expect(calls.length).to.equal(1);
+            expect(Array.from(new Uint8Array(calls[0].applicationServerKey))).to.deep.equal(Array.from(VAPID_BYTES));
+            expect(worker.self.fetch.calls.length).to.equal(1);
+        }));
+    });
+
+    it("Registers only Countly's own subscription", () => {
+        cy.then(() => registeredWorker()).then((worker) => worker.dispatch("pushsubscriptionchange", { oldSubscription: { options: { applicationServerKey: OTHER_KEY_BYTES.buffer } } }).then(() => {
+            expect(worker.self.registration.pushManager.subscribeCalls.length).to.equal(1);
+            expect(worker.self.fetch.calls.length).to.equal(0);
+        })).then(() => configuredWorker()).then((worker) => worker.dispatch("pushsubscriptionchange", { oldSubscription: { options: { applicationServerKey: VAPID_BYTES.buffer } } }).then(() => {
+            // details from a page SDK that does not say which key is Countly's prove nothing
+            expect(worker.self.fetch.calls.length).to.equal(0);
+        }));
+    });
+
+    it("Still tells the open pages when the server cannot take the new subscription", () => {
+        cy.then(() => registeredWorker((self) => {
+            self.fetch = fakeFetch(() => Promise.reject(new TypeError("Failed to fetch")));
+        })).then((worker) => {
+            var page = fakeClient("https://x/", true);
+            worker.self.clients.list = [page];
+            return worker.dispatch("pushsubscriptionchange", { oldSubscription: { options: { applicationServerKey: VAPID_BYTES.buffer } } }).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(1);
+                expect(page.messages.filter((m) => m.type === "countly_push_subscription_change").length).to.equal(1);
+            });
+        });
+    });
+
+    // ---- writing down whose click it is --------------------------------------------------------
+
+    it("Writes down with a click it keeps whose server details it held when the click was made", () => {
+        cy.then(() => configuredWorker((self) => {
+            self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+        })).then((worker) => click(worker).then(() => {
+            var page = fakeClient("https://x/", true);
+            return announce(worker, page).then(() => {
+                expect(actionsHandedTo(page)[0].owner).to.deep.equal({ device_id: "device-1", t: 0, recordable: true });
+            });
+        }));
+    });
+
+    it("Writes down the user a page named while it withheld the server details", () => {
+        var worker = loadWorker(source, (self) => {
+            self.fetch = fakeFetch();
+        });
+        var page = fakeClient("https://x/", true);
+        // a page whose cookie banner has not been answered yet: no details, but a user
+        cy.then(() => worker.dispatch("message", { data: { type: "countly_push_ready", config: null, owner: { device_id: "device-1", t: 0 } }, source: page })).then(() => click(worker)).then(() => {
+            expect(worker.self.fetch.calls.length).to.equal(0);
+            var later = fakeClient("https://x/", true);
+            return announce(worker, later).then(() => {
+                expect(actionsHandedTo(later)[0].owner).to.deep.equal({ device_id: "device-1", t: 0 });
+            });
+        });
+    });
+
+    it("Marks a click made while the visitor was opted out as one no page may record", () => {
+        cy.then(() => configuredWorker()).then((worker) => worker.dispatch("message", { data: { type: "countly_push_config", config: null, owner: null } }).then(() => click(worker)).then(() => {
+            var page = fakeClient("https://x/", true);
+            return announce(worker, page).then(() => {
+                expect(actionsHandedTo(page)[0]).to.have.property("owner", null);
+            });
+        }));
+    });
+
+    it("Still knows whose clicks they are after the browser restarted it", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var first = persistentWorker();
+            var page = fakeClient("https://x/", true);
+            return first.dispatch("message", { data: { type: "countly_push_ready", config: null, owner: { device_id: "device-1", t: 0 } }, source: page }).then(() => {
+                var restarted = persistentWorker();
+                return click(restarted).then(() => {
+                    var later = fakeClient("https://x/", true);
+                    return announce(restarted, later).then(() => {
+                        expect(actionsHandedTo(later)[0].owner).to.deep.equal({ device_id: "device-1", t: 0 });
+                    });
+                });
+            });
+        });
+    });
+
+    it("Writes down no user for a click once a page that does not name one took over", () => {
+        var worker = loadWorker(source);
+        var page = fakeClient("https://x/", true);
+        cy.then(() => worker.dispatch("message", { data: { type: "countly_push_ready", config: null, owner: { device_id: "device-1", t: 0 } }, source: page }))
+            // an older page SDK in another tab withdraws the details without naming its user
+            .then(() => worker.dispatch("message", { data: { type: "countly_push_config", config: null } }))
+            .then(() => click(worker))
+            .then(() => {
+                var later = fakeClient("https://x/", true);
+                return announce(worker, later).then(() => {
+                    expect(actionsHandedTo(later)[0]).to.not.have.property("owner");
+                });
+            });
+    });
+
+    // ---- keeping everything in memory for a site that stores nothing ---------------------------
+
+    // the config keys and kept clicks IndexedDB holds, or null without a database; never creates one
+    function storedRecords() {
+        return indexedDB.databases().then((databases) => {
+            if (!databases.some((db) => db.name === "countly_push")) {
+                return null;
+            }
+            return new Promise((resolve, reject) => {
+                var request = indexedDB.open("countly_push");
+                request.onsuccess = () => {
+                    var db = request.result;
+                    var transaction = db.transaction(["actions", "config"], "readonly");
+                    var stored = {};
+                    transaction.objectStore("config").getAllKeys().onsuccess = (event) => {
+                        stored.config = event.target.result;
+                    };
+                    transaction.objectStore("actions").getAll().onsuccess = (event) => {
+                        stored.actions = event.target.result;
+                    };
+                    transaction.oncomplete = () => {
+                        db.close();
+                        resolve(stored);
+                    };
+                    transaction.onabort = () => {
+                        db.close();
+                        reject(transaction.error);
+                    };
+                };
+                request.onerror = () => reject(request.error);
+            });
+        });
+    }
+
+    // a page of a site that runs the SDK with storage "none"
+    function memoryOnlyReady(config) {
+        return { type: "countly_push_ready", config: config, owner: { device_id: config ? config.device_id : "device-1", t: 0 }, persist: false };
+    }
+
+    it("Keeps the server details and kept clicks in memory only when the page stores nothing", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.registration.scope = "https://x/";
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: page })
+                .then(() => click(worker, "btn_1"))
+                .then(() => storedRecords())
+                .then((stored) => {
+                    expect(worker.self.fetch.calls.length).to.equal(1);
+                    expect(stored).to.equal(null);
+                    var later = fakeClient("https://x/", true);
+                    return worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: later }).then(() => {
+                        expect(actionsHandedTo(later).map((m) => m.buttonIndex)).to.deep.equal([1]);
+                    });
+                });
+        });
+    });
+
+    it("Deletes what its own scope stored once a page asks it to keep everything in memory, handing over the clicks kept there", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var offline = (self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            };
+            var shopA = persistentWorker((self) => {
+                self.registration.scope = "https://x/a/";
+                offline(self);
+            });
+            var shopB = persistentWorker((self) => {
+                self.registration.scope = "https://x/b/";
+                offline(self);
+            });
+            var detailsA = Object.assign({}, REPORTING_CONFIG, { app_key: "app-a" });
+            var detailsB = Object.assign({}, REPORTING_CONFIG, { app_key: "app-b" });
+            return shopA.dispatch("message", { data: { type: "countly_push_ready", config: detailsA, owner: { device_id: "device-1", t: 0 } }, source: fakeClient("https://x/a/", true) })
+                .then(() => shopB.dispatch("message", { data: { type: "countly_push_ready", config: detailsB, owner: { device_id: "device-1", t: 0 } }, source: fakeClient("https://x/b/", true) }))
+                .then(() => click(shopA, "btn_1"))
+                .then(() => click(shopB, "btn_2"))
+                .then(() => {
+                    // B's site switches to storage "none", and its worker restarts with empty memory
+                    var restartedB = persistentWorker((self) => {
+                        self.registration.scope = "https://x/b/";
+                        offline(self);
+                    });
+                    var pageB = fakeClient("https://x/b/", true);
+                    return restartedB.dispatch("message", { data: memoryOnlyReady(detailsB), source: pageB }).then(() => storedRecords()).then((stored) => {
+                        expect(stored.config).to.deep.equal(["owner https://x/a/", "reporting https://x/a/"]);
+                        expect(stored.actions.map((action) => action.scope)).to.deep.equal(["https://x/a/"]);
+                        expect(actionsHandedTo(pageB).map((m) => m.buttonIndex)).to.deep.equal([2]);
+                    });
+                });
+        });
+    });
+
+    [
+        ["its URL", (self) => {
+            self.location = { href: "https://x/countly_sw.js?cly_persist=0" };
+        }],
+        ["the host worker", (self) => {
+            self.COUNTLY_PUSH_PERSIST = false;
+        }]
+    ].forEach(([who, setup]) => {
+        it("Keeps a click in memory only from its start when " + who + " says the site stores nothing", () => {
+            cy.then(() => deleteDb()).then(() => {
+                var worker = persistentWorker(setup);
+                return click(worker, "btn_1").then(() => storedRecords()).then((stored) => {
+                    expect(stored).to.equal(null);
+                    var opened = fakeClient("https://x/open", true);
+                    return worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: opened }).then(() => {
+                        expect(actionsHandedTo(opened).map((m) => m.buttonIndex)).to.deep.equal([1]);
+                        return storedRecords();
+                    }).then((after) => {
+                        expect(after).to.equal(null);
+                    });
+                });
+            });
+        });
+    });
+
+    it("Stores in IndexedDB again only once a page that may store hands over its details", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            return worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: fakeClient("https://x/", true) })
+                // an older page SDK announces itself without a word about the details
+                .then(() => announce(worker, fakeClient("https://x/", true)))
+                .then(() => click(worker, "btn_1"))
+                .then(() => storedRecords())
+                .then((stored) => {
+                    expect(stored).to.equal(null);
+                    // a page of the site that stores, or a page SDK that does not know about storage "none"
+                    return worker.dispatch("message", { data: { type: "countly_push_config", config: REPORTING_CONFIG } });
+                })
+                .then(() => click(worker, "btn_2"))
+                .then(() => storedRecords())
+                .then((stored) => {
+                    expect(stored, "stored again").to.not.equal(null);
+                    expect(stored.config).to.deep.equal(["reporting"]);
+                    expect(stored.actions.map((action) => action.buttonIndex)).to.deep.equal([2]);
+                });
+        });
+    });
+
+    it("Deletes what it stored when a page that withdraws the details asks for memory only", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG, owner: { device_id: "device-1", t: 0 } }, source: fakeClient("https://x/", true) })
+                .then(() => click(worker, "btn_1"))
+                // the visitor opts out on a page that runs with storage "none"
+                .then(() => worker.dispatch("message", { data: { type: "countly_push_config", config: null, owner: null, persist: false } }))
+                .then(() => storedRecords())
+                .then((stored) => {
+                    expect(stored).to.deep.equal({ config: [], actions: [] });
+                    var later = fakeClient("https://x/", true);
+                    return announce(worker, later).then(() => {
+                        expect(actionsHandedTo(later).map((m) => m.buttonIndex)).to.deep.equal([1]);
+                    });
+                });
         });
     });
 });

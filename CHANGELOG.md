@@ -1,12 +1,18 @@
 ## NEXT RELEASE
 
-* Added web push notification support. Give the SDK the new `push` consent and call `enable_push_notifications` once from a user gesture, passing the VAPID public key from your application settings; from then on it keeps the subscription token in sync and records notification clicks on its own. `disable_push_notifications` is remembered across page loads, so the automatic registration never undoes it; only another explicit `enable_push_notifications` subscribes again. Sites that already run a service worker import `countly_sw.js` into it (see `examples/example_custom_sw.js`) and pass their registration as `push_service_worker_registration`; the imported handlers only act on Countly's own pushes and notifications, and `self.COUNTLY_PUSH_LIFECYCLE = false` keeps the host worker's install/activate behaviour.
-* Added `push_notification_listener` (also `set_push_notification_listener`) to be told when a notification is received, clicked (which button, its title and URL) or closed, together with the message's custom payload. "closed" is best effort and differs by browser and OS; Safari shows no action buttons (desktop Firefox gained them in Firefox 152), and both can report "closed" right after "clicked".
-* A notification click only opens http(s) URLs; any other scheme is refused and logged, while the click is still recorded.
-* A click while no page of the site is open (a closed browser, or a button that leads to another site) is now recorded by the service worker itself, using the server details the page hands it; when that is not possible the click waits for the next page, in IndexedDB rather than in worker memory, so it survives the browser stopping the worker. The next page still gets the "clicked" listener callback for it.
-* `enable_push_notifications` gives up with reason "timeout" when the browser never finishes creating the subscription (seen on iOS 18.7), so a later call can retry instead of joining the stuck one; `push_subscribe_timeout` (milliseconds, default 30000) sets the wait. The silent registration at load now logs its outcome.
-* With `debug: true` the service worker logs every push, click and close too, and forwards the lines to the page as `[SW]` entries. A host worker turns this on with `self.COUNTLY_PUSH_DEBUG = true`.
-* The service worker now honours two fields the server may send with a notification: `tag` replaces an earlier notification carrying the same tag instead of stacking a second one, and `requireInteraction` keeps the notification on screen until the user acts on it (Chrome and Edge; other browsers ignore it).
+* Added web push notification support (requires a Countly server with web push support):
+  * `push` consent feature for gating push notifications behind user consent
+  * `enable_push_notifications` method for asking the visitor's permission and subscribing them to push notifications
+  * `disable_push_notifications` method for unsubscribing the visitor from push notifications
+  * `set_push_notification_listener` method and `push_notification_listener` init option for getting notified when a notification is received, clicked or closed
+  * `record_push_action` method for recording a notification click manually
+  * `push_vapid_public_key` init option for providing your application's VAPID public key
+  * `push_service_worker_path` init option for providing the path of the service worker file (default `/countly_sw.js`)
+  * `push_service_worker_scope` init option for registering the service worker under a different scope (default `countly-push/` next to the service worker file)
+  * `push_service_worker_registration` init option for providing your own service worker registration that imports `countly_sw.js`
+  * `push_auto_register` init option for turning off the automatic push registration on page load (default `true`)
+  * `push_subscribe_timeout` init option for setting how long `enable_push_notifications` waits for the browser, in milliseconds (default `30000`)
+  * `countly_sw.js` service worker (`lib/countly_sw.js`), to be served from your site's root or imported into your own service worker
 * Added support for server initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
 * Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
 

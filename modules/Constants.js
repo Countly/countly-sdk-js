@@ -154,21 +154,24 @@ var pushMessageTypes = Object.freeze({
 /**
  * Query parameters the SDK appends to the service worker URL so the worker knows the page's
  * configuration without a round trip. Mirrored by hand in countly_sw.js.
+ * persist: "0" while the page runs with storage "none"
  */
 var pushWorkerParams = Object.freeze({
     debug: "cly_debug",
+    persist: "cly_persist",
 });
 
 /**
- * Local storage keys holding the last registered push subscription, and the explicit opt-out
+ * Local storage keys holding the last registered push subscription, the explicit opt-out
  * (set by disable_push_notifications, cleared by enable_push_notifications, kept across halt())
+ * and the device IDs merged into others
  */
 var pushStorageKeys = Object.freeze({
     endpoint: "cly_push_endpoint",
     vapidKey: "cly_push_vapid_key",
-    deviceId: "cly_push_device_id",
     scope: "cly_push_scope",
     optOut: "cly_push_opt_out",
+    mergedIds: "cly_push_merged_ids",
 });
 
 /**
@@ -176,14 +179,18 @@ var pushStorageKeys = Object.freeze({
  * MAX_SEEN_ACTION_IDS: how many recently handled push action ids are kept to drop duplicates
  * VAPID_PUBLIC_KEY_BYTE_LENGTH / VAPID_PUBLIC_KEY_PREFIX: an uncompressed P-256 point is 65 bytes and starts with 0x04
  * SUBSCRIBE_TIMEOUT_MS: how long enable_push_notifications waits for the browser to create a subscription before giving up on that attempt
+ * TOKEN_DEBOUNCE_MS: how long the same token is not queued again for the same device ID
+ * DEFAULT_SCOPE_FOLDER: the worker's default scope, a folder next to the worker file
  */
 var pushConstants = Object.freeze({
     MAX_SEEN_ACTION_IDS: 20,
     SUBSCRIBE_TIMEOUT_MS: 30000,
+    TOKEN_DEBOUNCE_MS: 60000,
     VAPID_PUBLIC_KEY_BYTE_LENGTH: 65,
     VAPID_PUBLIC_KEY_PREFIX: 4,
     TOKEN_PROVIDER: "WEB",
     BLACKLISTED_TOKEN: "BLACKLISTED",
+    DEFAULT_SCOPE_FOLDER: "countly-push/",
 });
 
 var SDK_VERSION = "26.1.3";
