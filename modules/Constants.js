@@ -82,6 +82,83 @@ var logGatheringDefaultValues = {
 };
 
 /**
+ * The consent a gathered log line needs when consent is required, by the method its message starts with
+ * ("add_event, ..." or a bracketed prefix such as "[userData] ..."). Any other line needs both "events" and "users" consent.
+ */
+var logLineConsent = Object.freeze({
+    add_event: featureEnums.EVENTS,
+    start_event: featureEnums.EVENTS,
+    end_event: featureEnums.EVENTS,
+    cancel_event: featureEnums.EVENTS,
+    begin_session: featureEnums.SESSIONS,
+    session_duration: featureEnums.SESSIONS,
+    end_session: featureEnums.SESSIONS,
+    track_sessions: featureEnums.SESSIONS,
+    track_session: featureEnums.SESSIONS,
+    track_pageview: featureEnums.VIEWS,
+    track_view: featureEnums.VIEWS,
+    reportViewDuration: featureEnums.VIEWS,
+    getLastView: featureEnums.VIEWS,
+    track_clicks: featureEnums.CLICKS,
+    track_links: featureEnums.CLICKS,
+    track_scrolls: featureEnums.SCROLLS,
+    processScroll: featureEnums.SCROLLS,
+    processScrollView: featureEnums.SCROLLS,
+    track_forms: featureEnums.FORMS,
+    track_errors: featureEnums.CRASHES,
+    log_error: featureEnums.CRASHES,
+    recordError: featureEnums.CRASHES,
+    record_error: featureEnums.CRASHES,
+    add_log: featureEnums.CRASHES,
+    report_conversion: featureEnums.ATTRIBUTION,
+    recordDirectAttribution: featureEnums.ATTRIBUTION,
+    user_details: featureEnums.USERS,
+    "[userData]": featureEnums.USERS,
+    collect_from_forms: featureEnums.USERS,
+    collect_from_facebook: featureEnums.USERS,
+    report_orientation: featureEnums.USERS,
+    recordRatingWidgetWithID: featureEnums.STAR_RATING,
+    presentRatingWidgetWithID: featureEnums.STAR_RATING,
+    enableRatingWidgets: featureEnums.STAR_RATING,
+    initializeRatingWidgets: featureEnums.STAR_RATING,
+    initialize_feedback_popups: featureEnums.STAR_RATING,
+    enable_feedback: featureEnums.STAR_RATING,
+    show_feedback_popup: featureEnums.STAR_RATING,
+    report_feedback: featureEnums.STAR_RATING,
+    report_trace: featureEnums.APM,
+    present_feedback_widget: featureEnums.FEEDBACK,
+    reportFeedbackWidgetManually: featureEnums.FEEDBACK,
+    getFeedbackWidgetData: featureEnums.FEEDBACK,
+    get_available_feedback_widgets: featureEnums.FEEDBACK,
+    interpretFeedbackWidgetMessage: featureEnums.FEEDBACK,
+    processWidget: featureEnums.FEEDBACK,
+    fetch_remote_config: featureEnums.REMOTE_CONFIG,
+    fetch_remote_config_explicit: featureEnums.REMOTE_CONFIG,
+    get_remote_config: featureEnums.REMOTE_CONFIG,
+    enrollUserToAb: featureEnums.REMOTE_CONFIG,
+    enable_push_notifications: featureEnums.PUSH,
+    disable_push_notifications: featureEnums.PUSH,
+    record_push_action: featureEnums.PUSH,
+    set_push_notification_listener: featureEnums.PUSH,
+    handlePushAction: featureEnums.PUSH,
+    autoRegisterPush: featureEnums.PUSH,
+    subscribeAndRegisterToken: featureEnums.PUSH,
+    sendPushToken: featureEnums.PUSH,
+    resolvePushRegistration: featureEnums.PUSH,
+    findPushRegistration: featureEnums.PUSH,
+    requestNotificationPermission: featureEnums.PUSH,
+    urlBase64ToUint8Array: featureEnums.PUSH,
+    initPushMessageListener: featureEnums.PUSH,
+    removePushMessageListener: featureEnums.PUSH,
+    notifyPushListener: featureEnums.PUSH,
+    postToPushWorker: featureEnums.PUSH,
+    announceToPushWorker: featureEnums.PUSH,
+    updatePushWorker: featureEnums.PUSH,
+    releasePushTokenOfLeavingUser: featureEnums.PUSH,
+    "[SW]": featureEnums.PUSH,
+});
+
+/**
  * 
  *device ID type:
  *0 - device ID was set by the developer during init
@@ -221,4 +298,4 @@ var SDK_NAME = "javascript_native_web";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };

@@ -236,6 +236,139 @@ describe("Log gathering delivery", () => {
     });
 });
 
+describe("Log gathering consent", () => {
+    function bufferedText() {
+        return Countly._internals.getLogBuffer().map((line) => line.m).join("\n");
+    }
+
+    it("gathers nothing while consent is required and none is given", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true });
+            expect(Countly._internals.getLogGatheringState().enabled).to.equal(true);
+            Countly.add_event({ key: "refused_event" });
+            Countly.user_details({ name: "Jane Refused" });
+            logLines(3);
+            expect(Countly._internals.getLogBuffer().length).to.equal(0);
+        });
+    });
+
+    it("gathers a method's lines under that method's consent only", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true });
+            Countly.add_consent("events");
+            Countly.add_event({ key: "consented_event" });
+            Countly.user_details({ name: "Jane Refused" });
+            logLines(2);
+            var text = bufferedText();
+            expect(text).to.contain("add_event,");
+            expect(text).to.contain("consented_event");
+            expect(text, "users consent was not given").to.not.contain("Jane Refused");
+            expect(text, "a line of no particular method needs users consent too").to.not.contain("log_gathering_test");
+        });
+    });
+
+    it("holds the start-up lines in memory and gathers them in time order once their consent is given", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true });
+            expect(Countly._internals.getLogBuffer().length).to.equal(0);
+            Countly.add_consent(["events", "users"]);
+            var buffer = Countly._internals.getLogBuffer();
+            expect(buffer.some((line) => line.m.indexOf("initialize,") !== -1), "start-up lines are gathered").to.equal(true);
+            for (var i = 1; i < buffer.length; i++) {
+                expect(buffer[i].t).to.be.at.least(buffer[i - 1].t);
+            }
+            buffer.forEach((line) => {
+                expect(line).to.have.all.keys("t", "l", "m");
+            });
+        });
+    });
+
+    it("keeps a held line back until its own consent is given", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true });
+            Countly.user_details({ name: "Jane Later" });
+            Countly.add_consent("events");
+            expect(bufferedText()).to.not.contain("Jane Later");
+            Countly.add_consent("users");
+            expect(bufferedText()).to.contain("Jane Later");
+        });
+    });
+
+    it("drops the held lines when the server decides against gathering", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: false }, { require_consent: true });
+            Countly.add_consent(["events", "users"]);
+            expect(Countly._internals.getLogBuffer().length).to.equal(0);
+        });
+    });
+
+    it("holds at most the newest 500 lines", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true });
+            logLines(600);
+            Countly.add_consent(["events", "users"]);
+            cy.fetch_local_request_queue().then((rq) => {
+                var gathered = gatheredBatches(rq).reduce((all, batch) => all.concat(batch.l), []).concat(Countly._internals.getLogBuffer()).map((line) => line.m);
+                expect(gathered.some((m) => m.indexOf("line number [599]") !== -1), "the newest held line").to.equal(true);
+                expect(gathered.some((m) => m.indexOf("line number [0]") !== -1), "the oldest held lines are dropped").to.equal(false);
+            });
+        });
+    });
+
+    it("gathers lines of no particular method once both events and users consent are given", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true });
+            Countly.add_consent(["events", "users"]);
+            logLines(2);
+            Countly.user_details({ name: "Jane Consented" });
+            var text = bufferedText();
+            expect(text).to.contain("log_gathering_test, line number [1]");
+            expect(text).to.contain("Jane Consented");
+        });
+    });
+});
+
+describe("Log gathering of its own uploads", () => {
+    it("gathers a line that only mentions sdk_logs", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 });
+            Countly.add_event({ key: "open_sdk_logs_panel" });
+            var mentions = Countly._internals.getLogBuffer().filter((line) => line.m.indexOf("open_sdk_logs_panel") !== -1);
+            expect(mentions.length).to.be.greaterThan(0);
+        });
+    });
+
+    it("does not gather the heartbeat's line about a queued log batch", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 10 });
+            cy.wait(hp.sWait2).then(() => {
+                Countly._internals.clearQueue();
+                logLines(10);
+                cy.fetch_local_request_queue().then((rq) => {
+                    expect(rq.length, "only the batch is queued").to.equal(1);
+                    expect(rq[0]).to.have.property("sdk_logs");
+                });
+                cy.wait(hp.sWait2 * 2).then(() => {
+                    Countly._internals.getLogBuffer().forEach((line) => {
+                        expect(line.m, "a batch is never quoted into the next one").to.not.contain("\"sdk_logs\"");
+                    });
+                });
+            });
+        });
+    });
+
+    it("does not gather another tab's request queue", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDirective({ e: true, i: GATHER_ID, b: 500 });
+            var batch = { i: GATHER_ID, d: 0, l: [{ t: 1, l: "d", m: "[Countly] line uploaded by another tab" }] };
+            triggerStorageChange(hp.appKey + "/cly_queue", JSON.stringify([{ sdk_logs: JSON.stringify(batch) }]));
+            Countly._internals.getLogBuffer().forEach((line) => {
+                expect(line.m).to.not.contain("line uploaded by another tab");
+            });
+        });
+    });
+});
+
 describe("Log gathering lifecycle", () => {
     it("stops on a later live response, ships the tail with the old id and captures nothing more", () => {
         hp.haltAndClearStorage(() => {

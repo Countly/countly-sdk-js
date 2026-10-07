@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     getMultiSelectValues,
@@ -128,6 +128,7 @@ class CountlyClass {
     #SCJourneyTriggerEvents;
     #SCLogGathering;
     #logBuffer;
+    #logHeld;
     #logBufferDropped;
     #logCaptureInProgress;
     #lastLogFlushTime;
@@ -555,6 +556,7 @@ class CountlyClass {
         }
         if (cache.hasOwnProperty("cr")) {
             this.#SCEnableConsentRequired = cache.cr;
+            this.#releaseHeldLogLines();
         }
         if (cache.hasOwnProperty("st")) {
             this.#SCTrackingSession = cache.st;
@@ -1976,6 +1978,7 @@ class CountlyClass {
                 // this is core feature
                 if (this.#consents[feature].optin !== true) {
                     this.#consents[feature].optin = true;
+                    this.#releaseHeldLogLines();
                     this.#updateConsent();
                     setTimeout(() => {
                         if (feature === featureEnums.SESSIONS && this.#lastParams.begin_session) {
@@ -6772,7 +6775,7 @@ class CountlyClass {
 
         // process request queue with event queue (skip if in back-off)
         if (!skipRequestProcessing && !this.#offlineMode && this.#requestQueue.length > 0 && this.#readyToProcess && getTimestamp() > this.#failTimeout) {
-            this.#log(logLevelEnums.DEBUG, "Processing request", this.#requestQueue[0]);
+            this.#forRequest(this.#requestQueue[0], () => this.#log(logLevelEnums.DEBUG, "Processing request", this.#requestQueue[0]));
             if (!this.test_mode) {
                 this.#sendRequestFromQueue("send_request_queue");
             }
@@ -7195,9 +7198,10 @@ class CountlyClass {
     }
 
     /**
-     *  Logging stuff, works only when debug mode is true
+     *  Print a log line to the console when debug is on, and gather it when log gathering wants it and its consent is given
      * @param {string} level - log level (error, warning, info, debug, verbose)
      * @param {string} message - any string message
+     * @param {*} [third] - optional value appended to the message, serialized when it is an object
      * @memberof Countly._internals
      */
     #log = (level, message, third) => {
@@ -7227,7 +7231,7 @@ class CountlyClass {
         var body = "[Countly] " + message + (third ? " " + third : "");
         // the gathered line carries its level in its own field, so the prefix is left off
         if (shouldCapture) {
-            this.#captureLogLine(levelChar, body);
+            this.#captureLogLine(levelChar, body, this.#logLineConsent(message));
         }
         if (shouldPrint) {
             // eslint-disable-next-line no-shadow
@@ -7279,22 +7283,62 @@ class CountlyClass {
     }
 
     /**
+     * The consent a log line needs to be gathered: that of the method it comes from (logLineConsent).
+     * @param {String} message - the message as passed to #log
+     * @returns {?String} the feature name, or null for a line of no known method, which needs both "events" and "users" consent
+     */
+    #logLineConsent = (message) => {
+        var text = message + "";
+        var end = text.charAt(0) === "[" ? text.indexOf("]") + 1 : text.indexOf(",");
+        var method = end > 0 ? text.substring(0, end) : "";
+        return Object.prototype.hasOwnProperty.call(logLineConsent, method) ? logLineConsent[method] : null;
+    }
+
+    /**
+     * Tells whether a log line needing the given consent may be gathered now.
+     * @param {?String} need - what #logLineConsent returned for the line
+     * @returns {Boolean} true when consent is not required or is given
+     */
+    #logConsentGiven = (need) => {
+        if (!this.#SCEnableConsentRequired) {
+            return true;
+        }
+        return need ? this.#hasConsent(need) : this.#hasConsent(featureEnums.EVENTS) && this.#hasConsent(featureEnums.USERS);
+    }
+
+    /**
+     * Tells whether consent is given for a feature, without the log line check_consent writes.
+     * @param {String} feature - name of the feature
+     * @returns {Boolean} true when consent is given
+     */
+    #hasConsent = (feature) => !!(this.#consents[feature] && this.#consents[feature].optin);
+
+    /**
      * Runs fn with log capture paused when the request carries a log batch, so the lines that
      * describe uploading gathered logs are never gathered themselves.
      * @param {Object} params - request parameters
      * @param {Function} fn - work to run
      * @returns {*} whatever fn returns
      */
-    #forRequest = (params, fn) => {
-        if (!params || !params.sdk_logs) {
+    #forRequest = (params, fn) => this.#withoutLogCapture(!!(params && params.sdk_logs), fn);
+
+    /**
+     * Runs fn without gathering the log lines it produces when pause is true.
+     * @param {Boolean} pause - true to pause log capture while fn runs
+     * @param {Function} fn - work to run
+     * @returns {*} whatever fn returns
+     */
+    #withoutLogCapture = (pause, fn) => {
+        if (!pause) {
             return fn();
         }
+        var paused = this.#logTransportInProgress;
         this.#logTransportInProgress = true;
         try {
             return fn();
         }
         finally {
-            this.#logTransportInProgress = false;
+            this.#logTransportInProgress = paused;
         }
     }
 
@@ -7311,6 +7355,7 @@ class CountlyClass {
             batchSize: logGatheringDefaultValues.BATCH_SIZE
         };
         this.#logBuffer = [];
+        this.#logHeld = [];
         this.#logBufferDropped = 0;
         this.#logCaptureInProgress = false;
         this.#logTransportInProgress = false;
@@ -7318,15 +7363,16 @@ class CountlyClass {
     }
 
     /**
-     * Drops every gathered line and the drop count, logging how many went.
+     * Drops every gathered line, the lines held for consent and the drop count, logging how many went.
      * @param {String} reason - why the lines are dropped, for the log line
      */
     #dropLogBuffer = (reason) => {
-        var held = this.#logBuffer.length;
+        var count = this.#logBuffer.length + this.#logHeld.length;
         this.#logBuffer = [];
+        this.#logHeld = [];
         this.#logBufferDropped = 0;
-        if (held > 0) {
-            this.#log(logLevelEnums.DEBUG, "dropLogBuffer, " + reason + ", discarding [" + held + "] gathered lines");
+        if (count > 0) {
+            this.#log(logLevelEnums.DEBUG, "dropLogBuffer, " + reason + ", discarding [" + count + "] gathered lines");
         }
     }
 
@@ -7394,7 +7440,8 @@ class CountlyClass {
                 // provisional lines were captured at every level, apply the filter now that it is known
                 var kept = this.#logBuffer.filter((line) => levels.indexOf(line.l) !== -1);
                 this.#logBuffer = kept;
-                this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Adopting [" + kept.length + "] lines captured before the directive arrived, including init");
+                this.#logHeld = this.#logHeld.filter((held) => levels.indexOf(held.line.l) !== -1);
+                this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Adopting [" + kept.length + "] lines captured before the directive arrived, including init, and holding [" + this.#logHeld.length + "] until their consent is given");
             }
             else {
                 this.#dropLogBuffer("not gathered");
@@ -7410,24 +7457,63 @@ class CountlyClass {
         else if (!enabled && previousState.enabled) {
             // the server accepts one tail batch after a stop
             this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Log gathering stopped, flushing the gathered lines");
+            this.#logHeld = [];
             this.#flushLogBuffer();
         }
     }
 
     /**
-     * Buffer a single formatted log line for the ongoing gather. The caller has already checked that the line is wanted.
+     * Buffer a single formatted log line for the ongoing gather, or hold it in memory until its consent is given.
+     * The caller has already checked that the line is wanted.
      * @param {String} levelChar - wire character of the line's level
      * @param {String} message - the fully formatted log line
+     * @param {?String} need - the consent the line needs, as #logLineConsent returns it
      */
-    #captureLogLine = (levelChar, message) => {
-        // a line quoting a batch would re-escape it into the next batch, and a sibling tab's queue write can carry one too
-        if (message.indexOf("sdk_logs") !== -1) {
+    #captureLogLine = (levelChar, message, need) => {
+        var line = message;
+        if (message.length > logGatheringDefaultValues.MAX_MESSAGE_LENGTH) {
+            // a copy, so the buffered line does not keep the whole original string alive
+            line = (" " + message.substring(0, logGatheringDefaultValues.MAX_MESSAGE_LENGTH)).slice(1);
+        }
+        // not getMsTimestamp, it mutates the shared unique timestamp counter
+        var entry = { t: Date.now(), l: levelChar, m: line };
+        if (!this.#logConsentGiven(need)) {
+            this.#logHeld.push({ line: entry, need: need });
+            if (this.#logHeld.length > logGatheringDefaultValues.MAX_BUFFERED_LINES) {
+                this.#logHeld.shift();
+            }
             return;
         }
-        var line = message.length > logGatheringDefaultValues.MAX_MESSAGE_LENGTH ? message.substring(0, logGatheringDefaultValues.MAX_MESSAGE_LENGTH) : message;
+        this.#logBuffer.push(entry);
+        this.#settleLogBuffer();
+    }
+
+    /**
+     * Gather the held lines whose consent is given by now, in time order with the lines already buffered.
+     */
+    #releaseHeldLogLines = () => {
+        if (!this.#logHeld || this.#logHeld.length === 0) {
+            return;
+        }
+        var released = [];
+        this.#logHeld = this.#logHeld.filter((held) => {
+            if (this.#logConsentGiven(held.need)) {
+                released.push(held.line);
+                return false;
+            }
+            return true;
+        });
+        if (released.length > 0) {
+            this.#logBuffer = this.#logBuffer.concat(released).sort((a, b) => a.t - b.t);
+            this.#settleLogBuffer();
+        }
+    }
+
+    /**
+     * Drop the oldest buffered lines beyond the buffer cap, counting the loss, and move full batches into the request queue.
+     */
+    #settleLogBuffer = () => {
         var buffer = this.#logBuffer;
-        // not getMsTimestamp, it mutates the shared unique timestamp counter
-        buffer.push({ t: Date.now(), l: levelChar, m: line });
         // the oldest lines go and the loss travels with the next batch as its drop count
         if (buffer.length > logGatheringDefaultValues.MAX_BUFFERED_LINES) {
             var overflow = buffer.length - logGatheringDefaultValues.MAX_BUFFERED_LINES;
@@ -7435,8 +7521,12 @@ class CountlyClass {
             this.#logBufferDropped += overflow;
         }
         // provisional lines have no gather id to be attributed to yet, so they wait
-        if (this.#SCLogGathering.decided && buffer.length >= this.#SCLogGathering.batchSize) {
+        while (this.#SCLogGathering.decided && this.#logBuffer.length >= this.#SCLogGathering.batchSize) {
+            var before = this.#logBuffer.length;
             this.#flushLogBuffer();
+            if (this.#logBuffer.length >= before) {
+                break;
+            }
         }
     }
 
@@ -7444,10 +7534,6 @@ class CountlyClass {
      * Move one batch of gathered log lines into the request queue. A batch the queue refuses goes back to the front of the buffer.
      */
     #flushLogBuffer = () => {
-        // uploading enqueues a request, the request code logs and logging comes back here
-        if (this.#logCaptureInProgress) {
-            return;
-        }
         var state = this.#SCLogGathering;
         var buffer = this.#logBuffer;
         if (!state.decided || !state.gatherId || buffer.length === 0) {
@@ -8262,7 +8348,8 @@ class CountlyClass {
      */
     #onStorageChange = (key, newValue) => {
         this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for key:", key);
-        this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for value:", newValue);
+        // another tab's request queue can carry log batches, which must not be gathered a second time
+        this.#withoutLogCapture(key === "cly_queue", () => this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for value:", newValue));
         switch (key) {
             // queue of requests
             case "cly_queue":

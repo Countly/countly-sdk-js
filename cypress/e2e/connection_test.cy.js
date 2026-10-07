@@ -472,6 +472,28 @@ describe("Connection test probe requests", () => {
     });
 });
 
+describe("Connection test probe deadline", () => {
+    it("settles a probe that never answers in a browser without AbortController", () => {
+        var savedFetch = window.fetch;
+        var savedAbortController = window.AbortController;
+        window.fetch = () => new Promise(() => {});
+        window.AbortController = undefined;
+        var probe;
+        try {
+            probe = ct.probeViaFetch("https://test.count.ly/o/ping", { mode: "cors" });
+        }
+        finally {
+            window.fetch = savedFetch;
+            window.AbortController = savedAbortController;
+        }
+        cy.wrap(probe, { timeout: ct.CT_PROBE_TIMEOUT + 5000 }).then((outcome) => {
+            expect(outcome.rejected).to.equal(true);
+            expect(outcome.timedOut).to.equal(true);
+            expect(outcome.ms).to.be.at.least(ct.CT_PROBE_TIMEOUT - 100);
+        });
+    });
+});
+
 describe("Connection test Tier 2 CORS-first policy", () => {
     function corsFirstContext(byPath, calls) {
         return baseContext({ tier2: "cors-first", probe: stubProbe(byPath, calls) });
