@@ -151,7 +151,7 @@ var CT_ROWS = [
  * How many probes the battery may issue. A Tier 2 path can cost two requests when the
  * CORS attempt is rejected and the opaque fallback runs, and the deadline has to allow
  * for the worst case rather than the happy path.
- * @param {String} tier2 - "cors-first", "probe" or "unsupported"
+ * @param {String} tier2 - "cors-first" or "unsupported"
  * @returns {Number} worst-case request count
  */
 function attemptedRequests(tier2) {
@@ -251,9 +251,9 @@ function runRow(ctx, row) {
  * Run the connection test battery once and build the report.
  * Probes are sequential and carry no identity, so nothing here depends on consent
  * and nothing the server does with them can write.
- * @param {Object} ctx - {url, sdkName, sdkVersion, sc: {status, ms}, probe, tier2}
+ * @param {Object} ctx - {url, sdkName, sdkVersion, sc: {status, ms}, probe, tier2, now}
  *                       where probe(url, opts) resolves to an outcome carrying its own ms,
- *                       and tier2 is "probe", "opaque" or "unsupported"
+ *                       tier2 is "cors-first" or "unsupported", and the optional now() replaces Date.now for the deadline
  * @returns {Promise} resolves to the ct_results report object
  */
 function runConnectionTest(ctx) {
@@ -336,12 +336,17 @@ function probeViaFetch(url, opts) {
     var target = url + (url.indexOf("?") === -1 ? "?" : "&") + "ct=1&_=" + start;
     var timedOut = false;
     var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    var timer = setTimeout(() => {
-        timedOut = true;
-        if (controller) {
-            controller.abort();
-        }
-    }, CT_PROBE_TIMEOUT);
+    var timer;
+    // without AbortController a hung request can never be cancelled, so the probe settles on its own deadline
+    var deadline = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            timedOut = true;
+            if (controller) {
+                controller.abort();
+            }
+            resolve({ rejected: true, timedOut: true, ms: Date.now() - start });
+        }, CT_PROBE_TIMEOUT);
+    });
 
     var init = {
         method: "GET",
@@ -360,8 +365,7 @@ function probeViaFetch(url, opts) {
         init.redirect = "manual";
     }
 
-    return fetch(target, init).then((response) => {
-        clearTimeout(timer);
+    var request = fetch(target, init).then((response) => {
         var ms = Date.now() - start;
         if (response.type === "opaqueredirect") {
             return { redirected: true, ms: ms };
@@ -371,8 +375,12 @@ function probeViaFetch(url, opts) {
         }
         return { status: response.status, ms: ms };
     }).catch(() => {
-        clearTimeout(timer);
         return { rejected: true, timedOut: timedOut, ms: Date.now() - start };
+    });
+
+    return Promise.race([request, deadline]).then((outcome) => {
+        clearTimeout(timer);
+        return outcome;
     });
 }
 
