@@ -21,17 +21,22 @@ function formIn(html) {
 }
 
 function submit(container) {
-    container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    var form = container.querySelector("form");
+    // Firefox still submits a form for a dispatched submit event, which would unload the test page
+    form.addEventListener("submit", (event) => event.preventDefault());
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 }
 
 function formSubmitSegmentation() {
     var events = Countly._internals.getLocalQueues().eventQ.filter((e) => e.key === "formSubmit");
-    return events.length ? events[events.length - 1].segmentation : null;
+    expect(events.length, "a form submit was recorded").to.be.greaterThan(0);
+    return events[events.length - 1].segmentation;
 }
 
 function collectedUserDetails() {
     var requests = Countly._internals.getLocalQueues().requestQ.filter((r) => r.user_details);
-    return requests.length ? JSON.parse(requests[requests.length - 1].user_details) : null;
+    expect(requests.length, "user details were collected").to.be.greaterThan(0);
+    return JSON.parse(requests[requests.length - 1].user_details);
 }
 
 describe("Form tracking", () => {

@@ -288,24 +288,13 @@ describe("Test Countly.q related methods and processes", () => {
     });
 
     it("Keeps processing Countly.q and the heartbeat after a queued call throws", () => {
-        hp.haltAndClearStorage(() => {
-            initMain();
-            cy.wait(1000).then(() => {
-                Countly.q.push(function() {
-                    throw new Error("thrown by a queued call");
-                });
-                Countly.q.push(["show_feedback_popup", "000000000000000000000000"]);
-                Countly.q.push(["add_event", event(1)]);
-                cy.wait(1500).then(() => {
-                    Countly.add_event(event(2));
-                    cy.wait(1500).then(() => {
-                        cy.fetch_local_request_queue().then((rq) => {
-                            var keys = rq.filter((r) => r.events).reduce((all, r) => all.concat(JSON.parse(r.events).map((e) => e.key)), []);
-                            expect(keys, "the call queued after the throwing ones still ran").to.include("event_1");
-                            expect(keys, "the heartbeat kept moving events on").to.include("event_2");
-                        });
-                    });
-                });
+        // a halted instance of an earlier test keeps its heartbeat and can take the queued calls, so a fresh page is used
+        cy.visit("./cypress/fixtures/async_queue_throw.html");
+        cy.wait(3000).then(() => {
+            cy.fetch_local_request_queue().then((rq) => {
+                var keys = rq.filter((r) => r.events).reduce((all, r) => all.concat(JSON.parse(r.events).map((e) => e.key)), []);
+                expect(keys, "the call queued after the throwing ones still ran").to.include("event_1");
+                expect(keys, "the heartbeat kept moving events on").to.include("event_2");
             });
         });
     });
