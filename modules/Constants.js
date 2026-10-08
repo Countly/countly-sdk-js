@@ -16,6 +16,7 @@ var featureEnums = {
     FEEDBACK: "feedback",
     REMOTE_CONFIG: "remote-config",
     PUSH: "push",
+    CONTENT: "content",
 };
 
 /**
@@ -156,6 +157,14 @@ var logLineConsent = Object.freeze({
     updatePushWorker: featureEnums.PUSH,
     releasePushTokenOfLeavingUser: featureEnums.PUSH,
     "[SW]": featureEnums.PUSH,
+    "content.enterContentZone": featureEnums.CONTENT,
+    "content.exitContentZone": featureEnums.CONTENT,
+    "content.refreshContentZone": featureEnums.CONTENT,
+    sendContentRequest: featureEnums.CONTENT,
+    prepareContentRequest: featureEnums.CONTENT,
+    displayContent: featureEnums.CONTENT,
+    interpretContentMessage: featureEnums.CONTENT,
+    journeyTrigger: featureEnums.CONTENT,
 });
 
 /**

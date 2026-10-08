@@ -791,7 +791,194 @@ function parseUrlParts(urlString) {
     return parts;
 }
 
+/**
+ * Schemes a content link may never open, in any form: they run script, load a document that inherits an
+ * origin, reach the local machine or an OS handler. The same list the Countly server applies to content.
+ */
+var BLOCKED_LINK_SCHEMES = ["javascript", "vbscript", "livescript", "mocha", "data", "blob", "filesystem", "jar", "file", "view-source", "about", "intent", "ms-msdt", "search-ms", "ms-search", "smb", "nfs", "chrome", "chrome-extension", "moz-extension", "moz-icon", "resource", "ftp", "ws", "wss"];
+
+/**
+ * Schemes that carry a recipient rather than a host, allowed for contact links.
+ */
+var CONTACT_LINK_SCHEMES = ["mailto", "tel", "sms", "geo", "facetime", "skype"];
+
+var LINK_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
+
+/**
+ * Tells whether a content link may be opened: web links, contact links, relative links and app deep links in
+ * scheme:// form pass; anything that would execute where it is opened does not.
+ * @param {*} value - the link
+ * @returns {Boolean} true when the link may be opened
+ */
+function isSafeActionUrl(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+    var authored = value.trim();
+    // browsers drop control characters and spaces while parsing a URL, so "java\tscript:" still runs
+    // eslint-disable-next-line no-control-regex
+    var url = authored.replace(/[\u0000- ]/g, "");
+    if (!url) {
+        return false;
+    }
+    var scheme = LINK_SCHEME_RE.exec(url);
+    if (!scheme) {
+        return true;
+    }
+    var name = scheme[1].toLowerCase();
+    if (BLOCKED_LINK_SCHEMES.indexOf(name) !== -1) {
+        return false;
+    }
+    if (name === "http" || name === "https" || CONTACT_LINK_SCHEMES.indexOf(name) !== -1) {
+        return true;
+    }
+    // an unknown scheme passes only in the deep link shape as written, which the stripping above must not create
+    var authoredScheme = LINK_SCHEME_RE.exec(authored);
+    return authoredScheme !== null && authored.slice(authoredScheme[0].length, authoredScheme[0].length + 2) === "//";
+}
+
+/**
+ * Parts of a form field's name or label that mark it as holding a secret or payment, bank or identity data,
+ * found anywhere in the lowercased name without separators
+ */
+var SENSITIVE_FIELD_PARTS = ["password", "passwd", "passwort", "passcode", "passphrase", "cardnum", "ccnum", "ccexp", "cardexp", "creditcard", "debitcard", "cardholder", "nameoncard", "securitycode", "securitynum", "seccode", "verificationcode", "onetimecode", "authcode", "iban", "routingnum", "sortcode", "accountnum", "bankaccount", "socialsec", "socsec", "nationalid", "taxid", "taxnum", "passport", "driverlicen", "driverslicen", "apikey", "privatekey", "clientsecret", "accesstoken", "authtoken", "csrf", "xsrf"];
+
+/**
+ * Short words that mark a sensitive field only as a whole word of its name, so "pin_code" matches and "shipping" does not
+ */
+var SENSITIVE_FIELD_WORDS = ["pass", "pwd", "pw", "pin", "otp", "cc", "cvv", "cvc", "csc", "cvn", "exp", "expiry", "pan", "ssn", "bic", "swift", "token", "secret", "auth"];
+
+/**
+ * Parts and whole words of a form field's name or label that mark it as a phone number field
+ */
+var PHONE_FIELD_PARTS = ["phone", "mobile", "telefon", "msisdn"];
+var PHONE_FIELD_WORDS = ["tel", "cell", "gsm"];
+
+/**
+ * Tells whether a form field's name, id or label contains one of the given parts, or one of the given words as a
+ * whole word (words split at separators, digits and camelCase humps)
+ * @param {*} text - name, id or label text of the field
+ * @param {Array<String>} parts - parts matched anywhere
+ * @param {Array<String>} words - words matched as whole words
+ * @returns {Boolean} true when the text matches
+ */
+function fieldNameMatches(text, parts, words) {
+    if (typeof text !== "string" || !text) {
+        return false;
+    }
+    var joined = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (var i = 0; i < parts.length; i++) {
+        if (joined.indexOf(parts[i]) !== -1) {
+            return true;
+        }
+    }
+    var split = text.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().split(/[^a-z]+/);
+    for (var j = 0; j < split.length; j++) {
+        if (words.indexOf(split[j]) !== -1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Tells whether a form field's name, id or label marks it as holding a secret or payment, bank or identity data
+ * @param {*} text - name, id or label text of the field
+ * @returns {Boolean} true when the field looks sensitive
+ */
+function isSensitiveFieldName(text) {
+    return fieldNameMatches(text, SENSITIVE_FIELD_PARTS, SENSITIVE_FIELD_WORDS);
+}
+
+/**
+ * Tells whether a form field's name, id or label marks it as a phone number field
+ * @param {*} text - name, id or label text of the field
+ * @returns {Boolean} true when the field looks like a phone number field
+ */
+function isPhoneFieldName(text) {
+    return fieldNameMatches(text, PHONE_FIELD_PARTS, PHONE_FIELD_WORDS);
+}
+
+/**
+ * Tells whether a value holds a payment card number: a run of 13 to 19 digits, single spaces or dashes allowed
+ * between them, that passes the Luhn check
+ * @param {*} value - form field value
+ * @returns {Boolean} true when a card number is found in the value
+ */
+function looksLikeCardNumber(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+    var runs = /\d(?:[ -]?\d)*/g;
+    var run;
+    while ((run = runs.exec(value)) !== null) {
+        // card numbers are never written after a "+", international phone numbers are
+        if (run.index > 0 && value.charAt(run.index - 1) === "+") {
+            continue;
+        }
+        var digits = run[0].replace(/\D/g, "");
+        if (digits.length < 13 || digits.length > 19) {
+            continue;
+        }
+        var sum = 0;
+        for (var i = 0; i < digits.length; i++) {
+            var digit = +digits.charAt(digits.length - 1 - i);
+            if (i % 2 === 1) {
+                digit *= 2;
+                if (digit > 9) {
+                    digit -= 9;
+                }
+            }
+            sum += digit;
+        }
+        if (sum % 10 === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Tells whether a whole value is shaped like a US social security number, 123-45-6789 or 123456789
+ * @param {*} value - form field value
+ * @returns {Boolean} true when the value is SSN-shaped
+ */
+function looksLikeSsn(value) {
+    // the separators must match, so a ZIP+4 code such as 12345-6789 is not taken for one
+    return typeof value === "string" && /^\d{3}([ -]?)\d{2}\1\d{4}$/.test(value.trim());
+}
+
+/**
+ * Tells whether a whole value is shaped like a phone number: digits, spaces and ( ) . / - signs with an optional
+ * leading +, holding 5 to 15 digits
+ * @param {*} value - form field value
+ * @returns {Boolean} true when the value is phone-shaped
+ */
+function isPhoneShaped(value) {
+    if (typeof value !== "string" || !/^\+?[\d\s()./-]+$/.test(value.trim())) {
+        return false;
+    }
+    var digitCount = value.replace(/\D/g, "").length;
+    return digitCount >= 5 && digitCount <= 15;
+}
+
+/**
+ * Tells whether a whole value is one email address
+ * @param {*} value - form field value
+ * @returns {Boolean} true when the value is one email address
+ */
+function isWholeEmail(value) {
+    return typeof value === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim());
+}
+
 export {
+    isSafeActionUrl,
+    isSensitiveFieldName,
+    isPhoneFieldName,
+    looksLikeCardNumber,
+    looksLikeSsn,
+    isPhoneShaped,
+    isWholeEmail,
     getMultiSelectValues,
     secureRandom,
     generateUUID,

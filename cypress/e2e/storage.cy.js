@@ -213,3 +213,68 @@ for (let i = 0; i < 5; i++) {
         });
     });
 }
+describe("Cookie storage contents", () => {
+    it("keeps a semicolon in a stored value", () => {
+        hp.haltAndClearStorage(() => {
+            initMain("cookie");
+            var queue = [{ key: "semi", count: 1, segmentation: { v: "a;b" } }];
+            Countly._internals.setValueInStorage("cly_event", queue);
+            expect(Countly._internals.getValueFromStorage("cly_event")).to.deep.equal(queue);
+        });
+    });
+
+    it("keeps a device ID stored by an earlier SDK version as it was", () => {
+        hp.haltAndClearStorage(() => {
+            // earlier versions wrote cookie values unencoded, so this ID is stored with a literal %40
+            document.cookie = hp.appKey + "/cly_id=user%40example.com; path=/";
+            document.cookie = hp.appKey + "/cly_id_type=0; path=/";
+            initMain("cookie");
+            expect(Countly.get_device_id()).to.equal("user%40example.com");
+            expect(Countly.get_device_id_type()).to.equal(Countly.DeviceIdType.DEVELOPER_SUPPLIED);
+        });
+    });
+
+    it("keeps a value stored by an earlier SDK version as it was", () => {
+        hp.haltAndClearStorage(() => {
+            document.cookie = hp.appKey + "/cly_event=[{\"key\":\"legacy\",\"count\":1,\"segmentation\":{\"note\":\"100%25\"}}]; path=/";
+            initMain("cookie");
+            var legacy = Countly._internals.getLocalQueues().eventQ.filter((e) => e.key === "legacy");
+            expect(legacy.length).to.equal(1);
+            expect(legacy[0].segmentation.note).to.equal("100%25");
+        });
+    });
+
+    it("writes values without a semicolon as earlier versions did, so they can still read them", () => {
+        hp.haltAndClearStorage(() => {
+            initMain("cookie");
+            Countly._internals.setValueInStorage("cly_id", "plain-id-123");
+            var queue = [{ key: "plain", count: 1, segmentation: { v: "a,b c" } }];
+            Countly._internals.setValueInStorage("cly_event", queue);
+            expect(document.cookie).to.contain(hp.appKey + "/cly_id=plain-id-123");
+            expect(document.cookie).to.contain(hp.appKey + "/cly_event=" + JSON.stringify(queue));
+        });
+    });
+
+    it("starts with an empty event queue when the stored one is not a list", () => {
+        hp.haltAndClearStorage(() => {
+            document.cookie = hp.appKey + "/cly_event=[{\"key\":\"semi\",\"segmentation\":{\"v\":\"a; path=/";
+            initMain("cookie");
+            Countly.add_event({ key: "after_a_broken_queue" });
+            expect(Countly._internals.getLocalQueues().eventQ.map((e) => e.key)).to.include("after_a_broken_queue");
+        });
+    });
+
+    it("keeps unsent requests across a page load", () => {
+        hp.haltAndClearStorage(() => {
+            initMain("cookie");
+            // the first requests wait for the client hints before they reach the stored queue
+            cy.wait(hp.sWait2).then(() => {
+                Countly.user_details({ name: "Kept across pages" });
+                Countly.halt();
+                initMain("cookie");
+                var kept = Countly._internals.getLocalQueues().requestQ.filter((r) => r.user_details && r.user_details.indexOf("Kept across pages") !== -1);
+                expect(kept.length).to.equal(1);
+            });
+        });
+    });
+});
