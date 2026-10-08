@@ -305,6 +305,34 @@ describe("Device Id tests during first init", ()=>{
             });
         });
     });
+    it("1b-SDK is initialized with a null custom device id and generates one", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain(null, false, undefined);
+            const afterInitDeviceId = Countly.get_device_id();
+            const afterInitDeviceIdType = Countly.get_device_id_type();
+            expect(afterInitDeviceIdType).to.eq(Countly.DeviceIdType.SDK_GENERATED);
+            validateSdkGeneratedId(afterInitDeviceId);
+            validateInternalDeviceIdType(DeviceIdTypeInternalEnumsTest.SDK_GENERATED);
+            generateSomeEvents();
+            cy.wait(hp.sWait2).then(() => {
+                checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+            });
+        });
+    });
+    it("1c-SDK is initialized with an empty custom device id and generates one", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain("", false, undefined);
+            const afterInitDeviceId = Countly.get_device_id();
+            const afterInitDeviceIdType = Countly.get_device_id_type();
+            expect(afterInitDeviceIdType).to.eq(Countly.DeviceIdType.SDK_GENERATED);
+            validateSdkGeneratedId(afterInitDeviceId);
+            validateInternalDeviceIdType(DeviceIdTypeInternalEnumsTest.SDK_GENERATED);
+            generateSomeEvents();
+            cy.wait(hp.sWait2).then(() => {
+                checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+            });
+        });
+    });
     // we provide device id information sdk should use it
     it("2-SDK is initialized with custom device id, without offline mode, without utm device id", ()=>{
         hp.haltAndClearStorage(() => {

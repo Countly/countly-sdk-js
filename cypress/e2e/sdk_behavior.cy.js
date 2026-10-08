@@ -1,6 +1,7 @@
 /* eslint-disable require-jsdoc */
 var Countly = require("../../Countly.js");
 var hp = require("../support/helper");
+import { triggerStorageChange } from "../support/integration_helper";
 
 function initMain(val, disableSync) {
     Countly.init({
@@ -109,6 +110,36 @@ describe("SDK Behavior test", () => {
         });
     });
     
+    it("Sends the queued requests on the same page once networking is switched back on", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ c: { networking: false } });
+            Countly.add_event({ key: "waits_for_networking" });
+            cy.wait(waitT).then(() => {
+                var sentWhileOff = Countly._internals.testingGetRequests().filter((r) => r.functionName === "send_request_queue");
+                expect(sentWhileOff.length, "nothing is sent while networking is off").to.equal(0);
+                triggerStorageChange("spp/cly_config", JSON.stringify({ v: 2, t: 2, c: { networking: true } }));
+                cy.wait(waitT).then(() => {
+                    var sent = Countly._internals.testingGetRequests().filter((r) => r.functionName === "send_request_queue");
+                    expect(sent.length).to.be.greaterThan(0);
+                });
+            });
+        });
+    });
+
+    it("Reports a request it could not build instead of stalling silently", () => {
+        hp.haltAndClearStorage(() => {
+            cy.spy(console, "error").as("consoleError");
+            Countly.init({ app_key: "spp", url: "https://hey.some.ly", debug: true, headers: { "bad header": "1" } });
+            Countly.add_event({ key: "with_a_bad_header" });
+            cy.wait(waitT).then(() => {
+                cy.get("@consoleError").should((spy) => {
+                    var lines = spy.getCalls().map((call) => String(call.args[0]));
+                    expect(lines.some((line) => line.indexOf("send_request_queue") !== -1)).to.equal(true);
+                });
+            });
+        });
+    });
+
     it("Config with tracking disabled", () => {
         hp.haltAndClearStorage(() => {
             var settings = {};

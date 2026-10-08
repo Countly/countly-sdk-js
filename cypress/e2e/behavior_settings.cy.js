@@ -54,6 +54,30 @@ describe("Behavior settings filters", () => {
         });
     });
 
+    it("event whitelist leaves the SDK's own events alone", () => {
+        hp.haltAndClearStorage(() => {
+            initWithBehavior({ c: { ew: ["kept"] } });
+            Countly.track_pageview("filtered_page");
+            Countly.add_event({ key: "other", count: 1 });
+            cy.wait(200).then(() => collectEventKeysFromQueues()).then((events) => {
+                const keys = events.map((e) => e.key);
+                expect(keys).to.include("[CLY]_view");
+                expect(keys).to.not.include("other");
+            });
+        });
+    });
+
+    it("segmentation whitelist leaves the SDK's own events alone", () => {
+        hp.haltAndClearStorage(() => {
+            initWithBehavior({ c: { sw: ["keep"] } });
+            Countly.track_pageview("filtered_page");
+            cy.wait(200).then(() => collectEventKeysFromQueues()).then((events) => {
+                const view = events.filter((e) => e.key === "[CLY]_view")[0];
+                expect(view.segmentation.name).to.equal("filtered_page");
+            });
+        });
+    });
+
     it("global segmentation blacklist/whitelist applied", () => {
         hp.haltAndClearStorage(() => {
             initWithBehavior({ c: { sb: ["secret"] } });

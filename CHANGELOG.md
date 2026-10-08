@@ -1,5 +1,14 @@
 ## NEXT RELEASE
 
+* ! Minor Breaking Change ! When consent is required, Content now needs the new `content` consent. `enterContentZone` called before the consent is given takes effect once it is given, and removing the consent closes the content zone.
+* ! Minor Breaking Change ! Event and segmentation filters of the server configuration now apply only to custom events.
+* ! Minor Breaking Change ! Form tracking (`track_forms`) and form data collection (`collect_from_forms`) now leave out sensitive data:
+  * password fields (also revealed ones), payment card fields, one-time code fields and card numbers are never read
+  * fields named like secrets, bank or identity data are read only with the new `cly_form_allow` class in `track_forms`, or with a `cly_user_{key}` class in `collect_from_forms`
+  * `track_forms` skips values shaped like a social security number unless the field has the `cly_form_allow` class
+  * `collect_from_forms` reads hidden fields only with a `cly_user_{key}` class, and takes a phone number or an email only from a field holding one
+  * the `cly_user_ignore` class now also works on an element containing fields
+
 * Added web push notification support (requires a Countly server with web push support):
   * `push` consent feature for gating push notifications behind user consent
   * `enable_push_notifications` method for asking the visitor's permission and subscribing them to push notifications
@@ -17,6 +26,17 @@
 * Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
 
 * Mitigated an issue where a log line carrying an object that could not be serialized would throw while `debug` was enabled.
+* Mitigated an issue where withdrawing a consent was not reported to the server.
+* Mitigated an issue where content could open links that run code, such as `javascript:` links, and the opened page could control the page that opened it.
+* Mitigated an issue where content on iPhones and iPads was laid out for a screen two to three times its size.
+* Mitigated an issue where adding a breadcrumb froze the page when the server configuration set the breadcrumb limit to 0.
+* Mitigated an issue where a `device_id` given as `null` or an empty string left the SDK without a device ID, so nothing was sent.
+* Mitigated an issue where a call in the `Countly.q` queue that threw an error stopped the SDK for the rest of the page.
+* Mitigated an issue where the deprecated `show_feedback_popup` method threw an error instead of showing the widget.
+* Mitigated an issue where sending did not resume on the same page after networking was switched back on in the server configuration.
+* Mitigated an issue where a request that could not be made, for example because of an invalid custom header, stopped all sending for the rest of the page without an error.
+* Mitigated an issue where unsent requests were lost on every page change with cookie storage.
+* Mitigated an issue where an event value containing `;` could break event recording on the next page with cookie storage.
 
 ## 26.1.3
 

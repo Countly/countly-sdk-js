@@ -1,6 +1,13 @@
 import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
+    isSafeActionUrl,
+    isSensitiveFieldName,
+    isPhoneFieldName,
+    looksLikeCardNumber,
+    looksLikeSsn,
+    isPhoneShaped,
+    isWholeEmail,
     getMultiSelectValues,
     secureRandom,
     generateUUID,
@@ -87,6 +94,7 @@ class CountlyClass {
     #generatedRequests;
     #contentEndPoint;
     #inContentZone;
+    #contentZoneWanted;
     #contentZoneTimer;
     #contentIframeID;
     #crashFilterCallback;
@@ -168,7 +176,10 @@ class CountlyClass {
     #pushRecordInMemory = {};
     #ignoredByChoice = false;
     #idBeforeOfflineMode;
-    
+    #passwordFields = new WeakMap();
+    #passwordWatchRoots = new WeakMap();
+    #encodedCookiePrefix = "~cly~";
+
     /**
      * Create a new Countly instance with configuration
      * @param {Object} ob - Configuration object for Countly initialization
@@ -214,6 +225,7 @@ class CountlyClass {
         this.#generatedRequests = [];
         this.#contentEndPoint = "/o/sdk/content";
         this.#inContentZone = false;
+        this.#contentZoneWanted = false;
         this.#contentZoneTimer = null;
         this.#contentIframeID = "cly-content-iframe";
         this.#crashFilterCallback = null;
@@ -798,8 +810,11 @@ class CountlyClass {
 
         this.#migrate();
 
-        this.#requestQueue = this.#getValueFromStorage("cly_queue") || [];
-        this.#eventQueue = this.#getValueFromStorage("cly_event") || [];
+        // the request queue is always written to localStorage, so it is read back from there
+        var storedRequests = this.#getValueFromStorage("cly_queue", true);
+        this.#requestQueue = Array.isArray(storedRequests) ? storedRequests : [];
+        var storedEvents = this.#getValueFromStorage("cly_event");
+        this.#eventQueue = Array.isArray(storedEvents) ? storedEvents : [];
         this.#remoteConfigs = this.#getValueFromStorage("cly_remote_configs") || {};
 
         // flag that indicates that the offline mode was enabled at the end of the previous app session 
@@ -1052,15 +1067,8 @@ class CountlyClass {
         // if all fails generate an ID
         else {
             this.#log(logLevelEnums.INFO, "initialize, Generating the device ID");
-            this.device_id = getConfig("device_id", ob, this.#getStoredIdOrGenerateId());
-            if (ob && Object.keys(ob).length) {
-                if (ob.device_id !== undefined) {
-                    this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                }
-            }
-            else if (Countly.device_id !== undefined) {
-                this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-            }
+            // a device_id given as null or "" is no ID, so it must not replace the generated one
+            this.device_id = this.#getStoredIdOrGenerateId();
         }
 
         // Store the device ID and device ID type
@@ -1754,7 +1762,7 @@ class CountlyClass {
         // This has to happen while app_key is still set, hence before the reset block further down.
         this.#clearStoredPushSubscription();
 
-        Countly.features = [featureEnums.SESSIONS, featureEnums.EVENTS, featureEnums.VIEWS, featureEnums.SCROLLS, featureEnums.CLICKS, featureEnums.FORMS, featureEnums.CRASHES, featureEnums.ATTRIBUTION, featureEnums.USERS, featureEnums.STAR_RATING, featureEnums.LOCATION, featureEnums.APM, featureEnums.FEEDBACK, featureEnums.REMOTE_CONFIG, featureEnums.PUSH];
+        Countly.features = [featureEnums.SESSIONS, featureEnums.EVENTS, featureEnums.VIEWS, featureEnums.SCROLLS, featureEnums.CLICKS, featureEnums.FORMS, featureEnums.CRASHES, featureEnums.ATTRIBUTION, featureEnums.USERS, featureEnums.STAR_RATING, featureEnums.LOCATION, featureEnums.APM, featureEnums.FEEDBACK, featureEnums.REMOTE_CONFIG, featureEnums.PUSH, featureEnums.CONTENT];
 
         // CONSENTS
         this.#consents = {};
@@ -1813,6 +1821,7 @@ class CountlyClass {
         this.#fakeRequestHandler = undefined;
         this.#journeyTriggerInProgress = undefined;
         this.#journeyTriggerPending = undefined;
+        this.#contentZoneWanted = undefined;
         this.#journeyPendingEventIds = undefined;
         if (this.#clientHintsBufferTimeoutId) {
             clearTimeout(this.#clientHintsBufferTimeoutId);
@@ -1990,6 +1999,9 @@ class CountlyClass {
                             this.track_pageview.apply(this, this.#lastParams.track_pageview);
                             this.#lastParams.track_pageview = null;
                         }
+                        else if (feature === featureEnums.CONTENT && this.#contentZoneWanted) {
+                            this.#enterContentZoneInternal();
+                        }
                         else if (feature === featureEnums.PUSH) {
                             if (this.#isPushConfigured()) {
                                 this.#drainPendingPushActions();
@@ -2036,8 +2048,12 @@ class CountlyClass {
                 var wasOptedIn = this.#consents[feature].optin === true;
                 this.#consents[feature].optin = false;
                 // this is core feature
-                if (enforceConsentUpdate && this.#consents[feature].optin !== false) {
+                if (enforceConsentUpdate && wasOptedIn) {
                     this.#updateConsent();
+                }
+                if (wasOptedIn && feature === featureEnums.CONTENT) {
+                    this.#exitContentZoneInternal();
+                    this.#closeContentFrame();
                 }
                 // leaving the browser subscribed after push consent is withdrawn would keep the
                 // server able to reach this user, so drop the subscription and blacklist the token
@@ -2063,6 +2079,7 @@ class CountlyClass {
         this.remove_consent_internal(Countly.features, false);
         this.#offlineMode = true;
         this.#exitContentZoneInternal();
+        this.#contentZoneWanted = false;
         this.#idBeforeOfflineMode = { id: this.device_id, type: this.#deviceIdType };
         this.device_id = "[CLY]_temp_id";
         this.#deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
@@ -2287,6 +2304,8 @@ class CountlyClass {
             this.#timedEvents = {};
             // clear all consents
             this.remove_consent_internal(Countly.features, false);
+            // a content zone entered for the previous user is not entered again for the next one
+            this.#contentZoneWanted = false;
             this.#releasePushTokenOfLeavingUser();
         }
         var oldId = this.device_id;
@@ -2872,7 +2891,9 @@ class CountlyClass {
             event.count = 1;
         }
         
-        if (!this.#isEventAllowedByBehaviorSettings(event.key)) {
+        // the dashboard's event and segmentation filters are for the app's own events, as on Android and iOS
+        var isInternalEvent = internalEventKeyEnumsArray.includes(event.key);
+        if (!isInternalEvent && !this.#isEventAllowedByBehaviorSettings(event.key)) {
             this.#log(logLevelEnums.DEBUG, "add_cly_event, Event was filtered out by behavior settings: [" + event.key + "]");
             return;
         }
@@ -2882,7 +2903,9 @@ class CountlyClass {
         if (!internalEventKeyEnumsArray.includes(event.key)) {
             event.key = truncateSingleValue(event.key, this.#SCLimitKeyLength, "add_cly_event", this.#log);
         }
-        event.segmentation = this.#filterSegmentationByBehaviorSettings(event.key, event.segmentation);
+        if (!isInternalEvent) {
+            event.segmentation = this.#filterSegmentationByBehaviorSettings(event.key, event.segmentation);
+        }
         event.segmentation = truncateObject(event.segmentation, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "add_cly_event", this.#log);
         var props = ["key", "count", "sum", "dur", "segmentation"];
         var e = createNewObjectFromProperties(event, props);
@@ -3718,6 +3741,10 @@ class CountlyClass {
         if (this.check_consent(featureEnums.CRASHES)) {
             // truncate description wrt internal limits
             record = truncateSingleValue(record, this.#SCLimitValueSize , "add_log", this.#log);
+            if (!(this.#SCLimitBreadcrumbCount > 0)) {
+                this.#log(logLevelEnums.DEBUG, "add_log, The breadcrumb limit is [" + this.#SCLimitBreadcrumbCount + "], not keeping breadcrumbs");
+                return;
+            }
             while (this.#crashLogs.length >= this.#SCLimitBreadcrumbCount) {
                 this.#crashLogs.shift();
                 this.#log(logLevelEnums.WARNING, "add_log, Reached maximum crashLogs size. Will erase the oldest one.");
@@ -4341,7 +4368,87 @@ class CountlyClass {
     };
 
     /**
-    * Generate custom event for all forms that were submitted on this page
+     * Remembers the password fields under a DOM root, so a password the visitor reveals as text is still never read
+     * @param {Object} root - DOM object whose password fields to remember
+     */
+    #watchPasswordFields = (root) => {
+        if (!root || typeof root.nodeType !== "number" || this.#passwordWatchRoots.has(root)) {
+            return;
+        }
+        this.#passwordWatchRoots.set(root, true);
+        var current = typeof root.querySelectorAll === "function" ? root.querySelectorAll("input[type=password]") : [];
+        for (var i = 0; i < current.length; i++) {
+            this.#passwordFields.set(current[i], true);
+        }
+        if (typeof MutationObserver === "function") {
+            new MutationObserver((records) => {
+                for (var j = 0; j < records.length; j++) {
+                    if (records[j].oldValue && records[j].oldValue.toLowerCase() === "password") {
+                        this.#passwordFields.set(records[j].target, true);
+                    }
+                }
+            }).observe(root, { attributes: true, attributeFilter: ["type"], attributeOldValue: true, subtree: true });
+        }
+    };
+
+    /**
+     * Gives the lowercased tokens of a form field's autocomplete attribute
+     * @param {HTMLElement} input - form field
+     * @returns {Array<String>} autocomplete tokens
+     */
+    #autocompleteTokens = (input) => {
+        var autocomplete = typeof input.getAttribute === "function" ? input.getAttribute("autocomplete") : null;
+        return autocomplete ? autocomplete.toLowerCase().split(/\s+/) : [];
+    };
+
+    /**
+     * Tells whether a form field must never be read: a password field, also one shown as text after it was one,
+     * a payment card field or a one-time code field
+     * @param {HTMLElement} input - form field
+     * @returns {Boolean} true when the field is never read
+     */
+    #neverReadField = (input) => {
+        if (input.type === "password" || this.#passwordFields.has(input)) {
+            return true;
+        }
+        return this.#autocompleteTokens(input).some((token) => token === "current-password" || token === "new-password" || token === "one-time-code" || token.indexOf("cc-") === 0);
+    };
+
+    /**
+     * Tells whether a form field or one of its ancestors has the cly_user_ignore class
+     * @param {HTMLElement} input - form field
+     * @returns {Boolean} true when the field is ignored
+     */
+    #ignoredByMarkup = (input) => {
+        for (var node = input; node && node.nodeType === 1; node = node.parentNode) {
+            if ((node.getAttribute("class") || "").indexOf("cly_user_ignore") !== -1) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    /**
+     * Tells whether a form field's name, id or labels mark it as holding a secret or payment, bank or identity data
+     * @param {HTMLElement} input - form field
+     * @param {String=} labelText - text of a label found for the field
+     * @returns {Boolean} true when the field looks sensitive
+     */
+    #hasSensitiveName = (input, labelText) => {
+        if (isSensitiveFieldName(input.name) || isSensitiveFieldName(input.id) || isSensitiveFieldName(labelText)) {
+            return true;
+        }
+        var labels = input.labels || [];
+        for (var i = 0; i < labels.length; i++) {
+            if (isSensitiveFieldName(labels[i].textContent)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    /**
+    * Generate custom event for all forms that were submitted on this page. Password, payment card and one-time code fields and card numbers are never read. Fields named like secrets, bank or identity data and values shaped like a social security number are skipped unless the field has the cly_form_allow class. Add cly_user_ignore class to a field or to an element containing fields to skip them.
     * @param {Object=} parent - DOM object which children to track, by default it is document body
     * @param {boolean=} trackHidden - provide true to also track hidden inputs, default false
     * */
@@ -4352,6 +4459,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "track_forms, Starting to track form submissions. DOM object provided:[" + (!!parent) + "] Tracking hidden inputs :[" + (!!trackHidden) + "]");
         parent = parent || document;
+        this.#watchPasswordFields(parent);
         /**
          *  Get name of the input
          *  @param {HTMLElement} input - HTML input from which to get name
@@ -4379,40 +4487,48 @@ class CountlyClass {
             if (typeof form.elements !== "undefined") {
                 for (var i = 0; i < form.elements.length; i++) {
                     input = form.elements[i];
-                    if (input && input.type !== "password" && input.className.indexOf("cly_user_ignore") === -1) {
-                        if (typeof segmentation["input:" + getInputName(input)] === "undefined") {
-                            segmentation["input:" + getInputName(input)] = [];
+                    if (!input || this.#neverReadField(input) || this.#ignoredByMarkup(input)) {
+                        continue;
+                    }
+                    var allowed = (" " + (input.getAttribute("class") || "") + " ").indexOf(" cly_form_allow ") !== -1;
+                    if (!allowed && this.#hasSensitiveName(input)) {
+                        continue;
+                    }
+                    var values = [];
+                    if (input.nodeName.toLowerCase() === "select") {
+                        if (typeof input.multiple !== "undefined") {
+                            values.push(getMultiSelectValues(input));
                         }
-                        if (input.nodeName.toLowerCase() === "select") {
-                            if (typeof input.multiple !== "undefined") {
-                                segmentation["input:" + getInputName(input)].push(getMultiSelectValues(input));
-                            }
-                            else {
-                                segmentation["input:" + getInputName(input)].push(input.options[input.selectedIndex].value);
-                            }
-                        }
-                        else if (input.nodeName.toLowerCase() === "input") {
-                            if (typeof input.type !== "undefined") {
-                                if (input.type.toLowerCase() === "checkbox" || input.type.toLowerCase() === "radio") {
-                                    if (input.checked) {
-                                        segmentation["input:" + getInputName(input)].push(input.value);
-                                    }
-                                }
-                                else if (input.type.toLowerCase() !== "hidden" || trackHidden) {
-                                    segmentation["input:" + getInputName(input)].push(input.value);
-                                }
-                            }
-                            else {
-                                segmentation["input:" + getInputName(input)].push(input.value);
-                            }
-                        }
-                        else if (input.nodeName.toLowerCase() === "textarea") {
-                            segmentation["input:" + getInputName(input)].push(input.value);
-                        }
-                        else if (typeof input.value !== "undefined") {
-                            segmentation["input:" + getInputName(input)].push(input.value);
+                        else {
+                            values.push(input.options[input.selectedIndex].value);
                         }
                     }
+                    else if (input.nodeName.toLowerCase() === "input") {
+                        if (typeof input.type !== "undefined") {
+                            if (input.type.toLowerCase() === "checkbox" || input.type.toLowerCase() === "radio") {
+                                if (input.checked) {
+                                    values.push(input.value);
+                                }
+                            }
+                            else if (input.type.toLowerCase() !== "hidden" || trackHidden) {
+                                values.push(input.value);
+                            }
+                        }
+                        else {
+                            values.push(input.value);
+                        }
+                    }
+                    else if (input.nodeName.toLowerCase() === "textarea") {
+                        values.push(input.value);
+                    }
+                    else if (typeof input.value !== "undefined") {
+                        values.push(input.value);
+                    }
+                    if (values.some((value) => looksLikeCardNumber(value) || (!allowed && looksLikeSsn(value)))) {
+                        continue;
+                    }
+                    var inputKey = "input:" + getInputName(input);
+                    segmentation[inputKey] = (segmentation[inputKey] || []).concat(values);
                 }
                 for (var key in segmentation) {
                     if (segmentation[key] && typeof segmentation[key].join === "function") {
@@ -4435,7 +4551,7 @@ class CountlyClass {
     };
 
     /**
-    * Collect possible user data from submitted forms. Add cly_user_ignore class to ignore inputs in forms or cly_user_{key} to collect data from this input as specified key, as cly_user_username to save collected value from this input as username property. If not class is provided, Countly SDK will try to determine type of information automatically.
+    * Collect possible user data from submitted forms. Add cly_user_ignore class to ignore inputs in forms, also to an element containing them, or cly_user_{key} to collect data from this input as specified key, as cly_user_username to save collected value from this input as username property. If not class is provided, Countly SDK will try to determine type of information automatically. Password, payment card and one-time code fields are never read. Hidden fields and fields named like secrets, bank or identity data are read only with a cly_user_{key} class.
     * @param {Object=} parent - DOM object which children to track, by default it is document body
     * @param {boolean} [useCustom=false] - submit collected data as custom user properties, by default collects as main user properties
     * */
@@ -4446,6 +4562,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "collect_from_forms, Starting to collect possible user data. DOM object provided:[" + (!!parent) + "] Submitting custom user property:[" + (!!useCustom) + "]");
         parent = parent || document;
+        this.#watchPasswordFields(parent);
         /**
          *  Process form data
          *  @param {Event} event - form submission event
@@ -4470,9 +4587,9 @@ class CountlyClass {
                 }
                 for (i = 0; i < form.elements.length; i++) {
                     input = form.elements[i];
-                    if (input && input.type !== "password") {
+                    if (input && !this.#neverReadField(input)) {
                         // check if element should be ignored
-                        if (input.className.indexOf("cly_user_ignore") === -1) {
+                        if (!this.#ignoredByMarkup(input)) {
                             var value = "";
                             // get value from input
                             if (input.nodeName.toLowerCase() === "select") {
@@ -4504,6 +4621,9 @@ class CountlyClass {
                             else if (typeof input.value !== "undefined") {
                                 value = input.value;
                             }
+                            if (looksLikeCardNumber(value)) {
+                                continue;
+                            }
                             // check if input was marked to be collected
                             if (input.className && input.className.indexOf("cly_user_") !== -1) {
                                 var classes = input.className.split(" ");
@@ -4515,16 +4635,19 @@ class CountlyClass {
                                     }
                                 }
                             }
+                            else if ((input.type && input.type.toLowerCase() === "hidden") || this.#hasSensitiveName(input, labelData[input.id])) {
+                                continue;
+                            }
                             // check for email
                             else if ((input.type && input.type.toLowerCase() === "email")
                                 || (input.name && input.name.toLowerCase().indexOf("email") !== -1)
                                 || (input.id && input.id.toLowerCase().indexOf("email") !== -1)
                                 || (input.id && labelData[input.id] && labelData[input.id].toLowerCase().indexOf("email") !== -1)
-                                || (/[^@\s]+@[^@\s]+\.[^@\s]+/).test(value)) {
-                                if (!userdata.email) {
+                                || (input.nodeName.toLowerCase() === "input" && isWholeEmail(value))) {
+                                if (!userdata.email && isWholeEmail(value)) {
                                     userdata.email = value;
+                                    hasUserInfo = true;
                                 }
-                                hasUserInfo = true;
                             }
                             else if ((input.name && input.name.toLowerCase().indexOf("username") !== -1)
                                 || (input.id && input.id.toLowerCase().indexOf("username") !== -1)
@@ -4534,13 +4657,15 @@ class CountlyClass {
                                 }
                                 hasUserInfo = true;
                             }
-                            else if ((input.name && (input.name.toLowerCase().indexOf("tel") !== -1 || input.name.toLowerCase().indexOf("phone") !== -1 || input.name.toLowerCase().indexOf("number") !== -1))
-                                || (input.id && (input.id.toLowerCase().indexOf("tel") !== -1 || input.id.toLowerCase().indexOf("phone") !== -1 || input.id.toLowerCase().indexOf("number") !== -1))
-                                || (input.id && labelData[input.id] && (labelData[input.id].toLowerCase().indexOf("tel") !== -1 || labelData[input.id].toLowerCase().indexOf("phone") !== -1 || labelData[input.id].toLowerCase().indexOf("number") !== -1))) {
-                                if (!userdata.phone) {
+                            else if ((input.type && input.type.toLowerCase() === "tel")
+                                || this.#autocompleteTokens(input).some((token) => token === "tel" || token.indexOf("tel-") === 0)
+                                || isPhoneFieldName(input.name)
+                                || isPhoneFieldName(input.id)
+                                || isPhoneFieldName(labelData[input.id])) {
+                                if (!userdata.phone && isPhoneShaped(value)) {
                                     userdata.phone = value;
+                                    hasUserInfo = true;
                                 }
-                                hasUserInfo = true;
                             }
                             else if ((input.name && (input.name.toLowerCase().indexOf("org") !== -1 || input.name.toLowerCase().indexOf("company") !== -1))
                                 || (input.id && (input.id.toLowerCase().indexOf("org") !== -1 || input.id.toLowerCase().indexOf("company") !== -1))
@@ -4865,7 +4990,7 @@ class CountlyClass {
             return;
         }
         this.#log(logLevelEnums.WARNING, "show_feedback_popup, Deprecated function call! Use 'presentRatingWidgetWithID' in place of this call. Call will be redirected now!");
-        presentRatingWidgetWithID(id);
+        this.presentRatingWidgetWithID(id);
     };
     /**
     * Show specific widget popup by the widget id
@@ -5807,6 +5932,7 @@ class CountlyClass {
             this.#refreshContentZoneInternal();
         },
         exitContentZone: () => {
+            this.#contentZoneWanted = false;
             this.#exitContentZoneInternal();
         },
     };
@@ -5830,6 +5956,11 @@ class CountlyClass {
         if (filter_callback && typeof filter_callback == "function") {
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Content filter callback is provided");
             this.#contentFilterCallback = filter_callback;
+        }
+        this.#contentZoneWanted = true;
+        if (!this.check_consent(featureEnums.CONTENT)) {
+            this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Content consent is not given, the zone is entered once it is");
+            return;
         }
 
         if (!this.#initTimestamp || (getMsTimestamp() - this.#initTimestamp) < 4000 ) {
@@ -5915,12 +6046,16 @@ class CountlyClass {
 
     #sendContentRequest = (callback) => {
         this.#log(logLevelEnums.DEBUG, "sendContentRequest, sending content request");
-        var params = this.#prepareContentRequest();
         var finalizeContentRequest = (success) => {
             if (typeof callback === "function") {
                 callback(success);
             }
         };
+        if (!this.check_consent(featureEnums.CONTENT)) {
+            finalizeContentRequest(false);
+            return;
+        }
+        var params = this.#prepareContentRequest();
         this.#makeNetworkRequest("sendContentRequest,", this.url + this.#contentEndPoint, params, (e, param, resp) => {
             if (e) {
                 finalizeContentRequest(false);
@@ -5963,6 +6098,12 @@ class CountlyClass {
                 return;
             }
 
+            // consent can be removed while the request is on its way
+            if (!this.check_consent(featureEnums.CONTENT)) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Content consent was removed, not showing the content");
+                finalizeContentRequest(false);
+                return;
+            }
             this.#displayContent(response);
             clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
             // this needs to be deleted after content is closed
@@ -6090,8 +6231,14 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for link");
                 this.#closeContentFrame();
             }
-            window.open(link, "_blank");
-            this.#log(logLevelEnums.DEBUG, `interpretContentMessage, Opened link in new tab: [${link}]`);
+            if (!isSafeActionUrl(link)) {
+                this.#log(logLevelEnums.WARNING, "interpretContentMessage, Not opening a link with a scheme that is not allowed: [" + link + "]");
+            }
+            else {
+                // noopener keeps the opened page from controlling this one
+                window.open(link, "_blank", "noopener");
+                this.#log(logLevelEnums.DEBUG, `interpretContentMessage, Opened link in new tab: [${link}]`);
+            }
         }
 
         if (resize_me) {
@@ -6850,6 +6997,12 @@ class CountlyClass {
                 return;
             }
 
+            // checked before the queue is marked busy: no answer comes back while networking is off
+            if (!this.#SCNetwork) {
+                resolve(false);
+                return;
+            }
+
             this.#readyToProcess = false;
             var params = this.#requestQueue[0];
             params.rr = this.#requestQueue.length;
@@ -6892,49 +7045,54 @@ class CountlyClass {
         for (let i = 0; i < q.length; i++) {
             let req = q[i];
             this.#log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
-            if (typeof req === "function") {
-                req();
+            try {
+                if (typeof req === "function") {
+                    req();
+                }
+                else if (Array.isArray(req) && req.length > 0) {
+                    var inst = this;
+                    var arg = 0;
+                    // check if it is meant for other tracker
+                    try {
+                        if (Countly.i[req[arg]]) {
+                            inst = Countly.i[req[arg]];
+                            arg++;
+                        }
+                    } catch (error) {
+                        // possibly first init and no other instance
+                        this.#log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
+                        Countly.q.push(req); // return it back to queue and continue to the next one
+                        continue;
+                    }
+                    if (typeof inst[req[arg]] === "function") {
+                        inst[req[arg]].apply(inst, req.slice(arg + 1));
+                    }
+                    // Add interfaces you add to here for async queue to work
+                    else if (req[arg].indexOf("userData.") === 0) {
+                        var userdata = req[arg].replace("userData.", "");
+                        if (typeof inst.userData[userdata] === "function") {
+                            inst.userData[userdata].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (req[arg].indexOf("content.") === 0) {
+                        var contentMethod = req[arg].replace("content.", "");
+                        if (typeof inst.content[contentMethod] === "function") {
+                            inst.content[contentMethod].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (req[arg].indexOf("feedback.") === 0) {
+                        var feedbackMethod = req[arg].replace("feedback.", "");
+                        if (typeof inst.feedback[feedbackMethod] === "function") {
+                            inst.feedback[feedbackMethod].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (typeof Countly[req[arg]] === "function") {
+                        Countly[req[arg]].apply(Countly, req.slice(arg + 1));
+                    }
+                }
             }
-            else if (Array.isArray(req) && req.length > 0) {
-                var inst = this;
-                var arg = 0;
-                // check if it is meant for other tracker
-                try {
-                    if (Countly.i[req[arg]]) {
-                        inst = Countly.i[req[arg]];
-                        arg++;
-                    }
-                } catch (error) {
-                    // possibly first init and no other instance
-                    this.#log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
-                    Countly.q.push(req); // return it back to queue and continue to the next one
-                    continue;
-                }
-                if (typeof inst[req[arg]] === "function") {
-                    inst[req[arg]].apply(inst, req.slice(arg + 1));
-                }
-                // Add interfaces you add to here for async queue to work
-                else if (req[arg].indexOf("userData.") === 0) {
-                    var userdata = req[arg].replace("userData.", "");
-                    if (typeof inst.userData[userdata] === "function") {
-                        inst.userData[userdata].apply(inst, req.slice(arg + 1));
-                    }
-                }
-                else if (req[arg].indexOf("content.") === 0) {
-                    var contentMethod = req[arg].replace("content.", "");
-                    if (typeof inst.content[contentMethod] === "function") {
-                        inst.content[contentMethod].apply(inst, req.slice(arg + 1));
-                    }
-                }
-                else if (req[arg].indexOf("feedback.") === 0) {
-                    var feedbackMethod = req[arg].replace("feedback.", "");
-                    if (typeof inst.feedback[feedbackMethod] === "function") {
-                        inst.feedback[feedbackMethod].apply(inst, req.slice(arg + 1));
-                    }
-                }
-                else if (typeof Countly[req[arg]] === "function") {
-                    Countly[req[arg]].apply(Countly, req.slice(arg + 1));
-                }
+            catch (error) {
+                this.#log(logLevelEnums.ERROR, "processAsyncQueue, A queued call threw and was skipped: " + error);
             }
         }
     }
@@ -7135,7 +7293,8 @@ class CountlyClass {
             return null;
         }
         var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
-        if (iOS && window.devicePixelRatio) {
+        // the resolution metric is in device pixels like the iOS SDK's; content is placed in CSS pixels
+        if (iOS && window.devicePixelRatio && !getViewPort) {
             this.#log(logLevelEnums.VERBOSE, "Mobile Mac device detected, adjusting resolution");
             // ios provides dips, need to multiply
             width = Math.round(width * window.devicePixelRatio);
@@ -7731,7 +7890,12 @@ class CountlyClass {
                 else {
                     xhr.send(saltedData);
                 }
-            });
+            }).catch((err) => this.#forRequest(params, () => {
+                this.#log(logLevelEnums.ERROR, functionName + " Could not make the XML HTTP request: " + err);
+                if (typeof callback === "function") {
+                    callback(true, params);
+                }
+            }));
         }
         catch (e) {
             // fallback
@@ -8131,8 +8295,17 @@ class CountlyClass {
             }
             // return the cookie if it is the one we are looking for
             if (cookie.indexOf(cookieID) === 0) {
-                // just return the value part after '='
-                return cookie.substring(cookieID.length, cookie.length);
+                var raw = cookie.substring(cookieID.length, cookie.length);
+                // only values written with the prefix are encoded; any other value, also one written by an earlier version, is read as it is
+                if (raw.indexOf(this.#encodedCookiePrefix) !== 0) {
+                    return raw;
+                }
+                try {
+                    return decodeURIComponent(raw.substring(this.#encodedCookiePrefix.length));
+                }
+                catch (e) {
+                    return raw;
+                }
             }
         }
         return null;
@@ -8149,7 +8322,13 @@ class CountlyClass {
         date.setTime(date.getTime() + (exp * 24 * 60 * 60 * 1000));
         // TODO: If we offer the developer the ability to manipulate the expiration date in the future, this part must be reworked
         var expires = "; expires=" + date.toGMTString();
-        document.cookie = cookieKey + "=" + cookieVal + expires + "; path=/";
+        var value = String(cookieVal);
+        // a value is written as earlier versions wrote it, so they can still read it, unless a cookie cannot carry it as it is
+        // eslint-disable-next-line no-control-regex
+        if (/[;\u0000-\u001f\u007f]|^\s|\s$/.test(value) || value.indexOf(this.#encodedCookiePrefix) === 0) {
+            value = this.#encodedCookiePrefix + encodeURIComponent(value);
+        }
+        document.cookie = cookieKey + "=" + value + expires + "; path=/";
     }
 
     /**
@@ -8353,11 +8532,13 @@ class CountlyClass {
         switch (key) {
             // queue of requests
             case "cly_queue":
-                this.#requestQueue = this.deserialize(newValue || "[]");
+                var mirroredRequests = this.deserialize(newValue || "[]");
+                this.#requestQueue = Array.isArray(mirroredRequests) ? mirroredRequests : [];
                 break;
             // queue of events
             case "cly_event":
-                this.#eventQueue = this.deserialize(newValue || "[]");
+                var mirroredEvents = this.deserialize(newValue || "[]");
+                this.#eventQueue = Array.isArray(mirroredEvents) ? mirroredEvents : [];
                 break;
             case "cly_remote_configs":
                 this.#remoteConfigs = this.deserialize(newValue || "{}");
