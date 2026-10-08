@@ -51,6 +51,26 @@ function gatheredBatches(rq) {
     return rq.filter((r) => r.sdk_logs).map((r) => JSON.parse(r.sdk_logs));
 }
 
+/**
+ * Calls the public API with values that are user data, so the lines the SDK logs about the calls quote them.
+ * @returns {String} everything the calls printed to the developer console at the info level
+ */
+function recordUserData() {
+    var printed = [];
+    var originalInfo = console.info;
+    console.info = function(line) {
+        printed.push(line);
+    };
+    try {
+        Countly.add_event({ key: "secret_event_key", segmentation: { secret_segment: "secret_value" } });
+        Countly.user_details({ name: "secret_user_name" });
+    }
+    finally {
+        console.info = originalInfo;
+    }
+    return printed.join("\n");
+}
+
 describe("Log gathering directive", () => {
     it("arms from a live directive and adopts the lines captured during init", () => {
         hp.haltAndClearStorage(() => {
@@ -237,80 +257,63 @@ describe("Log gathering delivery", () => {
 });
 
 describe("Log gathering consent", () => {
-    it("holds the gathered lines while the consent their data needs is missing", () => {
+    var SECRETS = ["secret_event_key", "secret_segment", "secret_value", "secret_user_name"];
+
+    it("holds lines quoting user data until both events and users consent are given, the local log untouched", () => {
         hp.haltAndClearStorage(() => {
-            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true, device_id: "consent_device" });
+            initWithDirective({ e: true, i: GATHER_ID, b: 10 }, { require_consent: true, device_id: "consent_device" });
             Countly.add_consent("sessions");
-            expect(Countly._internals.getLogGatheringState()).to.include({ enabled: true, gatherId: GATHER_ID });
-
-            Countly.add_event({ key: "secret_event_key", segmentation: { secret_segment: "secret_value" } });
-            Countly.user_details({ name: "secret_user_name" });
-            Countly.track_view("secret_view_name");
-
-            var buffer = Countly._internals.getLogBuffer();
-            expect(buffer.some((line) => line.m.indexOf("secret_event_key") !== -1), "the gathered copy of the line still carries what the method was called with").to.equal(true);
-            var held = buffer.length;
-
-            Countly._internals.flushLogBuffer();
-            expect(Countly._internals.getLogBuffer().length, "the lines wait for consent rather than being dropped").to.be.at.least(held);
-            cy.fetch_local_request_queue().then((rq) => {
-                expect(gatheredBatches(rq).length, "no batch leaves the device").to.equal(0);
-                var wire = JSON.stringify(rq);
-                ["secret_event_key", "secret_segment", "secret_value", "secret_user_name", "secret_view_name"].forEach((secret) => {
-                    expect(wire, "[" + secret + "] never reaches the server").to.not.contain(secret);
-                });
+            var printed = recordUserData();
+            var gathered = JSON.stringify(Countly._internals.getLogBuffer());
+            SECRETS.forEach((secret) => {
+                expect(printed, "the developer still sees [" + secret + "]").to.contain(secret);
+                expect(gathered, "[" + secret + "] is gathered").to.contain(secret);
             });
-        });
-    });
+            var held = Countly._internals.getLogBuffer().length;
+            expect(held, "a full batch does not go out either").to.be.greaterThan(10);
 
-    it("uploads as before once events and users consent are given", () => {
-        hp.haltAndClearStorage(() => {
-            initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true, device_id: "consent_device" });
-            Countly.add_consent("sessions");
+            Countly.add_consent("events");
             Countly._internals.flushLogBuffer();
+            expect(Countly._internals.getLogBuffer().length, "events consent alone uploads nothing").to.be.at.least(held);
             cy.fetch_local_request_queue().then((rq) => {
                 expect(gatheredBatches(rq).length).to.equal(0);
+                var wire = JSON.stringify(rq);
+                SECRETS.forEach((secret) => {
+                    expect(wire, "[" + secret + "] never reaches the server").to.not.contain(secret);
+                });
 
-                Countly.add_consent(["events", "users"]);
+                Countly.add_consent("users");
                 Countly._internals.flushLogBuffer();
-                cy.fetch_local_request_queue().then((withConsent) => {
-                    var batches = gatheredBatches(withConsent);
-                    expect(batches.length).to.equal(1);
-                    expect(batches[0].i).to.equal(GATHER_ID);
-                    expect(batches[0].l.length).to.be.greaterThan(0);
-                    expect(Countly._internals.getLogBuffer().length).to.equal(0);
+                expect(Countly._internals.getLogBuffer().length, "every held line goes out").to.equal(0);
+                cy.fetch_local_request_queue().then((released) => {
+                    var batches = gatheredBatches(released);
+                    expect(batches.length).to.be.greaterThan(1);
+                    batches.forEach((batch) => {
+                        expect(batch.i).to.equal(GATHER_ID);
+                        expect(batch.l.length, "batches keep the requested size").to.be.at.most(10);
+                    });
+                    var shipped = JSON.stringify(batches);
+                    SECRETS.forEach((secret) => {
+                        expect(shipped, "the held [" + secret + "] line is uploaded").to.contain(secret);
+                    });
                 });
             });
         });
     });
 
-    it("keeps printing the local developer log while the upload is held", () => {
+    it("holds a view name on users consent alone and drops it when gathering stops", () => {
         hp.haltAndClearStorage(() => {
             initWithDirective({ e: true, i: GATHER_ID, b: 500 }, { require_consent: true, device_id: "consent_device" });
+            Countly.add_consent(["sessions", "views", "users"]);
+            Countly.track_view("secret_view_name");
+            expect(JSON.stringify(Countly._internals.getLogBuffer()), "the view name is gathered").to.contain("secret_view_name");
             Countly._internals.flushLogBuffer();
+            expect(Countly._internals.getLogBuffer().length, "users consent alone uploads nothing").to.be.greaterThan(0);
 
-            var printed = [];
-            var originalDebug = console.debug;
-            console.debug = function(line) {
-                printed.push(line);
-            };
-            try {
-                Countly._internals.log("[DEBUG] ", "log_gathering_test, called with [secret_value]");
-            }
-            finally {
-                console.debug = originalDebug;
-            }
-            expect(printed.length).to.equal(1);
-            expect(printed[0], "the local log is untouched by the upload gate").to.contain("secret_value");
-        });
-    });
-
-    it("needs no consent at all when the app does not require consent", () => {
-        hp.haltAndClearStorage(() => {
-            initWithDirective({ e: true, i: GATHER_ID, b: 500 });
-            Countly._internals.flushLogBuffer();
+            deliverLaterDirective({ e: false });
+            expect(Countly._internals.getLogBuffer().length, "nothing would retry a held tail, so it is dropped").to.equal(0);
             cy.fetch_local_request_queue().then((rq) => {
-                expect(gatheredBatches(rq).length).to.equal(1);
+                expect(gatheredBatches(rq).length, "the held lines never leave the device").to.equal(0);
             });
         });
     });

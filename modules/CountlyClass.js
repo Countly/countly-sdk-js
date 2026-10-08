@@ -130,7 +130,6 @@ class CountlyClass {
     #logBuffer;
     #logBufferDropped;
     #logCaptureInProgress;
-    #logUploadBlocked;
     #lastLogFlushTime;
     #initContentSent;
     #initTimestamp;
@@ -7315,7 +7314,6 @@ class CountlyClass {
         this.#logBufferDropped = 0;
         this.#logCaptureInProgress = false;
         this.#logTransportInProgress = false;
-        this.#logUploadBlocked = false;
         this.#lastLogFlushTime = Date.now();
     }
 
@@ -7410,9 +7408,10 @@ class CountlyClass {
             this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Log gathering started for id:[" + this.#SCLogGathering.gatherId + "], levels:[" + levels + "], batch size:[" + batchSize + "]");
         }
         else if (!enabled && previousState.enabled) {
-            // the server accepts one tail batch after a stop
+            // the server still accepts a tail after a stop, and nothing would ever retry what is left
             this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Log gathering stopped, flushing the gathered lines");
             this.#flushLogBuffer();
+            this.#dropLogBuffer("gathering stopped while they were held");
         }
     }
 
@@ -7437,27 +7436,33 @@ class CountlyClass {
             this.#logBufferDropped += overflow;
         }
         // provisional lines have no gather id to be attributed to yet, so they wait
-        // a buffer held back for consent is past its batch size on every line, the timed flush retries it instead
-        if (this.#SCLogGathering.decided && !this.#logUploadBlocked && buffer.length >= this.#SCLogGathering.batchSize) {
-            this.#flushLogBuffer();
+        if (this.#SCLogGathering.decided && buffer.length >= this.#SCLogGathering.batchSize && this.#logUploadConsented()) {
+            this.#flushLogBuffer(true);
         }
     }
 
     /**
-     * Tells whether the gathered lines may leave the device. Gathered lines quote what the SDK was
-     * called with, so a batch can carry event keys, segmentation, user profile properties and view
-     * names. Per line attribution is not workable here: every line comes through one #log call that
-     * carries no feature, so the whole upload is gated on the broadest check instead.
-     * @returns {Boolean} true when consent covers the data a gathered batch may carry
+     * Tells whether gathered lines may be uploaded. A gathered line can quote event keys, segmentation,
+     * view names and user properties, so when consent is required both the events and the users consent
+     * have to be given.
+     * @returns {Boolean} true when gathered lines may be uploaded
      */
     #logUploadConsented = () => {
-        return this.check_consent(featureEnums.EVENTS) && this.check_consent(featureEnums.USERS);
+        if (!this.#SCEnableConsentRequired) {
+            return true;
+        }
+        // not check_consent: it logs, and logging from the capture path would recurse
+        var events = this.#consents[featureEnums.EVENTS];
+        var users = this.#consents[featureEnums.USERS];
+        return !!(events && events.optin && users && users.optin);
     }
 
     /**
-     * Move one batch of gathered log lines into the request queue. A batch the queue refuses goes back to the front of the buffer.
+     * Move the gathered log lines into the request queue in batches, while the events and users consent allow it.
+     * Lines are held, not dropped, while that consent is missing. A batch the queue refuses goes back to the front of the buffer.
+     * @param {Boolean} fullBatchesOnly - true to leave a partial batch for a later flush
      */
-    #flushLogBuffer = () => {
+    #flushLogBuffer = (fullBatchesOnly) => {
         // uploading enqueues a request, the request code logs and logging comes back here
         if (this.#logCaptureInProgress) {
             return;
@@ -7469,24 +7474,22 @@ class CountlyClass {
         }
         this.#logCaptureInProgress = true;
         try {
+            this.#lastLogFlushTime = Date.now();
             if (!this.#logUploadConsented()) {
-                // the lines are held, not dropped: consent may still arrive, and nothing else leaves the device either
-                this.#lastLogFlushTime = Date.now();
-                if (!this.#logUploadBlocked) {
-                    this.#logUploadBlocked = true;
-                    this.#log(logLevelEnums.DEBUG, "flushLogBuffer, No events and users consent, holding the gathered lines instead of uploading them");
-                }
+                this.#log(logLevelEnums.DEBUG, "flushLogBuffer, Events or users consent is not given, keeping [" + buffer.length + "] gathered lines buffered");
                 return;
             }
-            this.#logUploadBlocked = false;
-            var batch = buffer.splice(0, state.batchSize);
-            var dropped = this.#logBufferDropped;
-            this.#logBufferDropped = 0;
-            this.#lastLogFlushTime = Date.now();
-            this.#log(logLevelEnums.INFO, "flushLogBuffer, Sending [" + batch.length + "] gathered log lines, [" + buffer.length + "] still buffered, [" + dropped + "] dropped");
-            if (!this.#toRequestQueue({ sdk_logs: JSON.stringify({ i: state.gatherId, d: dropped, l: batch }) })) {
-                buffer.unshift(...batch);
-                this.#logBufferDropped += dropped;
+            var minimumLines = fullBatchesOnly ? state.batchSize : 1;
+            while (buffer.length >= minimumLines) {
+                var batch = buffer.splice(0, state.batchSize);
+                var dropped = this.#logBufferDropped;
+                this.#logBufferDropped = 0;
+                this.#log(logLevelEnums.INFO, "flushLogBuffer, Sending [" + batch.length + "] gathered log lines, [" + buffer.length + "] still buffered, [" + dropped + "] dropped");
+                if (!this.#toRequestQueue({ sdk_logs: JSON.stringify({ i: state.gatherId, d: dropped, l: batch }) })) {
+                    buffer.unshift(...batch);
+                    this.#logBufferDropped += dropped;
+                    return;
+                }
             }
         }
         finally {
