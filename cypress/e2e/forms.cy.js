@@ -54,6 +54,27 @@ describe("Form tracking", () => {
         });
     });
 
+    it("records only that the form was sent when field values are turned off", () => {
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                test_mode: true,
+                test_mode_eq: true,
+                debug: true,
+                track_form_values: false
+            });
+            var container = formIn("<input name='city' value='Berlin'><select name='size'><option value='m' selected>M</option></select><textarea name='note'>leave at the door</textarea>");
+            Countly.track_forms(container);
+            submit(container);
+            var segmentation = formSubmitSegmentation();
+            expect(Object.keys(segmentation).filter((key) => key.indexOf("input:") === 0)).to.deep.equal([]);
+            expect(segmentation.id).to.equal("checkout");
+            expect(segmentation.action).to.equal("/buy");
+            container.remove();
+        });
+    });
+
     it("never reads a password, also one the visitor revealed", () => {
         hp.haltAndClearStorage(() => {
             initMain();

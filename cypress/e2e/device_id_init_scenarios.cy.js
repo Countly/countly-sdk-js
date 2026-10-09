@@ -384,6 +384,18 @@ describe("Device Id tests during first init", ()=>{
             setURLCheck("someID");
         });
     });
+    it("4b-SDK is initialized with an encoded utm device id and uses it as it was before encoding", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain(undefined, false, "?cly_device_id=john%2Btest%40mail.com%26x%3Dy");
+            setURLCheck("john+test@mail.com&x=y");
+        });
+    });
+    it("4c-SDK is initialized with a utm device id that is not encoded and keeps it as it is", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain(undefined, false, "?cly_device_id=john+test@mail.com=1");
+            setURLCheck("john+test@mail.com=1");
+        });
+    });
     it("5-SDK is initialized with custom device id, with offline mode, without utm device id", ()=>{
         hp.haltAndClearStorage(() => {
             initMain("customID", true, undefined);
@@ -2022,6 +2034,58 @@ describe("Device Id tests during first init", ()=>{
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
                 });
+            });
+        });
+    });
+});
+
+describe("Requests queued under a temporary device ID", () => {
+    function seedTemporaryIdSession() {
+        cy.setLocalStorage("YOUR_APP_KEY/cly_id", "[CLY]_temp_id");
+        cy.setLocalStorage("YOUR_APP_KEY/cly_queue", JSON.stringify([{ app_key: "YOUR_APP_KEY", device_id: "[CLY]_temp_id", t: DeviceIdTypeInternalEnumsTest.TEMPORARY_ID, events: JSON.stringify([{ key: "while_temporary", count: 1 }]) }]));
+        return cy.setLocalStorage("YOUR_APP_KEY/cly_id_type", DeviceIdTypeInternalEnumsTest.TEMPORARY_ID);
+    }
+    function queuedWhileTemporary() {
+        return Countly._internals.getLocalQueues().requestQ.filter((r) => r.events && r.events.indexOf("while_temporary") !== -1);
+    }
+    function initWithoutSending(deviceId, clear) {
+        Countly.init({ app_key: "YOUR_APP_KEY", url: "https://d.count.ly", device_id: deviceId, clear_stored_id: clear, test_mode: true, debug: true, getSearchQuery: () => "" });
+    }
+
+    it("are sent with the device ID the SDK starts with", () => {
+        hp.haltAndClearStorage(() => {
+            seedTemporaryIdSession().then(() => {
+                initWithoutSending("realID");
+                var queued = queuedWhileTemporary();
+                expect(queued.length).to.eq(1);
+                expect(queued[0].device_id).to.eq("realID");
+                expect(queued[0].t).to.eq(DeviceIdTypeInternalEnumsTest.DEVELOPER_SUPPLIED);
+                cy.getLocalStorage("YOUR_APP_KEY/cly_queue").then((stored) => {
+                    expect(JSON.parse(stored)[0].device_id).to.eq("realID");
+                });
+            });
+        });
+    });
+    it("are sent with the generated device ID when the stored one is cleared", () => {
+        hp.haltAndClearStorage(() => {
+            seedTemporaryIdSession().then(() => {
+                initWithoutSending(undefined, true);
+                var queued = queuedWhileTemporary();
+                expect(queued.length).to.eq(1);
+                validateSdkGeneratedId(queued[0].device_id);
+                expect(queued[0].device_id).to.eq(Countly.get_device_id());
+                expect(queued[0].t).to.eq(DeviceIdTypeInternalEnumsTest.SDK_GENERATED);
+            });
+        });
+    });
+    it("keep the temporary ID while the SDK stays in temporary ID mode", () => {
+        hp.haltAndClearStorage(() => {
+            seedTemporaryIdSession().then(() => {
+                initWithoutSending(undefined);
+                expect(Countly.get_device_id()).to.eq("[CLY]_temp_id");
+                var queued = queuedWhileTemporary();
+                expect(queued.length).to.eq(1);
+                expect(queued[0].device_id).to.eq("[CLY]_temp_id");
             });
         });
     });

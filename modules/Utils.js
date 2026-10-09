@@ -149,6 +149,30 @@ function prepareParams(params, salt) {
 }
 
 /**
+ *  Gives the fields of a multipart request with their plain values, in the order the checksum is calculated
+ *  @memberof Countly._internals
+ *  @param {Object} params - key value object of the fields
+ *  @param {String} salt - salt to sign the fields with, if any
+ *  @returns {Promise<Array>} [key, value] pairs, the checksum last when there is a salt
+ */
+function prepareFormFields(params, salt) {
+    var fields = [];
+    var keys = Object.keys(params || {}).sort();
+    for (var k = 0; k < keys.length; k++) {
+        fields.push([keys[k], String(params[keys[k]])]);
+    }
+    if (salt) {
+        // the server signs the plain field values again, as key=value pairs joined with "&"
+        var data = fields.map((field) => field[0] + "=" + field[1]).join("&");
+        return calculateChecksum(data, salt).then(checksum => {
+            fields.push(["checksum256", checksum.toUpperCase()]);
+            return fields;
+        });
+    }
+    return Promise.resolve(fields);
+}
+
+/**
  *  Removing trailing slashes
  *  @memberof Countly._internals
  *  @param {String} str - string from which to remove trailing slash
@@ -988,6 +1012,7 @@ export {
     getConfig,
     dispatchErrors,
     prepareParams,
+    prepareFormFields,
     stripTrailingSlash,
     createNewObjectFromProperties,
     addNewProperties,

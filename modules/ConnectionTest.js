@@ -27,9 +27,9 @@ function buildProbeUrl(baseUrl, path) {
  */
 var CT_DETAIL = {
     TIMEOUT: "Expected an answer within " + (CT_PROBE_TIMEOUT / 1000) + "s, but the request never completed.",
-    TRANSPORT: "Expected the server to answer, but the connection failed before any response arrived (DNS, TLS, certificate pinning, or the request was blocked).",
+    TRANSPORT: "Expected the server to answer, but no readable answer arrived: the connection failed (DNS, TLS, certificate pinning), or a firewall or proxy blocked the request or answered without Countly's CORS headers.",
     REDIRECTED_HIDDEN: "Expected a direct answer from Countly, but the request was redirected away; the browser hides the redirect status.",
-    OPAQUE: "Reachable, but the response arrived without Countly's CORS headers, so something between the device and the server is stripping or rewriting them. The status could not be read.",
+    OPAQUE: "Reachable, but the answer could not be read: it arrived without Countly's CORS headers, so a firewall or proxy between the device and the server may be removing or rewriting them.",
     NOT_RUN: "Not run, because the battery deadline elapsed before this row was reached."
 };
 
@@ -92,14 +92,15 @@ function gradeProbe(outcome, opts) {
 /**
  * Fold the probes of a multi-path row into the single row the report carries.
  * Each path is a separate nginx location that can be blocked on its own, so the row
- * is only reachable when every one of them answered.
+ * is only reachable when every one of them answered, and it keeps the opaque qualifier
+ * when any of them could only be reached opaquely.
  * @param {Array} results - graded probes, each {ok, st, ms} plus optional {e}
  * @returns {Object} combined row {ok, st, ms, n} plus optional {e}
  */
 function combineRow(results) {
     var firstFailure = null;
     var total = 0;
-    var allOpaque = true;
+    var anyOpaque = false;
 
     for (var i = 0; i < results.length; i++) {
         var result = results[i];
@@ -107,8 +108,8 @@ function combineRow(results) {
         if (!result.ok && !firstFailure) {
             firstFailure = result;
         }
-        if (result.e !== CT_DETAIL.OPAQUE) {
-            allOpaque = false;
+        if (result.e === CT_DETAIL.OPAQUE) {
+            anyOpaque = true;
         }
     }
 
@@ -121,7 +122,7 @@ function combineRow(results) {
     if (firstFailure) {
         row.e = firstFailure.e;
     }
-    else if (allOpaque) {
+    else if (anyOpaque) {
         row.e = CT_DETAIL.OPAQUE;
     }
     return row;
@@ -203,8 +204,10 @@ function toReportRow(f, result) {
 function probePath(ctx, row, path) {
     var url = buildProbeUrl(ctx.url, path);
     var mayFallBack = row.tier === 2 && ctx.tier2 === "cors-first";
+    // the SDK calls the Tier 1 routes itself, with its headers; the browser loads the Tier 2 pages and images without them
+    var headers = row.tier === 1 ? ctx.headers : undefined;
 
-    return ctx.probe(url, { mode: "cors" }).then((first) => {
+    return ctx.probe(url, { mode: "cors", headers: headers }).then((first) => {
         if (!first.rejected || !mayFallBack) {
             return first;
         }
@@ -251,8 +254,9 @@ function runRow(ctx, row) {
  * Run the connection test battery once and build the report.
  * Probes are sequential and carry no identity, so nothing here depends on consent
  * and nothing the server does with them can write.
- * @param {Object} ctx - {url, sdkName, sdkVersion, sc: {status, ms}, probe, tier2, now}
+ * @param {Object} ctx - {url, sdkName, sdkVersion, sc: {status, ms}, probe, tier2, now, headers}
  *                       where probe(url, opts) resolves to an outcome carrying its own ms,
+ *                       headers are the init headers the SDK sends with its own requests,
  *                       tier2 is "cors-first" or "unsupported", and the optional now() replaces Date.now for the deadline
  * @returns {Promise} resolves to the ct_results report object
  */
@@ -322,11 +326,12 @@ function capReport(report) {
 /**
  * Issue one probe: a bare GET carrying no app_key, no device_id and no payload, so the
  * server rejects it on its first validation check without ever reaching application work.
- * No request headers are set, because a non-safelisted header would turn this into a
- * preflighted request that these endpoints do not answer.
+ * Only the given headers are set, so a probe meets the same gateway rules and preflight
+ * as the SDK's own requests to that route.
  * @param {String} url - absolute probe URL
  * @param {Object} opts - {mode} "cors" for a readable status, "no-cors" for an opaque
- *                        fallback when the CORS attempt was rejected
+ *                        fallback when the CORS attempt was rejected, and {headers} for a
+ *                        CORS probe
  * @returns {Promise} resolves to an outcome object carrying its own ms
  */
 function probeViaFetch(url, opts) {
@@ -363,6 +368,9 @@ function probeViaFetch(url, opts) {
     else {
         init.mode = "cors";
         init.redirect = "manual";
+        if (opts && opts.headers) {
+            init.headers = opts.headers;
+        }
     }
 
     var request = fetch(target, init).then((response) => {

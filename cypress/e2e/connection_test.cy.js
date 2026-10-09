@@ -80,7 +80,7 @@ describe("Connection test grading", () => {
         expect(ct.gradeProbe({ rejected: true })).to.deep.equal({
             ok: false,
             st: 0,
-            e: "Expected the server to answer, but the connection failed before any response arrived (DNS, TLS, certificate pinning, or the request was blocked)."
+            e: "Expected the server to answer, but no readable answer arrived: the connection failed (DNS, TLS, certificate pinning), or a firewall or proxy blocked the request or answered without Countly's CORS headers."
         });
     });
 
@@ -163,6 +163,14 @@ describe("Connection test multi-path rows", () => {
             { ok: true, st: 0, ms: 20, e: ct.CT_DETAIL.OPAQUE }
         ]);
         expect(row).to.deep.equal({ ok: true, st: 0, ms: 30, n: 2, e: ct.CT_DETAIL.OPAQUE });
+    });
+
+    it("keeps the opaque qualifier when only some paths were probed opaquely", () => {
+        var row = ct.combineRow([
+            { ok: true, st: 400, ms: 10 },
+            { ok: true, st: 0, ms: 20, e: ct.CT_DETAIL.OPAQUE }
+        ]);
+        expect(row).to.deep.equal({ ok: true, st: 400, ms: 30, n: 2, e: ct.CT_DETAIL.OPAQUE });
     });
 
     it("prefers the failing path's reason over the opaque qualifier", () => {
@@ -558,7 +566,12 @@ describe("Connection test Tier 2 CORS-first policy", () => {
     });
 
     it("reads the opaque fallback as middlebox interference, not a browser limitation", () => {
-        expect(ct.CT_DETAIL.OPAQUE).to.equal("Reachable, but the response arrived without Countly's CORS headers, so something between the device and the server is stripping or rewriting them. The status could not be read.");
+        expect(ct.CT_DETAIL.OPAQUE).to.equal("Reachable, but the answer could not be read: it arrived without Countly's CORS headers, so a firewall or proxy between the device and the server may be removing or rewriting them.");
+    });
+
+    it("names a firewall or proxy, not only DNS or TLS, when no readable answer arrived", () => {
+        expect(ct.CT_DETAIL.TRANSPORT).to.contain("firewall or proxy");
+        expect(ct.CT_DETAIL.TRANSPORT).to.contain("DNS");
     });
 
     it("reports a transport error when the fallback is rejected as well", () => {
@@ -581,6 +594,80 @@ describe("Connection test Tier 2 CORS-first policy", () => {
             expect(pings.length, "a Tier 1 rejection is a real failure, not a CORS problem").to.equal(1);
             expect(rowOf(report, "core")).to.deep.equal({
                 f: "core", ok: false, st: 0, ms: 6, e: ct.CT_DETAIL.TRANSPORT
+            });
+        });
+    });
+});
+
+describe("Connection test custom headers", () => {
+    var tier2Paths = ["/feedback/nps", "/feedback/survey", "/feedback/rating", "/surveys/images/", "/star-rating/images/", "/_external/content/"];
+
+    function isTier2(url) {
+        return tier2Paths.some((path) => url.indexOf("https://x.com/countly" + path) === 0);
+    }
+
+    it("sends the init headers with the probes of the routes the SDK calls, not with page and image probes", () => {
+        var seen = [];
+        var probe = (url, opts) => {
+            seen.push({ url: url, headers: opts && opts.headers });
+            return Promise.resolve({ status: 400, ms: 1 });
+        };
+        return ct.runConnectionTest(baseContext({ tier2: "cors-first", headers: { "X-Gateway-Key": "k1" }, probe: probe })).then(() => {
+            var apiProbes = seen.filter((c) => !isTier2(c.url));
+            expect(apiProbes.length).to.equal(10);
+            apiProbes.forEach((c) => expect(c.headers, c.url).to.deep.equal({ "X-Gateway-Key": "k1" }));
+            seen.filter((c) => isTier2(c.url)).forEach((c) => expect(c.headers, c.url).to.equal(undefined));
+        });
+    });
+
+    it("puts the given headers on a CORS probe and none on an opaque one", () => {
+        var inits = [];
+        var savedFetch = window.fetch;
+        window.fetch = (url, init) => {
+            inits.push(init);
+            return Promise.resolve(new Response("{}", { status: 400 }));
+        };
+        var probes;
+        try {
+            probes = Promise.all([
+                ct.probeViaFetch("https://test.count.ly/o/ping", { mode: "cors", headers: { "X-Gateway-Key": "k1" } }),
+                ct.probeViaFetch("https://test.count.ly/feedback/nps", { mode: "no-cors" })
+            ]);
+        }
+        finally {
+            window.fetch = savedFetch;
+        }
+        return probes.then(() => {
+            expect(inits[0].headers).to.deep.equal({ "X-Gateway-Key": "k1" });
+            expect(inits[1].headers).to.equal(undefined);
+        });
+    });
+
+    it("probes with the headers given at init", () => {
+        var pingHeaders = [];
+        cy.intercept("OPTIONS", "https://test.count.ly/**", { statusCode: 204, headers: { "access-control-allow-origin": "*", "access-control-allow-headers": "x-gateway-key", "access-control-allow-methods": "GET, POST, OPTIONS" } });
+        cy.intercept("GET", "https://test.count.ly/**", (req) => {
+            if (req.url.indexOf("/o/ping") !== -1) {
+                pingHeaders.push(req.headers["x-gateway-key"]);
+            }
+            req.reply({ statusCode: 400, headers: { "access-control-allow-origin": "*" }, body: { result: "Missing parameter" } });
+        });
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: hp.appKey,
+                url: "https://test.count.ly",
+                test_mode: true,
+                debug: true,
+                headers: { "X-Gateway-Key": "k1" },
+                fake_request_handler: function(req) {
+                    if (req.functionName === "server_config") {
+                        return { status: 200, responseText: JSON.stringify({ v: 2, t: 1786273877636, c: {}, ct: 1 }) };
+                    }
+                    return { status: 200, responseText: '{"result":"Success"}' };
+                }
+            });
+            cy.wait(3000).then(() => {
+                expect(pingHeaders).to.deep.equal(["k1"]);
             });
         });
     });
