@@ -16,6 +16,7 @@ import {
     getConfig,
     dispatchErrors,
     prepareParams,
+    prepareFormFields,
     stripTrailingSlash,
     createNewObjectFromProperties,
     addNewProperties,
@@ -59,8 +60,10 @@ class CountlyClass {
     #crashLogs;
     #timedEvents;
     #ignoreReferrers;
+    #trackFormValues;
     #crashSegments;
     #autoExtend;
+    #autoSessionTracking;
     #lastBeat;
     #storedDuration;
     #lastView;
@@ -96,6 +99,9 @@ class CountlyClass {
     #inContentZone;
     #contentZoneWanted;
     #contentZoneTimer;
+    #contentZoneEntryTimer;
+    #contentMessageListener;
+    #contentResizeListener;
     #contentIframeID;
     #crashFilterCallback;
     #serverConfigCache;
@@ -197,6 +203,7 @@ class CountlyClass {
         this.#timedEvents = {};
         this.#crashSegments = null;
         this.#autoExtend = true;
+        this.#autoSessionTracking = false;
         this.#lastBeat;
         this.#storedDuration = 0;
         this.#lastView = null;
@@ -227,6 +234,9 @@ class CountlyClass {
         this.#inContentZone = false;
         this.#contentZoneWanted = false;
         this.#contentZoneTimer = null;
+        this.#contentZoneEntryTimer = null;
+        this.#contentMessageListener = null;
+        this.#contentResizeListener = null;
         this.#contentIframeID = "cly-content-iframe";
         this.#crashFilterCallback = null;
         this.#SCNetwork = true;
@@ -295,13 +305,6 @@ class CountlyClass {
             this.#log(logLevelEnums.ERROR, "Local storage test failed, Halting local storage support: " + e);
             this.#lsSupport = false;
         }
-
-        this.#serverConfigCache = this.#getValueFromStorage("cly_config");
-        if (!this.#serverConfigCache) {
-            this.#serverConfigCache = getConfig("behavior_settings", ob, {});
-            this.#setValueInStorage("cly_config", JSON.stringify(this.#serverConfigCache));
-        }
-        this.#populateServerConfig(this.#serverConfigCache);
 
         // create object to store consents
         this.#consents = {};
@@ -519,6 +522,7 @@ class CountlyClass {
             // the Tier 2 routes send no CORS headers, so a browser can only reach them
             // opaquely; elsewhere they are irrelevant
             tier2: isBrowser ? "cors-first" : "unsupported",
+            headers: this.headers,
             probe: probeViaFetch
         }).then((report) => {
             this.#connectionTestRunning = false;
@@ -661,6 +665,7 @@ class CountlyClass {
      */
     #initialize = (ob) => {
         this.#ignoreReferrers = getConfig("ignore_referrers", ob, []);
+        this.#trackFormValues = getConfig("track_form_values", ob, true);
         this.#failTimeoutAmount = getConfig("fail_timeout", ob, configurationDefaultValues.FAIL_TIMEOUT_AMOUNT);
         this.#inactivityTime = getConfig("inactivity_time", ob, configurationDefaultValues.INACTIVITY_TIME);
         this.#useSessionCookie = getConfig("use_session_cookie", ob, true);
@@ -721,6 +726,13 @@ class CountlyClass {
         if (this.storage === "cookie") {
             this.#lsSupport = false;
         }
+
+        this.#serverConfigCache = this.#getValueFromStorage("cly_config");
+        if (!this.#serverConfigCache) {
+            this.#serverConfigCache = getConfig("behavior_settings", ob, {});
+            this.#setValueInStorage("cly_config", JSON.stringify(this.#serverConfigCache));
+        }
+        this.#populateServerConfig(this.#serverConfigCache);
 
         if (!this.rcAutoOptinAb && !this.useExplicitRcApi) {
             this.#log(logLevelEnums.WARNING, "initialize, Auto opting is disabled, switching to explicit RC API");
@@ -980,6 +992,9 @@ class CountlyClass {
         if (this.#sessionCookieTimeout !== configurationDefaultValues.SESSION_COOKIE_TIMEOUT) {
             this.#log(logLevelEnums.DEBUG, "initialize, session_cookie_timeout set to:[" + this.#sessionCookieTimeout + "] minutes to expire a cookies session");
         }
+        if (!this.#trackFormValues) {
+            this.#log(logLevelEnums.DEBUG, "initialize, track_form_values set to:[false], form submissions are recorded without field values");
+        }
 
         var deviceIdParamValue = null;
         var searchQuery = this.getSearchQuery();
@@ -991,8 +1006,18 @@ class CountlyClass {
                 searchQuery = searchQuery.substring(1);
             };
             var parts = searchQuery.split("&");
+            // a "+" stays as it is, as links carrying device IDs are often built without encoding
+            var decodeQueryPart = (part) => {
+                try {
+                    return decodeURIComponent(part);
+                }
+                catch (ex) {
+                    return part;
+                }
+            };
             for (var i = 0; i < parts.length; i++) {
-                var nv = parts[i].split("=");
+                var separatorIndex = parts[i].indexOf("=");
+                var nv = separatorIndex === -1 ? [decodeQueryPart(parts[i])] : [decodeQueryPart(parts[i].substring(0, separatorIndex)), decodeQueryPart(parts[i].substring(separatorIndex + 1))];
                 if (nv[0] === "cly_id") {
                     this.#setValueInStorage("cly_cmp_id", nv[1]);
                 }
@@ -1074,6 +1099,9 @@ class CountlyClass {
         // Store the device ID and device ID type
         this.#setValueInStorage("cly_id", this.device_id);
         this.#setValueInStorage("cly_id_type", this.#deviceIdType);
+        if (this.device_id !== "[CLY]_temp_id") {
+            this.#giveTemporaryIdRequestsToCurrentId();
+        }
 
         if (idBeforeClear && idBeforeClear.id !== this.device_id) {
             var pushWasInUse = this.#isPushConfigured();
@@ -2069,6 +2097,23 @@ class CountlyClass {
         }
     };
 
+    /**
+     *  Moves the requests queued under the temporary device ID to the current device ID
+     */
+    #giveTemporaryIdRequestsToCurrentId = () => {
+        var changed = false;
+        for (var i = 0; i < this.#requestQueue.length; i++) {
+            if (this.#requestQueue[i].device_id === "[CLY]_temp_id") {
+                this.#requestQueue[i].device_id = this.device_id;
+                this.#requestQueue[i].t = this.#deviceIdType;
+                changed = true;
+            }
+        }
+        if (changed) {
+            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        }
+    };
+
     enable_offline_mode = () => {
         if (this.#offlineMode) {
             this.#log(logLevelEnums.WARNING, "enable_offline_mode, Countly is already in offline mode.");
@@ -2115,19 +2160,7 @@ class CountlyClass {
                 this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.SDK_GENERATED);
             }
         }
-        var needResync = false;
-        if (this.#requestQueue.length > 0) {
-            for (var i = 0; i < this.#requestQueue.length; i++) {
-                if (this.#requestQueue[i].device_id === "[CLY]_temp_id") {
-                    this.#requestQueue[i].device_id = this.device_id;
-                    this.#requestQueue[i].t = this.#deviceIdType;
-                    needResync = true;
-                }
-            }
-        }
-        if (needResync) {
-            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
-        }
+        this.#giveTemporaryIdRequestsToCurrentId();
         if (leavingUser) {
             this.#handlePushOnDeviceIdChange(false);
         }
@@ -2237,7 +2270,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "end_session, Ending the current session. There was an on going session:[" + this.#sessionStarted + "]");
         if (this.check_consent(featureEnums.SESSIONS)) {
             if (this.#sessionStarted) {
-                sec = sec || getTimestamp() - this.#lastBeat;
+                sec = sec || (this.#trackTime ? getTimestamp() - this.#lastBeat : this.#storedDuration);
                 this.#reportViewDuration();
                 if (!this.#useSessionCookie || force) {
                     this.#log(logLevelEnums.INFO, "end_session, Session ended");
@@ -2300,6 +2333,8 @@ class CountlyClass {
             this.#sendEventsForced();
             // end current session
             this.end_session(null, true);
+            // the previous user's session cookie must not let the next user continue that session
+            this.#removeValueFromStorage("cly_session");
             // clear timed events
             this.#timedEvents = {};
             // clear all consents
@@ -2319,8 +2354,8 @@ class CountlyClass {
             // no consent check here since 21.11.0
             this.#toRequestQueue({ old_device_id: oldId });
         }
-        else {
-            // start new session for new ID TODO: check this when no session tracking is enabled
+        else if (this.#autoSessionTracking) {
+            // only automatic session tracking starts a session for the new ID, manual sessions are left to the developer
             this.begin_session(!this.#autoExtend, true);
         }
         this.#handlePushOnDeviceIdChange(merge, oldId);
@@ -3203,12 +3238,15 @@ class CountlyClass {
 
     /**
      * Trigger journey content request with retry mechanism
-     * Retries up to 3 times if the content request fails
+     * Waits up to 3 times for the journey events to be confirmed sent, then retries up to 3 times if the content request fails
      * @private
      * @param {number} [attempt=0] - Current attempt number for retry logic
+     * @param {number} [waits=0] - How many times the request already waited for the journey events
      */
-    #triggerJourneyContentRequestWithRetries = (attempt) => {
+    #triggerJourneyContentRequestWithRetries = (attempt, waits) => {
         var currentAttempt = attempt || 0;
+        var currentWaits = waits || 0;
+        var maxAttempts = 3;
 
         // Skip if content is already being displayed (iframe exists)
         if (typeof document !== "undefined" && document.getElementById(this.#contentIframeID)) {
@@ -3217,18 +3255,22 @@ class CountlyClass {
         }
 
         if (this.#journeyPendingEventIds && this.#journeyPendingEventIds.size > 0) {
-            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Pending journey events not yet confirmed sent. Deferring content refresh.");
-            setTimeout(() => {
-                this.#triggerJourneyContentRequestWithRetries(currentAttempt);
-            }, 300);
-            return;
+            if (currentWaits < maxAttempts) {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, Pending journey events not yet confirmed sent. Deferring content refresh.");
+                setTimeout(() => {
+                    this.#triggerJourneyContentRequestWithRetries(currentAttempt, currentWaits + 1);
+                }, 300);
+                return;
+            }
+            // events sent by the regular sending or by another tab are never confirmed here, so waiting longer would not help
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Journey events are still not confirmed sent, requesting the content anyway");
+            this.#journeyPendingEventIds.clear();
         }
 
-        var maxAttempts = 3;
         var handleResult = (success) => {
             if (!success && currentAttempt + 1 < maxAttempts) {
                 setTimeout(() => {
-                    this.#triggerJourneyContentRequestWithRetries(currentAttempt + 1);
+                    this.#triggerJourneyContentRequestWithRetries(currentAttempt + 1, currentWaits);
                 }, 1000);
             }
         };
@@ -3845,12 +3887,23 @@ class CountlyClass {
             request.metrics = JSON.stringify(this.#getMetrics());
         }
         if (this.check_consent(featureEnums.REMOTE_CONFIG)) {
+            if (!this.#SCNetwork) {
+                this.#log(logLevelEnums.WARNING, "fetch_remote_config_explicit, Networking is disabled by the SDK behavior settings");
+                if (providedCall) {
+                    providedCall(new Error("Networking is disabled by the SDK behavior settings"), this.#remoteConfigs);
+                }
+                return;
+            }
             this.#prepareRequest(request);
             this.#makeNetworkRequest("fetch_remote_config_explicit", this.url + this.#readPath, request, (err, params, responseText) => {
                 if (err) {
                     // error has been logged by the request function
+                    if (providedCall) {
+                        providedCall(new Error("Remote config could not be fetched"), this.#remoteConfigs);
+                    }
                     return;
                 }
+                var parseError = false;
                 try {
                     var configs = JSON.parse(responseText);
                     if (request.keys || request.omit_keys) {
@@ -3867,10 +3920,11 @@ class CountlyClass {
                 }
                 catch (ex) {
                     this.#log(logLevelEnums.ERROR, "fetch_remote_config_explicit, Had an issue while parsing the response: " + ex);
+                    parseError = new Error("Remote config answer could not be read");
                 }
                 if (providedCall) {
                     this.#log(logLevelEnums.INFO, "fetch_remote_config_explicit, Callback function is provided");
-                    providedCall(err, this.#remoteConfigs);
+                    providedCall(parseError || err, this.#remoteConfigs);
                 }
                 // JSON array can pass    
             }, true);
@@ -3963,6 +4017,7 @@ class CountlyClass {
             return;
         }
         this.#log(logLevelEnums.INFO, "track_session, Starting tracking user session");
+        this.#autoSessionTracking = true;
         // start session
         this.begin_session();
         this.#start_time();
@@ -4177,6 +4232,7 @@ class CountlyClass {
             }, this.#currentViewId);
             this.#lastView = page;
             this.#lastViewTime = getTimestamp();
+            this.#lastViewStoredDuration = 0;
             this.#log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + this.#lastView + "]");
         }
         else {
@@ -4329,6 +4385,9 @@ class CountlyClass {
             this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Browser environment required.");
             return;
         }
+        if (!this.check_consent(featureEnums.USERS)) {
+            return;
+        }
         if (!imageFile || typeof imageFile !== "object" || !imageFile.type || imageFile.type.indexOf("image") !== 0) {
             this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Provided file is not an image.");
             return;
@@ -4448,7 +4507,7 @@ class CountlyClass {
     };
 
     /**
-    * Generate custom event for all forms that were submitted on this page. Password, payment card and one-time code fields and card numbers are never read. Fields named like secrets, bank or identity data and values shaped like a social security number are skipped unless the field has the cly_form_allow class. Add cly_user_ignore class to a field or to an element containing fields to skip them.
+    * Generate custom event for all forms that were submitted on this page. With the track_form_values init option set to false, the event carries no field values. Password, payment card and one-time code fields and card numbers are never read. Fields named like secrets, bank or identity data and values shaped like a social security number are skipped unless the field has the cly_form_allow class. Add cly_user_ignore class to a field or to an element containing fields to skip them.
     * @param {Object=} parent - DOM object which children to track, by default it is document body
     * @param {boolean=} trackHidden - provide true to also track hidden inputs, default false
     * */
@@ -4457,7 +4516,7 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "track_forms, window object is not available. Not tracking forms.");
             return;
         }
-        this.#log(logLevelEnums.INFO, "track_forms, Starting to track form submissions. DOM object provided:[" + (!!parent) + "] Tracking hidden inputs :[" + (!!trackHidden) + "]");
+        this.#log(logLevelEnums.INFO, "track_forms, Starting to track form submissions. DOM object provided:[" + (!!parent) + "] Tracking hidden inputs :[" + (!!trackHidden) + "] Recording field values:[" + this.#trackFormValues + "]");
         parent = parent || document;
         this.#watchPasswordFields(parent);
         /**
@@ -4484,7 +4543,7 @@ class CountlyClass {
 
             // get input values
             var input;
-            if (typeof form.elements !== "undefined") {
+            if (this.#trackFormValues && typeof form.elements !== "undefined") {
                 for (var i = 0; i < form.elements.length; i++) {
                     input = form.elements[i];
                     if (!input || this.#neverReadField(input) || this.#ignoredByMarkup(input)) {
@@ -4904,11 +4963,12 @@ class CountlyClass {
         var eventKey;
         if (type === "nps") {
             if (widgetResult) {
-                if (!widgetResult.rating) {
+                var npsScore = parseFloat(widgetResult.rating);
+                if (isNaN(npsScore)) {
                     this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
                     return;
                 }
-                widgetResult.rating = Math.round(widgetResult.rating);
+                widgetResult.rating = Math.round(npsScore);
                 if (widgetResult.rating > 10) {
                     this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 10. Changing it back to 10 now.");
                     widgetResult.rating = 10;
@@ -5424,13 +5484,13 @@ class CountlyClass {
                 feedbackWidgetFamily = "surveys";
             }
 
-            url += "?widget_id=" + presentableFeedback._id;
-            url += "&app_key=" + this.app_key;
-            url += "&device_id=" + this.device_id;
-            url += "&sdk_name=" + this.#sdkName;
-            url += "&platform=" + this.platform;
-            url += "&app_version=" + this.app_version;
-            url += "&sdk_version=" + this.#sdkVersion;
+            url += "?widget_id=" + encodeURIComponent(presentableFeedback._id);
+            url += "&app_key=" + encodeURIComponent(this.app_key);
+            url += "&device_id=" + encodeURIComponent(this.device_id);
+            url += "&sdk_name=" + encodeURIComponent(this.#sdkName);
+            url += "&platform=" + encodeURIComponent(this.platform);
+            url += "&app_version=" + encodeURIComponent(this.app_version);
+            url += "&sdk_version=" + encodeURIComponent(this.#sdkVersion);
             var customObjectToSendWithTheWidget = {};
             customObjectToSendWithTheWidget.tc = 1; // indicates SDK supports opening links from the widget in a new tab
             if (feedbackWidgetSegmentation) {
@@ -5439,10 +5499,10 @@ class CountlyClass {
             const resInfo = this.#getResolution(true);
             customObjectToSendWithTheWidget.width = resInfo.width;
             customObjectToSendWithTheWidget.height = resInfo.height;
-            url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
+            url += "&custom=" + encodeURIComponent(JSON.stringify(customObjectToSendWithTheWidget));
             // Origin is passed to the popup so that it passes it back in the postMessage event
             // Only web SDK passes origin and web
-            url += "&origin=" + passedOrigin;
+            url += "&origin=" + encodeURIComponent(passedOrigin);
             // Pass the path prefix (if any) for reverse proxy scenarios. The server only accepts a
             // same-origin relative path, so we send just the pathname and omit it when there is none.
             var providedPath = "";
@@ -5934,6 +5994,7 @@ class CountlyClass {
         exitContentZone: () => {
             this.#contentZoneWanted = false;
             this.#exitContentZoneInternal();
+            this.#closeContentFrame();
         },
     };
 
@@ -5966,7 +6027,9 @@ class CountlyClass {
         if (!this.#initTimestamp || (getMsTimestamp() - this.#initTimestamp) < 4000 ) {
             // settimeout
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Not enough time passed since initialization");
-            setTimeout(() => {
+            clearTimeout(this.#contentZoneEntryTimer);
+            this.#contentZoneEntryTimer = setTimeout(() => {
+                this.#contentZoneEntryTimer = null;
                 this.#enterContentZoneInternal();
             }, 4001);
             return;
@@ -5995,7 +6058,8 @@ class CountlyClass {
         this.#exitContentZoneInternal();
         this.#processAsyncQueue();
         this.#sendEventsForced();
-        setTimeout(() => {
+        this.#contentZoneEntryTimer = setTimeout(() => {
+            this.#contentZoneEntryTimer = null;
             this.#enterContentZoneInternal();
         }, 1000);
     };
@@ -6006,6 +6070,10 @@ class CountlyClass {
      * @private
      */
     #exitContentZoneInternal = () => {
+        if (this.#contentZoneEntryTimer) {
+            clearTimeout(this.#contentZoneEntryTimer);
+            this.#contentZoneEntryTimer = null;
+        }
         if (!this.#inContentZone) {
             this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
             return;
@@ -6106,13 +6174,13 @@ class CountlyClass {
             }
             this.#displayContent(response);
             clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
-            // this needs to be deleted after content is closed
-            // otherwise it listens forever
-            window.addEventListener('message', (event) => {
+            this.#removeContentListeners();
+            this.#contentMessageListener = (event) => {
                 this.#interpretContentMessage(event);
-            });
+            };
+            window.addEventListener('message', this.#contentMessageListener);
             let resizeTimeout;
-            window.addEventListener('resize', () => {
+            this.#contentResizeListener = () => {
                 clearTimeout(resizeTimeout);
                 resizeTimeout = setTimeout(() => {
                     const width = window.innerWidth;
@@ -6126,7 +6194,8 @@ class CountlyClass {
                         '*'
                     );
                 }, 200);
-            });
+            };
+            window.addEventListener('resize', this.#contentResizeListener);
             finalizeContentRequest(true);
         }, true);
     };
@@ -6263,8 +6332,25 @@ class CountlyClass {
         }
     };
 
+    /**
+     *  Stops listening to the messages and the window size changes for the content that was shown
+     */
+    #removeContentListeners = () => {
+        if (this.#contentMessageListener) {
+            window.removeEventListener('message', this.#contentMessageListener);
+            this.#contentMessageListener = null;
+        }
+        if (this.#contentResizeListener) {
+            window.removeEventListener('resize', this.#contentResizeListener);
+            this.#contentResizeListener = null;
+        }
+    };
+
     #closeContentFrame = () => {
-        // we might want to remove event listeners here too but with the current implementation, it seems unnecessary
+        this.#removeContentListeners();
+        if (!isBrowser) {
+            return;
+        }
         const iframe = document.getElementById(this.#contentIframeID);
         if (iframe) {
             iframe.remove();
@@ -6318,7 +6404,7 @@ class CountlyClass {
             var iframe = document.createElement("iframe");
             iframe.name = "countly-feedback-iframe";
             iframe.id = "countly-feedback-iframe";
-            iframe.src = this.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + this.app_key + "&device_id=" + this.device_id + "&sdk_version=" + this.#sdkVersion;
+            iframe.src = this.url + "/feedback?widget_id=" + encodeURIComponent(currentWidget._id) + "&app_key=" + encodeURIComponent(this.app_key) + "&device_id=" + encodeURIComponent(this.device_id) + "&sdk_version=" + encodeURIComponent(this.#sdkVersion);
             // inject them to dom
             document.body.appendChild(wrapper);
             wrapper.appendChild(closeIcon);
@@ -7042,8 +7128,14 @@ class CountlyClass {
 
         const q = Countly.q;
         Countly.q = [];
+        // another instance leaves the main instance's calls, unaddressed ones included, for the main instance to run in their order
+        var forMainInstance = [];
         for (let i = 0; i < q.length; i++) {
             let req = q[i];
+            if (!this.#global && !this.#isForSecondaryInstance(req)) {
+                forMainInstance.push(req);
+                continue;
+            }
             this.#log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
             try {
                 if (typeof req === "function") {
@@ -7095,6 +7187,18 @@ class CountlyClass {
                 this.#log(logLevelEnums.ERROR, "processAsyncQueue, A queued call threw and was skipped: " + error);
             }
         }
+        if (forMainInstance.length > 0) {
+            Countly.q = forMainInstance.concat(Countly.q);
+        }
+    }
+
+    /**
+     * Tells whether a queued call is addressed by its app key to an instance other than the main one
+     * @param {*} req - queued call
+     * @returns {Boolean} true when the call names another instance's app key first
+     */
+    #isForSecondaryInstance = (req) => {
+        return Array.isArray(req) && typeof req[0] === "string" && req[0] !== Countly.app_key && !!Countly.i[req[0]];
     }
 
     /**
@@ -7778,14 +7882,20 @@ class CountlyClass {
      */
     #sendXmlHttpRequest = (functionName, url, params, callback, useBroadResponseValidator) => {
         useBroadResponseValidator = useBroadResponseValidator || false;
+        // a browser reports a timed out request both as done and as timed out, the caller hears of it once
+        var answered = false;
+        var answer = (...args) => {
+            if (!answered && typeof callback === "function") {
+                answered = true;
+                callback(...args);
+            }
+        };
         try {
             this.#log(logLevelEnums.DEBUG, "Sending XML HTTP request");
             var xhr = new XMLHttpRequest();
             xhr.ontimeout = () => this.#forRequest(params, () => {
                 this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
-                if (typeof callback === "function") {
-                    callback(true, params, 'timeout');
-                }
+                answer(true, params, 'timeout');
             });
             params = params || {};
             var isImage = params._forceImageUpload || (params.__imageUpload === true) || (params.imageData && (params.imageName || params.imageType));
@@ -7804,7 +7914,7 @@ class CountlyClass {
                 }
                 paramSource = filtered;
             }
-            prepareParams(paramSource, this.salt).then(saltedData => {
+            (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
                 var method = "POST";
                 if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
@@ -7861,25 +7971,21 @@ class CountlyClass {
                             isResponseValidated = this.#isResponseValid(xhr.status, xhr.responseText);
                         }
                         if (isResponseValidated) {
-                            if (typeof callback === "function") {
-                                callback(false, params, xhr.responseText);
-                            }
+                            answer(false, params, xhr.responseText);
                         }
                         else {
                             this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
                             if (functionName === "send_request_queue") {
                                 this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
                             }
-                            if (typeof callback === "function") {
-                                callback(true, params, xhr.status, xhr.responseText);
-                            }
+                            answer(true, params, xhr.status, xhr.responseText);
                         }
                     }
                 });
                 if (isImage) {
                     var formData = this.#prepareImageUploadFormData(params, saltedData);
                     if (!formData) {
-                        if (typeof callback === "function") { callback(true, params, 'invalid_formdata'); }
+                        answer(true, params, 'invalid_formdata');
                         return;
                     }
                     xhr.send(formData);
@@ -7892,17 +7998,13 @@ class CountlyClass {
                 }
             }).catch((err) => this.#forRequest(params, () => {
                 this.#log(logLevelEnums.ERROR, functionName + " Could not make the XML HTTP request: " + err);
-                if (typeof callback === "function") {
-                    callback(true, params);
-                }
+                answer(true, params);
             }));
         }
         catch (e) {
             // fallback
             this.#log(logLevelEnums.ERROR, functionName + " Something went wrong while making an XML HTTP request: " + e);
-            if (typeof callback === "function") {
-                callback(true, params);
-            }
+            answer(true, params);
         }
     }
 
@@ -7953,22 +8055,20 @@ class CountlyClass {
         }
         return null;
     }
-    #prepareImageUploadFormData = (params, saltedData) => {
+    /**
+     *  Builds the multipart body of an image upload
+     *  @param {Object} params - request params holding the image
+     *  @param {Array} fields - [key, value] pairs of the other fields, from prepareFormFields
+     *  @returns {FormData|null} the body, or null when the image can not be read
+     */
+    #prepareImageUploadFormData = (params, fields) => {
         if (!params || !params.imageData) { return null; }
         var blob = this.#createBlobFromBase64(params.imageData, params.imageType);
         if (!blob || typeof FormData === 'undefined') { return null; }
         var fd = new FormData();
         fd.append('user_details[picture]', blob, params.imageName || 'avatar');
-        if (saltedData && typeof saltedData === 'string') {
-            var pairs = saltedData.split('&');
-            for (var i = 0; i < pairs.length; i++) {
-                var pair = pairs[i];
-                if (!pair) { continue; }
-                var idx = pair.indexOf('=');
-                var key = idx >= 0 ? pair.substring(0, idx) : pair;
-                var val = idx >= 0 ? pair.substring(idx + 1) : '';
-                fd.append(key, val);
-            }
+        for (var i = 0; i < (fields || []).length; i++) {
+            fd.append(fields[i][0], fields[i][1]);
         }
         return fd;
     }
@@ -8006,8 +8106,11 @@ class CountlyClass {
                 }
                 paramSource = filtered;
             }
-            prepareParams(paramSource, this.salt).then(saltedData => {
-                if (this.force_post || saltedData.length >= 2000) {
+            (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
+                if (isImage) {
+                    method = "POST";
+                }
+                else if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
                     body = saltedData;
                 }

@@ -8,7 +8,13 @@
   * `track_forms` skips values shaped like a social security number unless the field has the `cly_form_allow` class
   * `collect_from_forms` reads hidden fields only with a `cly_user_{key}` class, and takes a phone number or an email only from a field holding one
   * the `cly_user_ignore` class now also works on an element containing fields
+* ! Minor Breaking Change ! When consent is required, `uploadUserProfilePicture` now needs the `users` consent.
+* ! Minor Breaking Change ! `change_id` without merge now starts a session for the new device ID only with `track_sessions`. With manual session calls, begin the new user's session yourself; it now always starts a new session instead of continuing the previous user's.
+* ! Minor Breaking Change ! A device ID (`cly_device_id`) or UTM tag given in the page URL is now percent-decoded, so `john%40mail.com` becomes `john@mail.com`.
+* ! Minor Breaking Change ! The remote config callback is now also called when fetching fails, with an error and the stored values.
+* ! Minor Breaking Change ! `exitContentZone` now also closes content that is on screen.
 
+* Added `track_form_values` init option for turning off the field values in the events of `track_forms` (default `true`).
 * Added web push notification support (requires a Countly server with web push support):
   * `push` consent feature for gating push notifications behind user consent
   * `enable_push_notifications` method for asking the visitor's permission and subscribing them to push notifications
@@ -37,6 +43,18 @@
 * Mitigated an issue where a request that could not be made, for example because of an invalid custom header, stopped all sending for the rest of the page without an error.
 * Mitigated an issue where unsent requests were lost on every page change with cookie storage.
 * Mitigated an issue where an event value containing `;` could break event recording on the next page with cookie storage.
+* Mitigated an issue where an NPS score of 0 reported with `reportFeedbackWidgetManually` was dropped.
+* Mitigated an issue where feedback widgets got a device ID, app version or segmentation holding characters such as `+`, `&` or `#` altered, so answers could be stored for another user.
+* Mitigated an issue where a profile picture uploaded for a device ID holding special characters was stored on a separate user.
+* Mitigated an issue where a callback, such as the one of `get_available_feedback_widgets`, could be called twice when its request timed out.
+* Mitigated an issue where requests recorded while the SDK used a temporary device ID were sent with that temporary ID when a later page started with a real device ID.
+* Mitigated an issue where the saved server configuration was read and written outside the given `namespace` and storage, and was stored even with `storage: "none"`.
+* Mitigated an issue where time the page spent in the background was counted in the session when the page was closed in the background.
+* Mitigated an issue where a view that started while the page was in the background was given the duration of the previous view.
+* Mitigated an issue where leaving the content zone during its first seconds or right after a refresh was undone shortly after.
+* Mitigated an issue where content messages were handled once for every content shown before on the page, so a click could open a link or record an event several times.
+* Mitigated an issue where journey content could stop being requested for the rest of the page after a journey event was sent by the regular sending.
+* Mitigated an issue where a call queued in `Countly.q` for the main instance could run on another instance, when that instance worked through the queue first, for example during its `user_details` call.
 
 ## 26.1.3
 

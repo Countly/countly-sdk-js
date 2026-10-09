@@ -278,3 +278,45 @@ describe("Cookie storage contents", () => {
         });
     });
 });
+
+describe("Saved SDK behavior settings", () => {
+    function initWithSettings(extra) {
+        Countly.init(Object.assign({
+            app_key: "YOUR_APP_KEY",
+            url: "https://your.domain.count.ly",
+            test_mode: true,
+            test_mode_eq: true,
+            debug: true,
+            disable_sdk_behavior_settings_updates: true
+        }, extra));
+    }
+
+    it("are not stored anywhere when storage is none", () => {
+        hp.haltAndClearStorage(() => {
+            initWithSettings({ storage: "none", behavior_settings: { c: { eqs: 5 } } });
+            var stored = Object.keys(localStorage).filter((k) => k.indexOf("cly_config") !== -1);
+            expect(stored, "saved settings in localStorage").to.deep.equal([]);
+            expect(document.cookie).to.not.contain("cly_config");
+        });
+    });
+
+    it("are read from the storage of the given namespace", () => {
+        hp.haltAndClearStorage(() => {
+            localStorage.setItem("shop/YOUR_APP_KEY/cly_config", JSON.stringify({ c: { tracking: false } }));
+            initWithSettings({ namespace: "shop" });
+            Countly.add_event({ key: "while_tracking_is_off" });
+            expect(Countly._internals.getLocalQueues().eventQ.length, "events recorded while the saved settings turn tracking off").to.equal(0);
+            expect(localStorage.getItem("YOUR_APP_KEY/cly_config"), "settings saved outside the namespace").to.equal(null);
+        });
+    });
+
+    it("are read from cookies when storage is cookie", () => {
+        hp.haltAndClearStorage(() => {
+            document.cookie = "YOUR_APP_KEY/cly_config=" + JSON.stringify({ c: { tracking: false } }) + "; path=/";
+            initWithSettings({ storage: "cookie" });
+            Countly.add_event({ key: "while_tracking_is_off" });
+            expect(Countly._internals.getLocalQueues().eventQ.length, "events recorded while the saved settings turn tracking off").to.equal(0);
+            expect(localStorage.getItem("YOUR_APP_KEY/cly_config"), "settings saved in localStorage").to.equal(null);
+        });
+    });
+});

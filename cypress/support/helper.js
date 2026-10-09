@@ -251,8 +251,8 @@ function testNormalFlowInt(rq, viewName, countlyAppKey) {
     // 9 - Session duration check
     expect(rq[8].session_duration).to.equal(30);
     
-    // 10 - End session duration check
-    expect(rq[9].session_duration).to.equal(0);
+    // 10 - End session duration check, begin and end can fall on either side of a clock second
+    expect(rq[9].session_duration).to.be.within(0, 1);
     
     // 11 - View event end
     const eleventhRequest = JSON.parse(rq[10].events);

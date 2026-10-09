@@ -52,13 +52,12 @@ describe("Remaining requests tests ", () => {
                 // Change ID
                 Countly.change_id("newID");
                 cy.fetch_local_request_queue().then((rq2) => {
-                    // We expect 4 requests in queue: begin_session, end_session, orientation and change ID
+                    // We expect the same 3 requests: the session had ended, so none starts for the new ID
                     cy.log(rq2);
-                    expect(rq2.length).to.equal(4);
+                    expect(rq2.length).to.equal(3);
                     expect(rq2[0].rr).to.equal(undefined);
                     expect(rq2[1].rr).to.equal(undefined);
                     expect(rq2[2].rr).to.equal(undefined);
-                    expect(rq2[3].rr).to.equal(undefined);
                 });
             });
         });

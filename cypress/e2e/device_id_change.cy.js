@@ -237,13 +237,11 @@ describe("Set ID change tests ", () => {
                 Countly.add_event(eventObj("2")); // record another event
                 cy.wait(500); // wait for the request to be sent
                 cy.fetch_local_request_queue().then((eq2) => {
-                    expect(eq2.length).to.equal(3); // no merge request
+                    expect(eq2.length).to.equal(2); // no merge request, and no session as none was running
                     expect(eq2[0].device_id).to.equal("old ID");
                     expect(eq2[0].events).to.contains('"key\":\"1\"');
                     expect(eq2[1].device_id).to.equal("new ID");
-                    expect(eq2[1].begin_session).to.equal(1);
-                    expect(eq2[2].device_id).to.equal("new ID");
-                    expect(eq2[2].events).to.contains('"key\":\"2\"');
+                    expect(eq2[1].events).to.contains('"key\":\"2\"');
                 });
             });
         });
@@ -316,6 +314,67 @@ describe("Device ID remote config sequencing", () => {
 
                 expect(remoteConfigRequest).to.exist;
                 expect(remoteConfigRequest.params.device_id).to.equal("new ID");
+            });
+        });
+    });
+});
+
+describe("Sessions around a device ID change without merge", () => {
+    function initWithDeveloperId() {
+        Countly.init({
+            app_key: "YOUR_APP_KEY",
+            url: "https://your.domain.count.ly",
+            test_mode: true,
+            debug: true,
+            device_id: "old ID"
+        });
+    }
+
+    it("starts no session for the new ID when none was running", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDeveloperId();
+            Countly.change_id("new ID", false);
+            cy.wait(500).then(() => {
+                var begins = Countly._internals.getLocalQueues().requestQ.filter((r) => r.begin_session);
+                expect(begins.length).to.equal(0);
+            });
+        });
+    });
+
+    it("starts a session for the new ID when sessions are tracked automatically, also after the session was ended", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDeveloperId();
+            Countly.track_sessions();
+            Countly.end_session();
+            Countly.change_id("new ID", false);
+            cy.wait(500).then(() => {
+                var begins = Countly._internals.getLocalQueues().requestQ.filter((r) => r.begin_session);
+                expect(begins.map((r) => r.device_id)).to.deep.equal(["old ID", "new ID"]);
+            });
+        });
+    });
+
+    it("gives a session the developer begins after the change to the new ID as a new session", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDeveloperId();
+            Countly.begin_session();
+            Countly.change_id("new ID", false);
+            Countly.begin_session();
+            cy.wait(500).then(() => {
+                var begins = Countly._internals.getLocalQueues().requestQ.filter((r) => r.begin_session);
+                expect(begins.map((r) => r.device_id)).to.deep.equal(["old ID", "new ID"]);
+            });
+        });
+    });
+
+    it("leaves sessions to the developer when they are started manually", () => {
+        hp.haltAndClearStorage(() => {
+            initWithDeveloperId();
+            Countly.begin_session();
+            Countly.change_id("new ID", false);
+            cy.wait(500).then(() => {
+                var begins = Countly._internals.getLocalQueues().requestQ.filter((r) => r.begin_session);
+                expect(begins.map((r) => r.device_id)).to.deep.equal(["old ID"]);
             });
         });
     });

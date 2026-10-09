@@ -140,6 +140,35 @@ describe("SDK Behavior test", () => {
         });
     });
 
+    it("Calls back once when a request times out", () => {
+        // on a timeout a browser reports the request as done with status 0 and then as timed out
+        function TimingOutXhr() {}
+        TimingOutXhr.prototype.open = function () {};
+        TimingOutXhr.prototype.setRequestHeader = function () {};
+        TimingOutXhr.prototype.send = function () {
+            setTimeout(() => {
+                this.readyState = 4;
+                this.status = 0;
+                this.responseText = "";
+                this.onreadystatechange();
+                this.ontimeout();
+            }, 50);
+        };
+        hp.haltAndClearStorage(() => {
+            Countly.init({ app_key: "spp", url: "https://hey.some.ly", test_mode: true, debug: true });
+            var original = window.XMLHttpRequest;
+            window.XMLHttpRequest = TimingOutXhr;
+            var calls = 0;
+            Countly._internals.sendXmlHttpRequest("timeout_test", "https://hey.some.ly/i", { a: 1 }, () => {
+                calls++;
+            });
+            cy.wait(500).then(() => {
+                window.XMLHttpRequest = original;
+                expect(calls).to.equal(1);
+            });
+        });
+    });
+
     it("Config with tracking disabled", () => {
         hp.haltAndClearStorage(() => {
             var settings = {};
