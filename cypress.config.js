@@ -14,7 +14,9 @@ export default defineConfig({
 
       // Specs pull the SDK sources in directly, so instrumenting the spec bundle with istanbul
       // is what produces the coverage the task above collects. CYPRESS_COVERAGE=false skips it.
-      if (config.env.coverage !== false) {
+      // It arrives as env.COVERAGE, so the name is read case-insensitively, as the coverage plugin does.
+      var coverageOff = Object.keys(config.env).some((key) => key.toLowerCase() === "coverage" && config.env[key] === false);
+      if (!coverageOff) {
         const webpackPreprocessor = require('@cypress/webpack-preprocessor');
         on('file:preprocessor', webpackPreprocessor({
           webpackOptions: {

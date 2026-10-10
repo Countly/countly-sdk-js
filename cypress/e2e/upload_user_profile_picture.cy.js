@@ -66,6 +66,33 @@ describe("Upload user profile picture", () => {
         });
     });
 
+    it("uploads the picture's bytes unchanged", () => {
+        var pictures = [];
+        var append = FormData.prototype.append;
+        cy.stub(FormData.prototype, "append").callsFake(function (name, value) {
+            if (name === "user_details[picture]") {
+                pictures.push(value);
+            }
+            return append.apply(this, arguments);
+        });
+        cy.intercept("https://your.domain.count.ly/**", (req) => {
+            req.reply({ statusCode: 200, body: { result: "Success" } });
+        });
+        hp.haltAndClearStorage(() => {
+            Countly.init({ app_key: "YOUR_APP_KEY", url: "https://your.domain.count.ly", debug: true });
+            const binary = Cypress.Blob.base64StringToBlob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII=", "image/png");
+            binary.name = "avatar.png";
+            Countly.uploadUserProfilePicture(binary);
+            cy.wait(3000).then(() => {
+                expect(pictures.length, "the picture went into an upload").to.equal(1);
+                expect(pictures[0].type).to.equal("image/png");
+                return Promise.all([pictures[0].arrayBuffer(), binary.arrayBuffer()]);
+            }).then(([sent, original]) => {
+                expect(Array.from(new Uint8Array(sent))).to.deep.equal(Array.from(new Uint8Array(original)));
+            });
+        });
+    });
+
     it("signs an upload the way the server checks it when a salt is set", () => {
         var uploads = [];
         cy.intercept("https://your.domain.count.ly/**", (req) => {

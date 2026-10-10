@@ -304,6 +304,27 @@ function calculateChecksum(data, salt) {
 }
 
 /**
+ * Decodes standard base64 text into bytes, with atob or, in runtimes without it, Buffer
+ * @param {String} base64 - standard base64 text
+ * @returns {Uint8Array} the decoded bytes
+ * @throws when atob rejects the text, or when the runtime has neither atob nor Buffer
+ */
+function base64ToBytes(base64) {
+    if (typeof atob === "function") {
+        var binary = atob(base64);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+    }
+    if (typeof Buffer !== "undefined") {
+        return new Uint8Array(Buffer.from(base64, "base64"));
+    }
+    throw new Error("No base64 decoder in this runtime");
+}
+
+/**
  *  Polyfill to get closest parent matching nodeName
  *  @param {HTMLElement} el - element from which to search
  *  @param {String} nodeName - tag/node name
@@ -1038,5 +1059,6 @@ export {
     getUserAgentClientHints,
     parseWindowsVersionFromPlatformVersion,
     calculateChecksum,
+    base64ToBytes,
     parseUrlParts
 };

@@ -275,18 +275,9 @@ describe("Set ID change tests ", () => {
 });
 
 describe("Device ID remote config sequencing", () => {
-    it("delays remote config refetch by 1 second after merge device ID changes", () => {
+    it("refetches remote config for a merged ID only once the merge request was sent", () => {
+        var sent = [];
         hp.haltAndClearStorage(() => {
-            var fakeServer = hp.createFakeRequestHandler({
-                onRequest: function(req) {
-                    if (req.functionName === "fetch_remote_config_explicit") {
-                        return { status: 200, responseText: "{}" };
-                    }
-
-                    return { status: 200, responseText: '{"result":"Success"}' };
-                }
-            });
-
             var inst = Countly.init({
                 app_key: hp.appKey,
                 url: "https://test.count.ly",
@@ -294,26 +285,60 @@ describe("Device ID remote config sequencing", () => {
                 debug: true,
                 use_explicit_rc_api: true,
                 disable_sdk_behavior_settings_updates: true,
-                fake_request_handler: fakeServer.handler
+                fake_request_handler: (req) => {
+                    if (req.functionName === "fetch_remote_config_explicit") {
+                        sent.push("remote config for " + req.params.device_id);
+                        return { status: 200, responseText: "{}" };
+                    }
+                    if (req.params.old_device_id) {
+                        sent.push("merge " + req.params.old_device_id + " into " + req.params.device_id);
+                    }
+                    return { status: 200, responseText: '{"result":"Success"}' };
+                }
             });
 
             cy.wait(hp.sWait).then(() => {
                 inst.remote_config = function() {};
-                fakeServer.clear();
+                // the queue cannot send yet, as when it is busy or the network is slow
+                Countly.test_mode_rq(true);
                 Countly.change_id("new ID", true);
             });
 
-            cy.wait(300).then(() => {
-                var earlyRemoteConfigRequest = fakeServer.getRequests().find((req) => req.functionName === "fetch_remote_config_explicit");
-                expect(earlyRemoteConfigRequest).to.not.exist;
+            cy.wait(1500).then(() => {
+                expect(sent, "nothing for the new ID while its merge request waits").to.deep.equal([]);
+                Countly.test_mode_rq(false);
             });
 
-            cy.wait(1100).then(() => {
-                var requests = fakeServer.getRequests();
-                var remoteConfigRequest = requests.find((req) => req.functionName === "fetch_remote_config_explicit");
+            cy.wait(1500).then(() => {
+                expect(sent).to.deep.equal(["merge old ID into new ID", "remote config for new ID"]);
+            });
+        });
+    });
 
-                expect(remoteConfigRequest).to.exist;
-                expect(remoteConfigRequest.params.device_id).to.equal("new ID");
+    it("refetches remote config at once after a change without merge", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            var inst = Countly.init({
+                app_key: hp.appKey,
+                url: "https://test.count.ly",
+                device_id: "old ID",
+                debug: true,
+                test_mode: true,
+                use_explicit_rc_api: true,
+                disable_sdk_behavior_settings_updates: true,
+                fake_request_handler: (req) => {
+                    if (req.functionName === "fetch_remote_config_explicit") {
+                        sent.push("remote config for " + req.params.device_id);
+                        return { status: 200, responseText: "{}" };
+                    }
+                    return { status: 200, responseText: '{"result":"Success"}' };
+                }
+            });
+
+            cy.wait(hp.sWait).then(() => {
+                inst.remote_config = function() {};
+                Countly.change_id("new ID", false);
+                expect(sent).to.deep.equal(["remote config for new ID"]);
             });
         });
     });
@@ -375,6 +400,153 @@ describe("Sessions around a device ID change without merge", () => {
             cy.wait(500).then(() => {
                 var begins = Countly._internals.getLocalQueues().requestQ.filter((r) => r.begin_session);
                 expect(begins.map((r) => r.device_id)).to.deep.equal(["old ID"]);
+            });
+        });
+    });
+});
+
+describe("Device ID change details", () => {
+    it("saves the previous user's pending profile changes before a change without merge", () => {
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                test_mode: true,
+                debug: true,
+                device_id: "old ID"
+            });
+            Countly.userData.set("plan", "pro");
+            Countly.change_id("new ID", false);
+            Countly.userData.save();
+            cy.wait(500).then(() => {
+                var withPlan = Countly._internals.getLocalQueues().requestQ.filter((r) => r.user_details && r.user_details.indexOf("pro") !== -1);
+                expect(withPlan.map((r) => r.device_id)).to.deep.equal(["old ID"]);
+            });
+        });
+    });
+
+    it("never gives the next user profile changes the previous user could not save", () => {
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                test_mode: true,
+                debug: true,
+                device_id: "old ID",
+                require_consent: true,
+                getSearchQuery: () => ""
+            });
+            Countly.add_consent("users");
+            Countly.userData.set("plan", "pro");
+            Countly.remove_consent("users");
+            Countly.change_id("new ID", false);
+            Countly.add_consent("users");
+            Countly.userData.save();
+            cy.wait(500).then(() => {
+                var withPlan = Countly._internals.getLocalQueues().requestQ.filter((r) => r.user_details && r.user_details.indexOf("pro") !== -1);
+                expect(withPlan.map((r) => r.device_id)).to.deep.equal([]);
+            });
+        });
+    });
+
+    it("changes a device ID that came from the page link without merge, as it is reported as developer supplied", () => {
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                test_mode: true,
+                debug: true,
+                getSearchQuery: () => "?cly_device_id=from_link"
+            });
+            expect(Countly.get_device_id_type()).to.equal(Countly.DeviceIdType.DEVELOPER_SUPPLIED);
+            Countly.set_id("new ID");
+            cy.wait(500).then(() => {
+                expect(Countly.get_device_id()).to.equal("new ID");
+                expect(Countly._internals.getLocalQueues().requestQ.filter((r) => r.old_device_id).length, "merge requests").to.equal(0);
+            });
+        });
+    });
+
+    it("fetches the SDK behavior settings again for the new ID right after a change without merge", () => {
+        var settingsFetches = [];
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                test_mode: true,
+                debug: true,
+                device_id: "old ID",
+                getSearchQuery: () => "",
+                fake_request_handler: (req) => {
+                    if (req.functionName === "server_config") {
+                        settingsFetches.push(req.params.device_id);
+                        return { status: 200, responseText: "{\"v\":2,\"c\":{}}" };
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.change_id("new ID", false);
+            cy.wait(500).then(() => {
+                expect(settingsFetches).to.deep.equal(["old ID", "new ID"]);
+            });
+        });
+    });
+
+    it("fetches the SDK behavior settings for a merged ID only once the merge request was sent", () => {
+        // any fetch under an ID that is new to the server creates that user, and a merge into an existing user is no longer a rename
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                device_id: "old ID",
+                getSearchQuery: () => "",
+                fake_request_handler: (req) => {
+                    if (req.functionName === "server_config") {
+                        sent.push("settings for " + req.params.device_id);
+                        return { status: 200, responseText: "{\"v\":2,\"c\":{}}" };
+                    }
+                    if (req.params.old_device_id) {
+                        sent.push("merge " + req.params.old_device_id + " into " + req.params.device_id);
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.change_id("merged ID", true);
+            cy.wait(1500).then(() => {
+                expect(sent).to.deep.equal(["settings for old ID", "merge old ID into merged ID", "settings for merged ID"]);
+            });
+        });
+    });
+
+    it("waits also for a merge request still buffered for the client hints when another request is sent first", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            // a request an earlier page could not send
+            localStorage.setItem("YOUR_APP_KEY/cly_queue", JSON.stringify([{ app_key: "YOUR_APP_KEY", device_id: "old ID", t: 0, user_details: "{}" }]));
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                device_id: "old ID",
+                getSearchQuery: () => "",
+                fake_request_handler: (req) => {
+                    if (req.functionName === "server_config") {
+                        sent.push("settings for " + req.params.device_id);
+                        return { status: 200, responseText: "{\"v\":2,\"c\":{}}" };
+                    }
+                    if (req.functionName === "send_request_queue") {
+                        sent.push(req.params.old_device_id ? "merge " + req.params.old_device_id + " into " + req.params.device_id : "earlier request");
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            // right after init the client hints are still resolving, so the merge request waits in their buffer
+            Countly.change_id("merged ID", true);
+            Countly._internals.heartBeat();
+            cy.wait(1500).then(() => {
+                expect(sent).to.deep.equal(["settings for old ID", "earlier request", "merge old ID into merged ID", "settings for merged ID"]);
             });
         });
     });

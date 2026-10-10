@@ -544,13 +544,9 @@ describe("Web push service worker", () => {
         return fn;
     }
 
+    // the fields of a form-encoded request body, each value as the text that was sent
     function formBody(call) {
-        var out = {};
-        call.init.body.split("&").forEach((pair) => {
-            var i = pair.indexOf("=");
-            out[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1));
-        });
-        return out;
+        return Object.fromEntries(new URLSearchParams(call.init.body));
     }
 
     // a worker that a page has already told how to reach the server
@@ -1099,6 +1095,99 @@ describe("Web push service worker", () => {
         });
     });
 
+    // the browser's IndexedDB, keeping every connection the worker opened
+    function recordingConnections() {
+        var connections = [];
+        return {
+            connections: connections,
+            open(name, version) {
+                var request = window.indexedDB.open(name, version);
+                request.addEventListener("success", () => {
+                    connections.push(request.result);
+                });
+                return request;
+            }
+        };
+    }
+
+    // the buttons of the clicks a newly started worker finds in IndexedDB and hands to the next page
+    function keptForNextPage() {
+        var restarted = persistentWorker();
+        var later = fakeClient("https://x/", true);
+        return announce(restarted, later).then(() => actionsHandedTo(later).map((m) => m.buttonIndex));
+    }
+
+    it("Opens IndexedDB once for everything it stores and reads", () => {
+        var idb = recordingConnections();
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.indexedDB = idb;
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page })
+                .then(() => worker.dispatch("message", { data: { type: "countly_push_config", config: REPORTING_CONFIG } }))
+                .then(() => click(worker, "btn_1"))
+                .then(() => click(worker, "btn_2"))
+                .then(() => {
+                    expect(idb.connections.length).to.equal(1);
+                    return keptForNextPage();
+                })
+                .then((kept) => {
+                    expect(kept).to.deep.equal([1, 2]);
+                });
+        });
+    });
+
+    it("Lets another context delete the database while it holds its connection, and stores in the new one", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page })
+                .then(() => new Promise((resolve) => {
+                    // a deletion waits for every open connection to close, an upgrade by a newer worker as well
+                    var request = indexedDB.deleteDatabase("countly_push");
+                    request.onsuccess = () => resolve("deleted");
+                    request.onerror = () => resolve("failed");
+                    request.onblocked = () => resolve("blocked");
+                }))
+                .then((outcome) => {
+                    expect(outcome).to.equal("deleted");
+                    return click(worker, "btn_1");
+                })
+                .then(() => keptForNextPage())
+                .then((kept) => {
+                    expect(kept).to.deep.equal([1]);
+                });
+        });
+    });
+
+    it("Opens a new connection when the one it holds was closed under it", () => {
+        var idb = recordingConnections();
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.indexedDB = idb;
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            var page = fakeClient("https://x/", true);
+            return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG }, source: page })
+                .then(() => {
+                    // as the browser does while the site's data is being cleared
+                    idb.connections[0].close();
+                    return click(worker, "btn_1");
+                })
+                .then(() => {
+                    expect(idb.connections.length).to.equal(2);
+                    return keptForNextPage();
+                })
+                .then((kept) => {
+                    expect(kept).to.deep.equal([1]);
+                });
+        });
+    });
+
     // ---- registering a subscription the browser replaced --------------------------------------
 
     // the app's VAPID public key as the dashboard hands it out: 0x04, then 64 bytes (all 7 here)
@@ -1402,6 +1491,25 @@ describe("Web push service worker", () => {
                     expect(stored).to.deep.equal({ config: [], actions: [] });
                     var later = fakeClient("https://x/", true);
                     return announce(worker, later).then(() => {
+                        expect(actionsHandedTo(later).map((m) => m.buttonIndex)).to.deep.equal([1]);
+                    });
+                });
+        });
+    });
+
+    it("Stores nothing more once a page asks for memory only, though its connection is still open", () => {
+        cy.then(() => deleteDb()).then(() => {
+            var worker = persistentWorker((self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            return worker.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG, owner: { device_id: "device-1", t: 0 } }, source: fakeClient("https://x/", true) })
+                .then(() => worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: fakeClient("https://x/", true) }))
+                .then(() => click(worker, "btn_1"))
+                .then(() => storedRecords())
+                .then((stored) => {
+                    expect(stored).to.deep.equal({ config: [], actions: [] });
+                    var later = fakeClient("https://x/", true);
+                    return worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: later }).then(() => {
                         expect(actionsHandedTo(later).map((m) => m.buttonIndex)).to.deep.equal([1]);
                     });
                 });

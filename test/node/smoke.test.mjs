@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { mkdtempSync, copyFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +20,8 @@ for (const file of ["countly_cjs.js", "countly_umd.js"]) {
 }
 const require = createRequire(join(consumer, "package.json"));
 
-const esm = (await import(join(dist, "countly_esm.js"))).default;
+// import() takes a URL: a Windows path such as C:\dist would be read as a URL with the scheme "c:"
+const esm = (await import(pathToFileURL(join(dist, "countly_esm.js")).href)).default;
 const cjs = require(join(consumer, "countly_cjs.js")).default;
 const umd = require(join(consumer, "countly_umd.js")).default;
 

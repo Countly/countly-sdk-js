@@ -66,6 +66,12 @@ var clyDbBroken = false;
 var clyConfigUnsaved = false;
 
 /**
+ * The connection the worker's operations share, as a promise, from the first operation that needs
+ * it until another context deletes or upgrades the database.
+ */
+var clyDbShared = null;
+
+/**
  * Kept clicks handed to a page in the last CLY_OFFER_WINDOW_MS: that page's id by action id.
  */
 var clyOffers = {};
@@ -156,36 +162,95 @@ function clyOpenDb(existingOnly) {
 }
 
 /**
+ * The connection an operation runs on: the shared one, or for existingOnly one of its own.
+ * @param {boolean} [existingOnly] - use only an existing database, also while persisting is off
+ * @returns {Promise<?IDBDatabase>} an open connection, or null
+ */
+function clyConnection(existingOnly) {
+    if (existingOnly) {
+        return clyOpenDb(true);
+    }
+    if (clyDbBroken || !clyPersist) {
+        return Promise.resolve(null);
+    }
+    if (!clyDbShared) {
+        var opening = clyOpenDb();
+        clyDbShared = opening;
+        opening.then(function (db) {
+            if (!db) {
+                clyForgetConnection(opening);
+                return;
+            }
+            // a deletion or upgrade elsewhere waits until every connection is closed
+            db.onversionchange = function () {
+                db.close();
+                clyForgetConnection(opening);
+            };
+        });
+    }
+    return clyDbShared;
+}
+
+/**
+ * Stop sharing a connection, so that the next operation opens a new one.
+ * @param {Promise<?IDBDatabase>} connection - the shared connection, as clyConnection returned it
+ */
+function clyForgetConnection(connection) {
+    if (clyDbShared === connection) {
+        clyDbShared = null;
+    }
+}
+
+/**
  * Run an operation against a store in one transaction, rejecting when it fails.
  * @param {string} storeName - object store to use
  * @param {string} mode - "readonly" | "readwrite"
  * @param {Function} operation - gets the store, returns the IDBRequest to wait for (or nothing)
  * @param {boolean} [existingOnly] - use only an existing database, also while persisting is off
+ * @param {boolean} [retried] - true on the second attempt, after the shared connection was found closed
  * @returns {Promise<*>} the request's result, or undefined without a database
  */
-function clyDbRun(storeName, mode, operation, existingOnly) {
-    return clyOpenDb(existingOnly).then(function (db) {
+function clyDbRun(storeName, mode, operation, existingOnly, retried) {
+    var connection = clyConnection(existingOnly);
+    return connection.then(function (db) {
         if (!db) {
             return undefined;
         }
+        // a connection of its own is closed once its transaction is done, the shared one stays open
+        var release = function () {
+            if (existingOnly) {
+                db.close();
+            }
+        };
+        var transaction;
+        try {
+            transaction = db.transaction(storeName, mode);
+        }
+        catch (err) {
+            release();
+            if (!existingOnly && !retried && err && err.name === "InvalidStateError") {
+                // the browser closed the shared connection, as it does while the site's data is cleared
+                clyForgetConnection(connection);
+                return clyDbRun(storeName, mode, operation, existingOnly, true);
+            }
+            throw err;
+        }
         return new Promise(function (resolve, reject) {
-            var transaction = db.transaction(storeName, mode);
             var request;
             var result;
             transaction.oncomplete = function () {
-                db.close();
+                release();
                 resolve(result);
             };
             transaction.onerror = transaction.onabort = function () {
-                db.close();
+                release();
                 reject(transaction.error || new Error("IndexedDB transaction failed"));
             };
             try {
                 request = operation(transaction.objectStore(storeName));
             }
             catch (err) {
-                // operation() may throw, and a connection left open would block every later open
-                db.close();
+                release();
                 reject(err);
                 return;
             }

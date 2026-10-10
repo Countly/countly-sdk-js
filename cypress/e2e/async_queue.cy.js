@@ -298,6 +298,20 @@ describe("Test Countly.q related methods and processes", () => {
         });
     });
 
+    it("Leaves Countly.q to the next instance once an instance is halted", () => {
+        hp.haltAndClearStorage(() => {
+            initMain();
+            Countly.halt();
+            // the next instance runs no heartbeat, so only a halted instance could take the queued call
+            Countly.noHeartBeat = true;
+            initMain();
+            Countly.q.push(["add_event", event(1)]);
+            cy.wait(1500).then(() => {
+                expect(Countly.q.length, "calls still waiting in Countly.q").to.equal(1);
+            });
+        });
+    });
+
     it("Keeps processing Countly.q and the heartbeat after a queued call throws", () => {
         // a halted instance of an earlier test keeps its heartbeat and can take the queued calls, so a fresh page is used
         cy.visit("./cypress/fixtures/async_queue_throw.html");

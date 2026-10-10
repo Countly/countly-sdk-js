@@ -1,11 +1,11 @@
 import CountlyClass from "./modules/CountlyClass.js";
-import { featureEnums, DeviceIdTypeInternalEnums, CDN } from "./modules/Constants.js";
+import { featureList, DeviceIdTypeInternalEnums, CDN } from "./modules/Constants.js";
 import { checkIfLoggingIsOn } from "./modules/Utils.js";
 import { isBrowser, Countly } from "./modules/Platform.js";
 
 var apmLibrariesNotLoaded = true; // used to prevent loading apm scripts multiple times.
 
-Countly.features = [featureEnums.APM, featureEnums.ATTRIBUTION, featureEnums.CLICKS, featureEnums.CONTENT, featureEnums.CRASHES, featureEnums.EVENTS, featureEnums.FEEDBACK, featureEnums.FORMS, featureEnums.LOCATION, featureEnums.PUSH, featureEnums.REMOTE_CONFIG, featureEnums.SCROLLS, featureEnums.SESSIONS, featureEnums.STAR_RATING, featureEnums.USERS, featureEnums.VIEWS];
+Countly.features = featureList.slice();
 Countly.q = Countly.q || [];
 Countly.onload = Countly.onload || [];
 Countly.CountlyClass = CountlyClass;

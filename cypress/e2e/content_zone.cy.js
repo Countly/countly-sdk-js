@@ -81,6 +81,27 @@ describe("Leaving the content zone", () => {
     });
 });
 
+describe("Device ID change without merge", () => {
+    afterEach(() => {
+        document.querySelectorAll("#cly-content-iframe").forEach((frame) => frame.remove());
+    });
+
+    it("leaves the content zone and closes the previous user's content", () => {
+        hp.haltAndClearStorage(() => {
+            var counts = initWithContent(() => true);
+            Countly.content.enterContentZone();
+            cy.wait(5500).then(() => {
+                expect(contentFrame(), "content is shown").to.exist;
+                Countly.change_id("next user", false);
+                expect(contentFrame(), "content after the change").to.not.exist;
+                cy.wait(1500).then(() => {
+                    expect(counts.content, "content requests after the change").to.equal(1);
+                });
+            });
+        });
+    });
+});
+
 describe("Messages from content", () => {
     afterEach(() => {
         document.querySelectorAll("#cly-content-iframe").forEach((frame) => frame.remove());
@@ -102,6 +123,22 @@ describe("Messages from content", () => {
                     expect(recorded.length).to.equal(1);
                     Countly.content.exitContentZone();
                 });
+            });
+        });
+    });
+
+    it("record an event sent on its own, as they do one sent in a list", () => {
+        hp.haltAndClearStorage(() => {
+            initWithContent(() => true);
+            Countly.content.enterContentZone();
+            cy.wait(5500).then(() => {
+                expect(contentFrame(), "content is shown").to.exist;
+                fromContent({ event: { key: "single_from_content" } });
+                fromContent({ event: [{ key: "listed_from_content" }] });
+                var keys = Countly._internals.getLocalQueues().eventQ.map((e) => e.key);
+                expect(keys).to.include("single_from_content");
+                expect(keys).to.include("listed_from_content");
+                Countly.content.exitContentZone();
             });
         });
     });

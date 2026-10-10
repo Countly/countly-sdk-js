@@ -149,9 +149,11 @@ describe("Request Back-off Mechanism Tests", () => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
                     expect(rq.length).to.equal(0);
-                    cy.task("setResponseDelay", 0);
-                    Countly.add_event({ key: "test_2" });
-                    Countly.attempt_to_send_stored_requests();
+                    // the task only runs after this callback, so the next request waits for it, or it would still get the long delay
+                    cy.task("setResponseDelay", 0).then(() => {
+                        Countly.add_event({ key: "test_2" });
+                        Countly.attempt_to_send_stored_requests();
+                    });
                     cy.wait(7000).then(() => {
                         cy.fetch_local_request_queue().then((rq) => {
                             cy.log("Request Queue: " + JSON.stringify(rq));
@@ -175,9 +177,11 @@ describe("Request Back-off Mechanism Tests", () => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
                     expect(rq.length).to.equal(0);
-                    cy.task("setResponseDelay", 0);
-                    Countly.add_event({ key: "test_2" });
-                    Countly.attempt_to_send_stored_requests();
+                    // the task only runs after this callback, so the next request waits for it, or it would still get the long delay
+                    cy.task("setResponseDelay", 0).then(() => {
+                        Countly.add_event({ key: "test_2" });
+                        Countly.attempt_to_send_stored_requests();
+                    });
                     cy.wait(8000).then(() => {
                         cy.fetch_local_request_queue().then((rq) => {
                             cy.log("Request Queue: " + JSON.stringify(rq));
