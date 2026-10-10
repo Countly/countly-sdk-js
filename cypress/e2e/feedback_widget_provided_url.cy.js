@@ -75,6 +75,16 @@ describe("Feedback widget URL values", () => {
     });
 });
 
+describe("Feedback widget platform", () => {
+    it("is left out when the SDK does not know it, so the widget page uses its web default", () => {
+        hp.haltAndClearStorage(() => {
+            initWithUrl("https://your.domain.count.ly");
+            Countly.present_feedback_widget(npsWidget);
+            expect(readLikeTheWidgetPage(presentedIframeSrc(), "platform")).to.equal(null);
+        });
+    });
+});
+
 describe("Feedback widget provided_url parameter", () => {
     it("sends the path prefix (path only, encoded) when the SDK url has one", () => {
         hp.haltAndClearStorage(() => {

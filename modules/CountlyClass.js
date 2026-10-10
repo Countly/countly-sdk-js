@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -41,6 +41,7 @@ import {
     hideLoader,
     getUserAgentClientHints,
     calculateChecksum,
+    base64ToBytes,
     parseUrlParts
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
@@ -64,6 +65,10 @@ class CountlyClass {
     #crashSegments;
     #autoExtend;
     #autoSessionTracking;
+    #halted;
+    #serverConfigTimer;
+    #serverConfigAfterMerge;
+    #remoteConfigAfterMerge;
     #lastBeat;
     #storedDuration;
     #lastView;
@@ -168,7 +173,6 @@ class CountlyClass {
     #clientHintsPromise;
     #pendingRequestBuffer;
     #clientHintsBufferTimeoutId;
-    #changeIdRemoteConfigTimeoutId;
     #seenPushActionIds;
     #pushMessageHandler;
     #pushEnableInFlight;
@@ -204,6 +208,10 @@ class CountlyClass {
         this.#crashSegments = null;
         this.#autoExtend = true;
         this.#autoSessionTracking = false;
+        this.#halted = false;
+        this.#serverConfigTimer = null;
+        this.#serverConfigAfterMerge = false;
+        this.#remoteConfigAfterMerge = false;
         this.#lastBeat;
         this.#storedDuration = 0;
         this.#lastView = null;
@@ -288,7 +296,6 @@ class CountlyClass {
         this.#clientHintsPromise = null;
         this.#pendingRequestBuffer = null;
         this.#clientHintsBufferTimeoutId = null;
-        this.#changeIdRemoteConfigTimeoutId = null;
         this.app_key = getConfig("app_key", ob, null);
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
@@ -370,7 +377,7 @@ class CountlyClass {
         // Safety timeout: flush buffer even if hints never resolve (e.g. API blocked)
         this.#clientHintsBufferTimeoutId = setTimeout(() => {
             if (this.#pendingRequestBuffer !== null) {
-                this.#log(logLevelEnums.WARNING, "ua_logic, client hints resolution timed out after 5s, flushing pending requests with available metrics");
+                this.#log(logLevelEnums.WARNING, "ua_logic, client hints resolution timed out after 1s, flushing pending requests with available metrics");
                 this.#flushPendingRequestBuffer();
             }
         }, 1000);
@@ -493,7 +500,8 @@ class CountlyClass {
                 this.#resolveProvisionalLogs("server config response could not be parsed");
             }
         }, true, true);
-        setTimeout(() => {
+        clearTimeout(this.#serverConfigTimer);
+        this.#serverConfigTimer = setTimeout(() => {
             this.#getAndSetServerConfig();
         }, this.#SCInterval * 60 * 60 * 1000);
     }
@@ -701,6 +709,9 @@ class CountlyClass {
         this.ignore_visitor = getConfig("ignore_visitor", ob, false);
         this.track_domains = !isBrowser ? undefined : getConfig("track_domains", ob, true);
         this.storage = getConfig("storage", ob, "default");
+        if (this.storage === "cookie") {
+            this.#lsSupport = false;
+        }
         this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
         this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
         this.contentWhitelist = getConfig("content_whitelist", ob, []);
@@ -722,10 +733,6 @@ class CountlyClass {
         this.hcConsecutiveBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.consecutiveBackoffCount) || 0;
         this.#lastRequestWasBackoff = false; // Track if the previous request resulted in a backoff
         this.#crashFilterCallback = getConfig("crash_filter_callback", ob, null);
-
-        if (this.storage === "cookie") {
-            this.#lsSupport = false;
-        }
 
         this.#serverConfigCache = this.#getValueFromStorage("cly_config");
         if (!this.#serverConfigCache) {
@@ -1710,6 +1717,7 @@ class CountlyClass {
      */
     halt = () => {
         this.#log(logLevelEnums.WARNING, "halt, Resetting Countly");
+        this.#halted = true;
         Countly.i = undefined;
         Countly.q = [];
         Countly.noHeartBeat = undefined;
@@ -1790,7 +1798,7 @@ class CountlyClass {
         // This has to happen while app_key is still set, hence before the reset block further down.
         this.#clearStoredPushSubscription();
 
-        Countly.features = [featureEnums.SESSIONS, featureEnums.EVENTS, featureEnums.VIEWS, featureEnums.SCROLLS, featureEnums.CLICKS, featureEnums.FORMS, featureEnums.CRASHES, featureEnums.ATTRIBUTION, featureEnums.USERS, featureEnums.STAR_RATING, featureEnums.LOCATION, featureEnums.APM, featureEnums.FEEDBACK, featureEnums.REMOTE_CONFIG, featureEnums.PUSH, featureEnums.CONTENT];
+        Countly.features = featureList.slice();
 
         // CONSENTS
         this.#consents = {};
@@ -1855,10 +1863,8 @@ class CountlyClass {
             clearTimeout(this.#clientHintsBufferTimeoutId);
             this.#clientHintsBufferTimeoutId = null;
         }
-        if (this.#changeIdRemoteConfigTimeoutId) {
-            clearTimeout(this.#changeIdRemoteConfigTimeoutId);
-            this.#changeIdRemoteConfigTimeoutId = null;
-        }
+        this.#serverConfigAfterMerge = false;
+        this.#remoteConfigAfterMerge = false;
         this.#pendingRequestBuffer = null;
         this.#clientHintsPromise = null;
         this.#uaClientHints = null;
@@ -2295,8 +2301,8 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "set_id, The provided device is not a valid ID");
             return;
         }
-        if (this.#deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED) {
-            /*change ID without merge as current ID is Dev supplied, so not first login*/
+        if (this.#deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED || this.#deviceIdType === DeviceIdTypeInternalEnums.URL_PROVIDED) {
+            /*change ID without merge as current ID is Dev supplied (an ID from the page link is reported as such), so not first login*/
             this.change_id(newId, false);
         } else {
             /*change ID with merge as current ID is not Dev supplied*/
@@ -2331,6 +2337,9 @@ class CountlyClass {
             this.#processAsyncQueue();
             // empty event queue
             this.#sendEventsForced();
+            // save the previous user's pending profile changes while the ID and consents are still theirs, and never give them to the next user
+            this.userData.save(true);
+            this.#customData = {};
             // end current session
             this.end_session(null, true);
             // the previous user's session cookie must not let the next user continue that session
@@ -2339,8 +2348,10 @@ class CountlyClass {
             this.#timedEvents = {};
             // clear all consents
             this.remove_consent_internal(Countly.features, false);
-            // a content zone entered for the previous user is not entered again for the next one
+            // a content zone entered for the previous user is not entered again for the next one, and their content is closed
             this.#contentZoneWanted = false;
+            this.#exitContentZoneInternal();
+            this.#closeContentFrame();
             this.#releasePushTokenOfLeavingUser();
         }
         var oldId = this.device_id;
@@ -2350,27 +2361,30 @@ class CountlyClass {
         this.#setValueInStorage("cly_id", this.device_id);
         this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
         this.#log(logLevelEnums.INFO, "change_id, Changing ID from:[" + oldId + "] to [" + newId + "]");
+        var mergeQueued = false;
         if (merge) {
             // no consent check here since 21.11.0
-            this.#toRequestQueue({ old_device_id: oldId });
+            mergeQueued = this.#toRequestQueue({ old_device_id: oldId });
         }
         else if (this.#autoSessionTracking) {
             // only automatic session tracking starts a session for the new ID, manual sessions are left to the developer
             this.begin_session(!this.#autoExtend, true);
         }
         this.#handlePushOnDeviceIdChange(merge, oldId);
+        // the behavior settings and remote config can differ for the new ID. A fetch creates the user of an ID the server has not seen,
+        // so after a merge they wait for the merge request to be sent, or the server would merge two users instead of renaming one
+        if (mergeQueued) {
+            this.#serverConfigAfterMerge = true;
+        }
+        else {
+            this.#getAndSetServerConfig();
+        }
         // if init time remote config was enabled with a callback function, remove currently stored remote configs and fetch remote config again
         if (this.remote_config) {
             this.#remoteConfigs = {};
             this.#setValueInStorage("cly_remote_configs", this.#remoteConfigs);
-            if (merge) {
-                if (this.#changeIdRemoteConfigTimeoutId) {
-                    clearTimeout(this.#changeIdRemoteConfigTimeoutId);
-                }
-                this.#changeIdRemoteConfigTimeoutId = setTimeout(() => {
-                    this.#changeIdRemoteConfigTimeoutId = null;
-                    this.fetch_remote_config(this.remote_config);
-                }, 1000);
+            if (mergeQueued) {
+                this.#remoteConfigAfterMerge = true;
             }
             else {
                 this.fetch_remote_config(this.remote_config);
@@ -2596,7 +2610,8 @@ class CountlyClass {
      *  @returns {string} the URL up to the first ? or #
      */
     #stripQuery = (value) => {
-        return String(value || "").split("#")[0].split("?")[0];
+        var parts = parseUrlParts(String(value || ""));
+        return parts.origin + parts.pathname;
     }
 
     /**
@@ -2722,7 +2737,8 @@ class CountlyClass {
 
     /**
      *  Drop Countly's browser subscription and blacklist the token on the server. Shared by the
-     *  explicit disable and by push consent withdrawal, which must not count as an opt-out.
+     *  explicit disable and by push consent withdrawal, which must not count as an opt-out. Both
+     *  call it only where the push API is supported.
      *  @memberof Countly._internals
      *  @param {Object} opts - per-call override for push_service_worker_scope
      *  @returns {Promise<Object>} resolves to { unsubscribed: true } when complete
@@ -2731,11 +2747,7 @@ class CountlyClass {
         // a token the server may still hold, even if the registration or subscription is already gone
         var hadRegisteredToken = !!this.#getPushRecord(pushStorageKeys.endpoint) || !!this.#lastPushToken;
         var wasInUse = this.#isPushConfigured();
-        var lookup = Promise.resolve(null);
-        // without the service worker API there is no subscription to drop, only the stored token
-        if (this.#isPushSupported(false)) {
-            lookup = opts.push_service_worker_scope ? this.#pushRegistrationAt(opts.push_service_worker_scope) : this.#lookUpPushRegistration();
-        }
+        var lookup = opts.push_service_worker_scope ? this.#pushRegistrationAt(opts.push_service_worker_scope) : this.#lookUpPushRegistration();
         var swReg = null;
 
         return lookup.then((registration) => {
@@ -5488,7 +5500,10 @@ class CountlyClass {
             url += "&app_key=" + encodeURIComponent(this.app_key);
             url += "&device_id=" + encodeURIComponent(this.device_id);
             url += "&sdk_name=" + encodeURIComponent(this.#sdkName);
-            url += "&platform=" + encodeURIComponent(this.platform);
+            // the widget pages take a missing platform as their web default, as they did with "undefined"
+            if (this.platform) {
+                url += "&platform=" + encodeURIComponent(this.platform);
+            }
             url += "&app_version=" + encodeURIComponent(this.app_version);
             url += "&sdk_version=" + encodeURIComponent(this.#sdkVersion);
             var customObjectToSendWithTheWidget = {};
@@ -6281,17 +6296,18 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for event");
                 this.#closeContentFrame();
             }
-            if (!Array.isArray(event)) {
-                if (typeof event === "object") {
-                    event = [event];
+            var events = event;
+            if (!Array.isArray(events)) {
+                if (typeof events === "object") {
+                    events = [events];
                 } else {
-                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof event + "]");
+                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof events + "]");
                     return;
                 }
             };
             // event is expected to be an array of events
-            for (var i = 0; i < event.length; i++) {
-                this.#add_cly_events(event[i]); // let this method handle the event
+            for (var i = 0; i < events.length; i++) {
+                this.#add_cly_events(events[i]); // let this method handle the event
             }
         }
 
@@ -6876,19 +6892,12 @@ class CountlyClass {
             return null;
         }
         var padding = "=".repeat((4 - trimmed.length % 4) % 4);
-        var base64 = (trimmed + padding).replace(/-/g, "+").replace(/_/g, "/");
-        var rawData;
         try {
-            rawData = atob(base64);
+            return base64ToBytes((trimmed + padding).replace(/-/g, "+").replace(/_/g, "/"));
         } catch (e) {
             this.#log(logLevelEnums.ERROR, "urlBase64ToUint8Array, Value is not valid base64-url: " + e);
             return null;
         }
-        var outputArray = new Uint8Array(rawData.length);
-        for (var i = 0; i < rawData.length; ++i) {
-            outputArray[i] = rawData.charCodeAt(i);
-        }
-        return outputArray;
     }
 
     /**
@@ -6938,6 +6947,10 @@ class CountlyClass {
      *  @returns {void} void
      */
     #heartBeat = () => {
+        // a halted instance no longer counts as any instance, so it must not take Countly.q or send anything
+        if (this.#halted) {
+            return;
+        }
         this.#notifyLoaders();
 
         // ignore bots
@@ -7066,6 +7079,32 @@ class CountlyClass {
         return this.#generatedRequests;
     };
 
+    /**
+     *  Whether a merge request has not been sent yet, in the request queue or in the buffer requests wait in for the client hints
+     *  @memberof Countly._internals
+     *  @returns {Boolean} true while a request with old_device_id is waiting
+     */
+    #mergeRequestUnsent = () => {
+        return this.#requestQueue.concat(this.#pendingRequestBuffer || []).some((request) => request && request.old_device_id);
+    };
+
+    /**
+     *  Make the fetches a merged device ID change held back until its merge request was sent: the behavior settings, then remote config
+     *  @memberof Countly._internals
+     */
+    #fetchAfterMerge = () => {
+        if (this.#serverConfigAfterMerge) {
+            this.#serverConfigAfterMerge = false;
+            this.#getAndSetServerConfig();
+        }
+        if (this.#remoteConfigAfterMerge) {
+            this.#remoteConfigAfterMerge = false;
+            if (this.remote_config) {
+                this.fetch_remote_config(this.remote_config);
+            }
+        }
+    };
+
     #sendRequestFromQueue = (requestName, onSuccess) => {
         return new Promise((resolve) => {
             if (this.#offlineMode) {
@@ -7100,6 +7139,9 @@ class CountlyClass {
                 else {
                     this.#requestQueue.shift();
                     this.#checkBackoffConditions(parameters);
+                    if ((this.#serverConfigAfterMerge || this.#remoteConfigAfterMerge) && !this.#mergeRequestUnsent()) {
+                        this.#fetchAfterMerge();
+                    }
                     if (onSuccess) {
                         try {
                             onSuccess(parameters);
@@ -7830,6 +7872,14 @@ class CountlyClass {
      *  @param {Boolean} forced - if true that means the request is forced and should be made regardless of the networking config
      */
     #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator, forced) => this.#forRequest(params, () => {
+        // a visitor ignored at init has no device ID, and the server would store "undefined" as a user
+        if (params && Object.prototype.hasOwnProperty.call(params, "device_id") && (typeof params.device_id === "undefined" || params.device_id === null || params.device_id === "")) {
+            this.#log(logLevelEnums.WARNING, functionName + " Not sending a request without a device ID");
+            if (typeof callback === "function") {
+                callback(true, params);
+            }
+            return;
+        }
         if (!this.#SCNetwork && !forced) {
             this.#log(logLevelEnums.DEBUG, "Network request is disabled by the SCNetwork");
             return;
@@ -8014,40 +8064,17 @@ class CountlyClass {
             return null;
         }
         try {
-            if (typeof atob === "function") {
-                var binaryString = atob(base64Data);
-                var len = binaryString.length;
-                var bytes = new Uint8Array(len);
-                for (var i = 0; i < len; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
-                }
-                if (typeof Blob !== "undefined") {
-                    return new Blob([bytes], { type: mimeType || "application/octet-stream" });
-                }
-                if (typeof File !== "undefined") {
-                    try {
-                        return new File([bytes], "avatar", { type: mimeType || "application/octet-stream" });
-                    }
-                    catch (fileError) {
-                        this.#log(logLevelEnums.DEBUG, "createBlobFromBase64: Unable to create File instance: " + fileError);
-                    }
-                }
-                return null;
+            var bytes = base64ToBytes(base64Data);
+            if (typeof Blob !== "undefined") {
+                return new Blob([bytes], { type: mimeType || "application/octet-stream" });
             }
-            else if (typeof Buffer !== "undefined") {
-                var buffer = Buffer.from(base64Data, "base64");
-                if (typeof Blob !== "undefined") {
-                    return new Blob([buffer], { type: mimeType || "application/octet-stream" });
+            if (typeof File !== "undefined") {
+                try {
+                    return new File([bytes], "avatar", { type: mimeType || "application/octet-stream" });
                 }
-                if (typeof File !== "undefined") {
-                    try {
-                        return new File([buffer], "avatar", { type: mimeType || "application/octet-stream" });
-                    }
-                    catch (fileError) {
-                        this.#log(logLevelEnums.DEBUG, "createBlobFromBase64: Unable to create File instance from buffer: " + fileError);
-                    }
+                catch (fileError) {
+                    this.#log(logLevelEnums.DEBUG, "createBlobFromBase64: Unable to create File instance: " + fileError);
                 }
-                return null;
             }
         }
         catch (error) {

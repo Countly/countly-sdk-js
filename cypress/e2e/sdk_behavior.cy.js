@@ -85,7 +85,7 @@ describe("SDK Behavior test", () => {
             cy.wait(waitT).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
-                    sentReqList(9, ["server_config", "[healthCheck]", "enrollUserToAb", "fetch_remote_config_explicit", "send_request_queue", "get_available_feedback_widgets,"]);
+                    sentReqList(10, ["server_config", "[healthCheck]", "enrollUserToAb", "fetch_remote_config_explicit", "send_request_queue", "get_available_feedback_widgets,"]);
                     queues(0, 15);
                 });
             });
@@ -103,7 +103,7 @@ describe("SDK Behavior test", () => {
             cy.wait(waitT).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
-                    sentReqList(1, ["server_config"]);
+                    sentReqList(2, ["server_config"]);
                     queues(0, 15);
                 });
             });
@@ -180,7 +180,7 @@ describe("SDK Behavior test", () => {
             cy.wait(waitT).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
-                    sentReqList(8, ["server_config", "[healthCheck]", "enrollUserToAb", "fetch_remote_config_explicit", "get_available_feedback_widgets,"]);
+                    sentReqList(10, ["server_config", "[healthCheck]", "enrollUserToAb", "fetch_remote_config_explicit", "get_available_feedback_widgets,"]);
                     queues(0,0);
                 });
             });
@@ -199,7 +199,7 @@ describe("SDK Behavior test", () => {
             cy.wait(waitT).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
-                    sentReqList(1, ["server_config"]);
+                    sentReqList(3, ["server_config"]);
                     queues(0,0);
                 });
             });
@@ -217,7 +217,7 @@ describe("SDK Behavior test", () => {
             cy.wait(waitT).then(() => {
                 cy.fetch_local_request_queue().then((rq) => {
                     cy.log("Request Queue: " + JSON.stringify(rq));
-                    sentReqList(4, ["server_config", "[healthCheck]", "enrollUserToAb", "send_request_queue"]); // device id change sent
+                    sentReqList(5, ["server_config", "[healthCheck]", "enrollUserToAb", "send_request_queue"]); // device id change sent
                     queues(0, 2, ["old_device_id", "consent"]);
                 });
             });

@@ -778,7 +778,7 @@ describe("Web push tests", () => {
         });
     });
 
-    // ---- second review pass ------------------------------------------------------------------
+    // ---- the opt-out, registering again, and the worker while subscribing --------------------
 
     it("Stays unsubscribed across a reload once push was disabled", () => {
         hp.haltAndClearStorage(() => {
