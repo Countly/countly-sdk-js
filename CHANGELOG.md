@@ -20,10 +20,11 @@
   * `push_vapid_public_key` init option for providing your application's VAPID public key
   * `push_service_worker_path` init option for providing the path of the service worker file (default `/countly_sw.js`)
   * `push_service_worker_scope` init option for registering the service worker under a different scope (default `countly-push/` next to the service worker file)
-  * `push_service_worker_registration` init option for providing your own service worker registration that imports `countly_sw.js`
+  * `push_service_worker_registration` init option for providing your own service worker registration that imports `countly_sw.js`, or the promise `register()` returns for it
   * `push_auto_register` init option for turning off the automatic push registration on page load (default `true`)
   * `push_subscribe_timeout` init option for setting how long `enable_push_notifications` waits for the browser, in milliseconds (default `30000`)
   * `countly_sw.js` service worker (`lib/countly_sw.js`), to be served from your site's root or imported into your own service worker
+  * `opt_out` also takes Countly's push subscription off the browser; push then stays off after `opt_in` until `enable_push_notifications` is called
 * Added support for server initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
 * Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
 

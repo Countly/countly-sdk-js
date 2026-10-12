@@ -380,9 +380,11 @@ describe("Web push service worker", () => {
             var reads = Object.keys(copies).map((name) => JSON.stringify(name) + ": typeof " + name + " === 'undefined' ? undefined : " + name);
             var worker = loadWorker(source + "\n;self.copies = {" + reads.join(", ") + "};");
             expect(worker.self.copies).to.deep.equal(copies);
-            // a message type added to Constants.js needs its worker copy listed above
+            // a message type or worker URL parameter added to Constants.js needs its worker copy listed above
             var copiedTypes = Object.keys(copies).map((name) => copies[name]).filter((value) => Object.values(pushMessageTypes).indexOf(value) !== -1);
             expect(copiedTypes.sort()).to.deep.equal(Object.values(pushMessageTypes).sort());
+            var copiedParams = Object.keys(copies).map((name) => copies[name]).filter((value) => Object.values(pushWorkerParams).indexOf(value) !== -1);
+            expect(copiedParams.sort()).to.deep.equal(Object.values(pushWorkerParams).sort());
         });
     });
 
@@ -1264,6 +1266,21 @@ describe("Web push service worker", () => {
         });
     });
 
+    it("Still tells the open pages when the new subscription cannot even be put into a request", () => {
+        cy.then(() => configuredWorker()).then((worker) => {
+            var page = fakeClient("https://x/", true);
+            worker.self.clients.list = [page];
+            // a lone surrogate, which encodeURIComponent refuses while the request is built
+            var details = Object.assign({}, REPORTING_CONFIG, { vapid_key: VAPID_KEY, device_id: "device-\uD800" });
+            return worker.dispatch("message", { data: { type: "countly_push_config", config: details } }).then(() => {
+                return worker.dispatch("pushsubscriptionchange", { oldSubscription: { options: { applicationServerKey: VAPID_BYTES.buffer } } });
+            }).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(0);
+                expect(page.messages.filter((m) => m.type === "countly_push_subscription_change").length).to.equal(1);
+            });
+        });
+    });
+
     // ---- writing down whose click it is --------------------------------------------------------
 
     it("Writes down with a click it keeps whose server details it held when the click was made", () => {
@@ -1387,6 +1404,29 @@ describe("Web push service worker", () => {
                     var later = fakeClient("https://x/", true);
                     return worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: later }).then(() => {
                         expect(actionsHandedTo(later).map((m) => m.buttonIndex)).to.deep.equal([1]);
+                    });
+                });
+        });
+    });
+
+    it("Deletes what an earlier life stored also when its URL already says the site stores nothing, handing over the clicks kept there", () => {
+        cy.then(() => deleteDb()).then(() => {
+            // while the site still stored, the worker kept its details, whose clicks they are and a click no page took yet
+            var before = persistentWorker((self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            return before.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG, owner: { device_id: "device-1", t: 0 } }, source: fakeClient("https://x/", true) })
+                .then(() => click(before, "btn_1"))
+                .then(() => {
+                    // the site switched to storage "none", so the browser installed the worker again under its new URL
+                    var after = persistentWorker((self) => {
+                        self.location = { href: "https://x/countly_sw.js?cly_persist=0" };
+                        self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+                    });
+                    var page = fakeClient("https://x/", true);
+                    return after.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: page }).then(() => storedRecords()).then((stored) => {
+                        expect(stored).to.deep.equal({ config: [], actions: [] });
+                        expect(actionsHandedTo(page).map((m) => m.buttonIndex)).to.deep.equal([1]);
                     });
                 });
         });

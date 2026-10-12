@@ -268,6 +268,7 @@ var pushStorageKeys = Object.freeze({
 /**
  * Web push behaviour constants
  * MAX_SEEN_ACTION_IDS: how many recently handled push action ids are kept to drop duplicates
+ * MAX_MERGED_DEVICE_IDS: how many device ID merges are remembered for the clicks the service worker kept
  * VAPID_PUBLIC_KEY_BYTE_LENGTH / VAPID_PUBLIC_KEY_PREFIX: an uncompressed P-256 point is 65 bytes and starts with 0x04
  * SUBSCRIBE_TIMEOUT_MS: how long enable_push_notifications waits for the browser to create a subscription before giving up on that attempt
  * TOKEN_DEBOUNCE_MS: how long the same token is not queued again for the same device ID
@@ -275,6 +276,7 @@ var pushStorageKeys = Object.freeze({
  */
 var pushConstants = Object.freeze({
     MAX_SEEN_ACTION_IDS: 20,
+    MAX_MERGED_DEVICE_IDS: 20,
     SUBSCRIBE_TIMEOUT_MS: 30000,
     TOKEN_DEBOUNCE_MS: 60000,
     VAPID_PUBLIC_KEY_BYTE_LENGTH: 65,

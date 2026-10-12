@@ -158,6 +158,7 @@ class CountlyClass {
     #initTimestamp;
     #isSCDisabled;
     #connectionTestRunning = false;
+    #standingInForAnotherUser = false;
     #lastRequestDuration;
     #backoffEndTime;
     #isInBackoff;
@@ -822,7 +823,7 @@ class CountlyClass {
             }
         }
 
-        this.#ignoredByChoice = !!this.#getValueFromStorage("cly_ignore") || getConfig("ignore_visitor", ob, false) === true;
+        this.#ignoredByChoice = !!this.#getValueFromStorage("cly_ignore") || !!getConfig("ignore_visitor", ob, false);
         if (this.ignore_visitor) {
             this.#log(logLevelEnums.WARNING, "initialize, ignore_visitor:[" + this.ignore_visitor + "], this user will not be tracked");
             this.#resolveProvisionalLogs("visitor is ignored so no server config will be fetched");
@@ -1264,7 +1265,7 @@ class CountlyClass {
      *  @param {?ServiceWorker} source - the worker that sent it
      */
     #handlePushAction = (data, source) => {
-        var dealtWith = !!data.aid && this.#seenPushActionIds.indexOf(data.aid) !== -1;
+        var dealtWith = this.#hasSeenPushAction(data.aid);
         var owner = dealtWith ? null : this.#otherPushOwner(data.owner);
         if (!dealtWith && data.recorded !== true && data.owner !== null) {
             if (!this.check_consent(featureEnums.PUSH)) {
@@ -1315,7 +1316,7 @@ class CountlyClass {
             return null;
         }
         var type = typeof stamp.t === "number" ? stamp.t : DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-        var merged = this.#pushMergedIds || [];
+        var merged = this.#pushMergedIds ? this.#pushMerges() : [];
         for (var step = 0; step < merged.length && id !== String(this.device_id); step++) {
             var into = merged.filter((pair) => pair[0] === id)[0];
             if (!into) {
@@ -1341,10 +1342,24 @@ class CountlyClass {
         }
         var from = String(fromId);
         var to = String(toId);
-        var merged = this.#pushMergedIds.filter((pair) => pair[0] !== from && pair[0] !== to);
+        var merged = this.#pushMerges().filter((pair) => pair[0] !== from && pair[0] !== to);
         merged.push([from, to]);
-        this.#pushMergedIds = merged.slice(-pushConstants.MAX_SEEN_ACTION_IDS);
+        this.#pushMergedIds = merged.slice(-pushConstants.MAX_MERGED_DEVICE_IDS);
         this.#setValueInStorage(pushStorageKeys.mergedIds, this.#pushMergedIds);
+    };
+
+    /**
+     *  The device ID merges remembered for this browser, as stored, so a merge list another tab
+     *  deleted is not brought back from this page's copy; with storage "none" this page's own list.
+     *  @memberof Countly._internals
+     *  @returns {Array} [from, to] pairs, oldest first
+     */
+    #pushMerges = () => {
+        if (this.storage === "none") {
+            return this.#pushMergedIds || [];
+        }
+        var stored = this.#getValueFromStorage(pushStorageKeys.mergedIds);
+        return Array.isArray(stored) ? stored.filter((pair) => Array.isArray(pair) && pair.length === 2) : [];
     };
 
     /**
@@ -1356,6 +1371,16 @@ class CountlyClass {
             this.#pushMergedIds = [];
         }
         this.#removeValueFromStorage(pushStorageKeys.mergedIds);
+    };
+
+    /**
+     *  Tell whether this page already handled the push action with this id.
+     *  @memberof Countly._internals
+     *  @param {?string} aid - the worker assigned action id, if any
+     *  @returns {Boolean} true for an id among the recently handled ones
+     */
+    #hasSeenPushAction = (aid) => {
+        return !!aid && this.#seenPushActionIds.indexOf(aid) !== -1;
     };
 
     /**
@@ -1371,7 +1396,7 @@ class CountlyClass {
         if (!aid) {
             return true;
         }
-        if (this.#seenPushActionIds.indexOf(aid) !== -1) {
+        if (this.#hasSeenPushAction(aid)) {
             return false;
         }
         this.#seenPushActionIds.push(aid);
@@ -1399,7 +1424,7 @@ class CountlyClass {
         }
         if (!this.push_auto_register && !(keepRegistered === true && this.#getPushRecord(pushStorageKeys.endpoint))) {
             if (keepRegistered === true) {
-                this.#log(logLevelEnums.DEBUG, "autoRegisterPush, push_auto_register is off and no token is registered for the current user in this browser, nothing to keep current");
+                this.#log(logLevelEnums.DEBUG, "autoRegisterPush, push_auto_register is off and this page knows of no token registered for the current user, so the subscription the browser replaced is not registered; with storage \"none\" a token an earlier page registered is not known here, and enable_push_notifications registers it again");
             }
             return;
         }
@@ -1441,7 +1466,8 @@ class CountlyClass {
 
     /**
      *  Run fn while this instance stands for another user's device ID and has no location fields,
-     *  to queue a request about that user.
+     *  to queue a request about that user. A batch of gathered log lines that fills meanwhile is
+     *  sent only after that, so it goes out under the current user's device ID.
      *  @memberof Countly._internals
      *  @param {Object} identity - { id, type } of the user the request is about
      *  @param {Function} fn - queues the request
@@ -1449,6 +1475,7 @@ class CountlyClass {
      */
     #asDeviceId = (identity, fn) => {
         var current = { id: this.device_id, type: this.#deviceIdType, country_code: this.country_code, city: this.city, ip_address: this.ip_address };
+        this.#standingInForAnotherUser = true;
         this.device_id = identity.id;
         this.#deviceIdType = identity.type;
         this.country_code = null;
@@ -1463,6 +1490,7 @@ class CountlyClass {
             this.country_code = current.country_code;
             this.city = current.city;
             this.ip_address = current.ip_address;
+            this.#standingInForAnotherUser = false;
         }
     };
 
@@ -1638,11 +1666,18 @@ class CountlyClass {
             return Promise.resolve(this.#pushRegistration);
         }
         if (this.push_service_worker_registration) {
-            this.#pushRegistration = this.push_service_worker_registration;
-            return Promise.resolve(this.#pushRegistration);
+            var supplied = this.push_service_worker_registration;
+            return Promise.resolve(supplied).then((registration) => {
+                if (this.push_service_worker_registration === supplied) {
+                    this.push_service_worker_registration = registration;
+                }
+                if (registration && !this.#pushRegistration) {
+                    this.#pushRegistration = registration;
+                }
+                return this.#pushRegistration || null;
+            });
         }
-        var swScope = this.#getPushRecord(pushStorageKeys.scope) || this.push_service_worker_scope || this.#defaultPushScope(this.push_service_worker_path);
-        return this.#pushRegistrationAt(swScope).then((registration) => {
+        return this.#pushRegistrationAt(this.#pushScope()).then((registration) => {
             if (registration && !this.#pushRegistration) {
                 this.#pushRegistration = registration;
             }
@@ -1661,6 +1696,18 @@ class CountlyClass {
         return Promise.resolve().then(() => navigator.serviceWorker.getRegistration(scope)).then((registration) => {
             return registration && this.#resolveUrl(registration.scope) === this.#resolveUrl(scope) ? registration : null;
         });
+    };
+
+    /**
+     *  The scope Countly push runs under: the one given to this call, else the one this browser's
+     *  subscription was made under, else push_service_worker_scope, else the default.
+     *  @memberof Countly._internals
+     *  @param {Object} [opts] - per-call push_service_worker_scope and push_service_worker_path
+     *  @returns {string} the scope, relative or absolute
+     */
+    #pushScope = (opts) => {
+        var o = opts || {};
+        return o.push_service_worker_scope || this.#getPushRecord(pushStorageKeys.scope) || this.push_service_worker_scope || this.#defaultPushScope(o.push_service_worker_path || this.push_service_worker_path);
     };
 
     /**
@@ -2465,14 +2512,15 @@ class CountlyClass {
     * subscribes via the Push API using the configured VAPID public key, and queues a token_session
     * request mirroring the Android/iOS contract. A subscription already bound to the key is reused
     * and its token sent again, unless this page sent it for the same device ID less than a minute
-    * ago. Unless `push_service_worker_scope` says otherwise, the worker is registered under the
-    * folder countly-push/ next to its file. Another push provider's subscription is left alone.
+    * ago. The worker is registered under the scope given to this call, else the one this browser's
+    * subscription was made under, else `push_service_worker_scope`, else the folder countly-push/
+    * next to its file. Another push provider's subscription is left alone.
     * Lifts an earlier disable_push_notifications. Concurrent calls (a double click, or the silent
     * registration racing an explicit call) share one run, so only one subscription is ever created.
     * Gives up on an attempt after `push_subscribe_timeout` milliseconds (default 30 s) when the
     * browser never finishes creating the subscription, as iOS 18.7 was seen doing; the next call
     * then starts afresh instead of joining the stuck one.
-    * @param {Object} [opts] - per-call overrides for push_vapid_public_key / push_service_worker_path / push_service_worker_scope / push_service_worker_registration
+    * @param {Object} [opts] - per-call overrides for push_vapid_public_key / push_service_worker_path / push_service_worker_scope / push_service_worker_registration (a registration, or the promise register() returns for it)
     * @returns {Promise<Object>} resolves to { subscribed: true, endpoint } on success, or { subscribed: false, reason } otherwise, with reason one of "unsupported", "no_consent", "missing_vapid_key", "invalid_vapid_key", "denied", "default", "service_worker_conflict", "service_worker_missing", "service_worker_redundant", "timeout", "subscription_conflict", "disabled" or "error" (which adds an `error` field)
     */
     enable_push_notifications = (opts) => {
@@ -2497,7 +2545,7 @@ class CountlyClass {
             return Promise.resolve({ subscribed: false, reason: "invalid_vapid_key" });
         }
         var swPath = opts.push_service_worker_path || this.push_service_worker_path;
-        var swScope = opts.push_service_worker_scope || this.push_service_worker_scope || this.#defaultPushScope(swPath);
+        var swScope = this.#pushScope(opts);
         this.#removePushRecord(pushStorageKeys.optOut);
         if (this.#pushEnableInFlight) {
             this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Already in progress, joining that call");
@@ -2549,18 +2597,30 @@ class CountlyClass {
      *  handlers. When a foreign worker holds the scope the developer has to either import
      *  countly_sw.js into it, pass its registration in, or leave push_service_worker_scope unset.
      *  Script URLs are compared without their query string, where #pushWorkerUrl puts the debug and
-     *  storage flags, so toggling either is not mistaken for a foreign worker.
+     *  storage flags, so toggling either is not mistaken for a foreign worker. Under Countly's own
+     *  default scope another file is Countly's worker under its earlier name, which is replaced.
      *  @memberof Countly._internals
      *  @param {string} swPath - path of the reference worker to install
      *  @param {string} swScope - scope to register it under
-     *  @param {?ServiceWorkerRegistration} suppliedRegistration - registration to use instead, if any
-     *  @returns {Promise<?ServiceWorkerRegistration>} the registration to use, or null when the scope is taken; rejects when its worker never becomes active
+     *  @param {?(ServiceWorkerRegistration|Promise<ServiceWorkerRegistration>)} suppliedRegistration - registration to use instead, if any, or the promise register() returned for it
+     *  @returns {Promise<?ServiceWorkerRegistration>} the registration to use, or null when the scope is taken; rejects with "service_worker_missing" or "service_worker_redundant" when its worker never becomes active, and with the error of a supplied registration that could not be made
      */
     #resolvePushRegistration = (swPath, swScope, suppliedRegistration) => {
         var provided = suppliedRegistration || this.push_service_worker_registration;
         if (provided) {
-            this.#log(logLevelEnums.DEBUG, "resolvePushRegistration, Using the supplied service worker registration at scope: [" + provided.scope + "]");
-            return this.#waitForPushWorker(provided);
+            return Promise.resolve(provided).then((registration) => {
+                if (!registration) {
+                    throw new Error("service_worker_missing");
+                }
+                if (provided === suppliedRegistration) {
+                    this.#suppliedPushRegistration = registration;
+                }
+                else if (this.push_service_worker_registration === provided) {
+                    this.push_service_worker_registration = registration;
+                }
+                this.#log(logLevelEnums.DEBUG, "resolvePushRegistration, Using the supplied service worker registration at scope: [" + registration.scope + "]");
+                return this.#waitForPushWorker(registration);
+            });
         }
         return navigator.serviceWorker.getRegistration(swScope).then((existing) => {
             var existingWorker = existing && (existing.active || existing.waiting || existing.installing);
@@ -2568,7 +2628,8 @@ class CountlyClass {
             // scope than the one asked for. Registering a narrower scope leaves that one alone, so
             // only an exact scope match can actually be replaced.
             var ownsExactScope = existing && this.#resolveUrl(existing.scope) === this.#resolveUrl(swScope);
-            if (existingWorker && ownsExactScope && this.#stripQuery(existingWorker.scriptURL) !== this.#stripQuery(this.#resolveUrl(swPath))) {
+            var countlyScope = this.#resolveUrl(swScope) === this.#defaultPushScope(swPath);
+            if (existingWorker && ownsExactScope && !countlyScope && this.#stripQuery(existingWorker.scriptURL) !== this.#stripQuery(this.#resolveUrl(swPath))) {
                 this.#log(logLevelEnums.ERROR, "resolvePushRegistration, A different service worker ([" + existingWorker.scriptURL + "]) already owns scope [" + existing.scope + "]. Registering [" + swPath + "] would replace it. Import countly_sw.js into that worker and pass its registration as push_service_worker_registration, or leave push_service_worker_scope unset so that Countly's worker gets a scope of its own.");
                 return null;
             }
@@ -2784,9 +2845,16 @@ class CountlyClass {
             }
             return subscription ? subscription.unsubscribe().then(() => true) : false;
         }).then((hadSubscription) => {
+            // a page that halted meanwhile leaves storage to the instance that came after it
+            if (this.#halted) {
+                return { unsubscribed: true };
+            }
             // forgotten first, so the details the worker is handed below do not name this subscription's key
             this.#clearStoredPushSubscription();
-            if (hadSubscription || hadRegisteredToken) {
+            if ((hadSubscription || hadRegisteredToken) && this.ignore_visitor) {
+                this.#log(logLevelEnums.DEBUG, "disable_push_notifications, The visitor opted out, so no request is sent; the server drops the token the next time it sends to it");
+            }
+            else if (hadSubscription || hadRegisteredToken) {
                 this.#sendPushToken(null);
             }
             else {
@@ -2871,8 +2939,9 @@ class CountlyClass {
     * Center removals mostly produce nothing; on macOS Chrome and Firefox report Notification Center
     * removals, Safari does not). Firefox, and Safari for Notification Center clicks, also report a
     * "closed" right after "clicked" because they fire the close event for the worker's own close()
-    * call. Safari and desktop Firefox show no action buttons (Firefox for Android does), so a click
-    * there is always the body (index 0).
+    * call. Safari shows no action buttons, and neither does desktop Firefox before version 152 (it
+    * shows them since, on macOS in the notification's Options list; Firefox for Android always
+    * did), so a click there is always the body (index 0).
     * The [CLY]_push_action event is recorded regardless of the listener.
     * Can also be given at init as `push_notification_listener`.
     * @param {?Function} listener - the function to call, or null to remove the current one
@@ -4859,7 +4928,7 @@ class CountlyClass {
         });
     };
     /**
-    * Opts out user of any metric tracking
+    * Opts out user of any metric tracking, and takes Countly's push subscription off the browser
     * */
     opt_out = () => {
         this.#log(logLevelEnums.WARNING, "opt_out, Opting out the user. Deprecated function call! Use 'consent' in place of this call.");
@@ -4868,6 +4937,21 @@ class CountlyClass {
         this.#setValueInStorage("cly_ignore", true);
         this.#forgetPushMerges();
         this.#syncPushWorkerConfig();
+        this.#unsubscribePushOnOptOut();
+    };
+
+    /**
+     *  Take Countly's push subscription off the browser when the visitor opts out, so no more
+     *  notifications arrive; the server drops the token the next time it sends to it. It stays a
+     *  push opt-out after opt_in, which only enable_push_notifications lifts.
+     *  @memberof Countly._internals
+     */
+    #unsubscribePushOnOptOut = () => {
+        if (!this.#isPushConfigured() || !this.#isPushSupported(false)) {
+            return;
+        }
+        this.#setPushRecord(pushStorageKeys.optOut, 1);
+        this.#unsubscribePush({});
     };
 
     /**
@@ -6654,7 +6738,10 @@ class CountlyClass {
 
     /**
      *  Tell whether this app uses Countly push in this browser: a VAPID key was given at init, or
-     *  the SDK registered a token for this app here.
+     *  the SDK registered a token for this app here. The SDK sends messages to a service worker only
+     *  while this holds, or right after it stopped holding, to take back the details it handed over.
+     *  Withdrawing push consent is the exception: it also drops Countly's subscription under the
+     *  default scope for an app that does not use push.
      *  @memberof Countly._internals
      *  @returns {Boolean} true when push is in use for this app key
      */
@@ -6680,7 +6767,7 @@ class CountlyClass {
      */
     #ownPushScope = () => {
         var registration = this.#pushRegistration || this.push_service_worker_registration;
-        var own = (registration && registration.scope) || this.#getPushRecord(pushStorageKeys.scope) || this.push_service_worker_scope || this.#defaultPushScope(this.push_service_worker_path);
+        var own = (registration && registration.scope) || this.#pushScope();
         return this.#resolveUrl(own);
     }
 
@@ -6719,6 +6806,7 @@ class CountlyClass {
     #setPushRecord = (key, value) => {
         if (this.storage === "none") {
             this.#pushRecordInMemory[key] = value;
+            return;
         }
         this.#setValueInStorage(key, value);
     }
@@ -7930,8 +8018,8 @@ class CountlyClass {
             buffer.splice(0, overflow);
             this.#logBufferDropped += overflow;
         }
-        // provisional lines have no gather id to be attributed to yet, so they wait
-        while (this.#SCLogGathering.decided && this.#logBuffer.length >= this.#SCLogGathering.batchSize) {
+        // provisional lines have no gather id to be attributed to yet, so they wait, and so do lines while the SDK stands in for another user
+        while (!this.#standingInForAnotherUser && this.#SCLogGathering.decided && this.#logBuffer.length >= this.#SCLogGathering.batchSize) {
             var before = this.#logBuffer.length;
             this.#flushLogBuffer();
             if (this.#logBuffer.length >= before) {
