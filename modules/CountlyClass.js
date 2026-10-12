@@ -69,6 +69,9 @@ class CountlyClass {
     #serverConfigTimer;
     #serverConfigAfterMerge;
     #remoteConfigAfterMerge;
+    #tabStore;
+    #sendingUpTo;
+    #requestOnItsWay;
     #lastBeat;
     #storedDuration;
     #lastView;
@@ -212,6 +215,9 @@ class CountlyClass {
         this.#serverConfigTimer = null;
         this.#serverConfigAfterMerge = false;
         this.#remoteConfigAfterMerge = false;
+        this.#tabStore = false;
+        this.#sendingUpTo = null;
+        this.#requestOnItsWay = null;
         this.#lastBeat;
         this.#storedDuration = 0;
         this.#lastView = null;
@@ -435,7 +441,7 @@ class CountlyClass {
             }
             this.#requestQueue.push(request);
         }
-        this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        this.#saveRequestQueue();
     }
 
     /**
@@ -829,11 +835,29 @@ class CountlyClass {
 
         this.#migrate();
 
-        // the request queue is always written to localStorage, so it is read back from there
-        var storedRequests = this.#getValueFromStorage("cly_queue", true);
-        this.#requestQueue = Array.isArray(storedRequests) ? storedRequests : [];
-        var storedEvents = this.#getValueFromStorage("cly_event");
-        this.#eventQueue = Array.isArray(storedEvents) ? storedEvents : [];
+        this.#tabStore = this.#canUseTabStore();
+        if (this.#tabStore) {
+            if (this.#isOpenersCopy()) {
+                this.#setTabValue("cly_queue", []);
+                this.#setTabValue("cly_event", []);
+            }
+            // each tab sends what it recorded; a reload, or a return after the tab was discarded, finds what it had not sent
+            var ownRequests = this.#getTabValue("cly_queue");
+            this.#requestQueue = Array.isArray(ownRequests) ? ownRequests : [];
+            var ownEvents = this.#getTabValue("cly_event");
+            this.#eventQueue = Array.isArray(ownEvents) ? ownEvents : [];
+            if (!document.hidden) {
+                this.#takeHandedOver(false);
+            }
+            this.#listenForTabChanges();
+        }
+        else {
+            // the request queue is always written to localStorage, so it is read back from there
+            var storedRequests = this.#getValueFromStorage("cly_queue", true);
+            this.#requestQueue = Array.isArray(storedRequests) ? storedRequests : [];
+            var storedEvents = this.#getValueFromStorage("cly_event");
+            this.#eventQueue = Array.isArray(storedEvents) ? storedEvents : [];
+        }
         this.#remoteConfigs = this.#getValueFromStorage("cly_remote_configs") || {};
 
         // flag that indicates that the offline mode was enabled at the end of the previous app session 
@@ -2116,7 +2140,7 @@ class CountlyClass {
             }
         }
         if (changed) {
-            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+            this.#saveRequestQueue();
         }
     };
 
@@ -2973,7 +2997,7 @@ class CountlyClass {
             return;
         }
         this.#eventQueue.push(e);
-        this.#setValueInStorage("cly_event", this.#eventQueue);
+        this.#saveEventQueue();
         this.#log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully adding the last event:", e);
         this.#handleJourneyTrigger(initialKey, e.id);
     }
@@ -6385,7 +6409,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "Flushing events");
             this.#toRequestQueue({ events: JSON.stringify(this.#eventQueue) });
             this.#eventQueue = [];
-            this.#setValueInStorage("cly_event", this.#eventQueue);
+            this.#saveEventQueue();
         }
     }
 
@@ -6937,7 +6961,8 @@ class CountlyClass {
         }
 
         this.#requestQueue.push(request);
-        this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        this.#saveRequestQueue();
+        this.#noteOrderSensitive([request], true);
         return true;
     }
 
@@ -6992,7 +7017,7 @@ class CountlyClass {
                 var events = this.#eventQueue.splice(0, this.#SCSizeEventBatch);
                 this.#toRequestQueue({ events: JSON.stringify(events) });
             }
-            this.#setValueInStorage("cly_event", this.#eventQueue);
+            this.#saveEventQueue();
         }
 
         // a quiet SDK that never fills a batch still reports what it gathered
@@ -7105,6 +7130,76 @@ class CountlyClass {
         }
     };
 
+    /**
+     *  Whether a request changes how the server treats the requests after it: a profile update, a device ID merge or a
+     *  consent change
+     *  @param {Object} request - request parameters
+     *  @returns {Boolean} true for such a request
+     */
+    #isOrderSensitive = (request) => {
+        return !!(request && (request.user_details || request.old_device_id || request.consent));
+    };
+
+    /**
+     *  Note the newest order-sensitive request among the given ones and start sending the queue up to it
+     *  @param {Array} requests - requests that just entered the queue
+     *  @param {Boolean} sendNow - false to leave the sending to the heartbeat, which continues it
+     */
+    #noteOrderSensitive = (requests, sendNow) => {
+        for (var i = requests.length - 1; i >= 0; i--) {
+            if (this.#isOrderSensitive(requests[i])) {
+                this.#sendUpTo(requests[i], sendNow);
+                return;
+            }
+        }
+    };
+
+    /**
+     *  Send the queue right away, without waiting for the heartbeat, until the given request is out
+     *  @param {Object} request - request in the queue to send up to
+     *  @param {Boolean} sendNow - false to leave the sending to the heartbeat, which continues it
+     */
+    #sendUpTo = (request, sendNow) => {
+        // the one further back in the queue is the one to send up to
+        if (this.#requestQueue.indexOf(request) > this.#requestQueue.indexOf(this.#sendingUpTo)) {
+            this.#sendingUpTo = request;
+        }
+        if (sendNow) {
+            this.#sendNextRightAway();
+        }
+    };
+
+    /**
+     *  Send the next request of the queue while it still holds the request noted to send up to, as other tabs send their own
+     *  requests meanwhile instead of waiting for this tab's heartbeat
+     */
+    #sendNextRightAway = () => {
+        if (this.#halted || this.test_mode || this.ignore_visitor) {
+            return;
+        }
+        if (this.#requestQueue.indexOf(this.#sendingUpTo) === -1) {
+            this.#sendingUpTo = null;
+            return;
+        }
+        this.#sendRequestFromQueue("send_request_queue");
+    };
+
+    /**
+     *  Remove a request from the queue once the server accepted it
+     *  @param {Object} sent - the request that was sent
+     */
+    #removeSentRequest = (sent) => {
+        if (!this.#tabStore) {
+            this.#requestQueue.shift();
+            return;
+        }
+        // requests taken over from other tabs go first, so the queue can change while this one is on its way
+        var index = this.#requestQueue.indexOf(sent);
+        if (index !== -1) {
+            this.#requestQueue.splice(index, 1);
+        }
+    };
+
     #sendRequestFromQueue = (requestName, onSuccess) => {
         return new Promise((resolve) => {
             if (this.#offlineMode) {
@@ -7131,13 +7226,15 @@ class CountlyClass {
             this.#readyToProcess = false;
             var params = this.#requestQueue[0];
             params.rr = this.#requestQueue.length;
-            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+            this.#requestOnItsWay = params;
+            this.#saveRequestQueue();
             this.#makeNetworkRequest(requestName, this.url + this.#apiPath, params, (err, parameters) => {
+                this.#requestOnItsWay = null;
                 if (err) {
                     this.#failTimeout = getTimestamp() + this.#failTimeoutAmount;
                 }
                 else {
-                    this.#requestQueue.shift();
+                    this.#removeSentRequest(params);
                     this.#checkBackoffConditions(parameters);
                     if ((this.#serverConfigAfterMerge || this.#remoteConfigAfterMerge) && !this.#mergeRequestUnsent()) {
                         this.#fetchAfterMerge();
@@ -7151,9 +7248,17 @@ class CountlyClass {
                         }
                     }
                 }
-                this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+                this.#saveRequestQueue();
                 this.#readyToProcess = true;
                 resolve(!err);
+                if (!err) {
+                    // a microtask, not a timer: background tabs slow timers down, and a fake handler answers synchronously
+                    Promise.resolve().then(this.#sendNextRightAway);
+                }
+                else if (this.#tabStore && document.hidden) {
+                    // a tab in the background can be closed without any further event, the shared storage keeps what it could not send
+                    this.#handOver();
+                }
             }, false);
         });
     }
@@ -8651,6 +8756,221 @@ class CountlyClass {
     }
 
     /**
+     *  The storage key of a value of this instance, with its app key and namespace
+     *  @param {String} key - key of the value
+     *  @returns {String} the prefixed key
+     */
+    #storageKey = (key) => {
+        var prefixed = this.app_key + "/" + key;
+        return this.namespace ? stripTrailingSlash(this.namespace) + "/" + prefixed : prefixed;
+    };
+
+    /**
+     *  Whether this page can keep its queues in its own tab's storage: a browser page with sessionStorage, neither with
+     *  storage "none" nor with a storage object of the developer's
+     *  @returns {Boolean} true when the queues can be kept per tab
+     */
+    #canUseTabStore = () => {
+        if (!isBrowser || this.storage === "none" || typeof this.storage === "object") {
+            return false;
+        }
+        try {
+            window.sessionStorage.setItem("cly_tab_check", "1");
+            window.sessionStorage.removeItem("cly_tab_check");
+            return true;
+        }
+        catch (e) {
+            return false;
+        }
+    };
+
+    /**
+     *  Read a value this tab keeps in its own storage
+     *  @param {String} key - key of the value
+     *  @returns {Varies} the stored value, or undefined
+     */
+    #getTabValue = (key) => {
+        try {
+            return this.deserialize(window.sessionStorage.getItem(this.#storageKey(key)));
+        }
+        catch (e) {
+            return undefined;
+        }
+    };
+
+    /**
+     *  Keep a value in this tab's own storage
+     *  @param {String} key - key of the value
+     *  @param {Varies} value - value to keep
+     */
+    #setTabValue = (key, value) => {
+        try {
+            window.sessionStorage.setItem(this.#storageKey(key), this.serialize(value));
+        }
+        catch (e) {
+            this.#log(logLevelEnums.WARNING, "setTabValue, Could not keep [" + key + "] in this tab's storage: " + e);
+        }
+    };
+
+    /**
+     *  Save the request queue: in this tab's own storage, or in localStorage where there is none
+     */
+    #saveRequestQueue = () => {
+        if (this.#tabStore) {
+            this.#setTabValue("cly_queue", this.#requestQueue);
+        }
+        else {
+            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        }
+    };
+
+    /**
+     *  Save the event queue: in this tab's own storage, or where the storage setting puts it where there is none
+     */
+    #saveEventQueue = () => {
+        if (this.#tabStore) {
+            this.#setTabValue("cly_event", this.#eventQueue);
+        }
+        else {
+            this.#setValueInStorage("cly_event", this.#eventQueue);
+        }
+    };
+
+    /**
+     *  Leave this tab's unsent events and requests in the shared storage when its page is left, or when it cannot send
+     *  them while in the background, for the tab in front or the next page to send
+     */
+    #handOver = () => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        this.#flushPendingRequestBuffer();
+        this.#sendEventsForced();
+        // a request on its way has almost always reached the server already, handing it over would send it twice
+        var unsent = this.#requestQueue.filter((request) => request !== this.#requestOnItsWay);
+        if (unsent.length) {
+            var waiting = this.#getValueFromStorage("cly_queue", true);
+            var list = (Array.isArray(waiting) ? waiting : []).concat(unsent);
+            try {
+                window.localStorage.setItem(this.#storageKey("cly_queue"), this.serialize(list));
+                this.#log(logLevelEnums.DEBUG, "handOver, Left [" + unsent.length + "] unsent request(s) for the tab in front or the next page");
+                unsent = [];
+            }
+            catch (e) {
+                // with nowhere to leave them they stay in this tab's storage, for its next page
+                this.#log(logLevelEnums.WARNING, "handOver, Could not leave the unsent requests for other tabs: " + e);
+            }
+        }
+        this.#requestQueue = unsent;
+        this.#saveRequestQueue();
+    };
+
+    /**
+     *  Send everything this tab holds when it is left for another tab or app: the browser slows a tab in the background
+     *  down, and a phone can close it without any further event
+     */
+    #sendWhenLeft = () => {
+        if (this.#halted) {
+            return;
+        }
+        if (this.#global && typeof Countly.q !== "undefined" && Countly.q.length > 0) {
+            this.#processAsyncQueue();
+        }
+        if (!this.test_mode_eq) {
+            this.#sendEventsForced();
+        }
+        if (!this.#requestQueue.length) {
+            return;
+        }
+        if (this.#cannotSendNow()) {
+            this.#handOver();
+            return;
+        }
+        this.#sendUpTo(this.#requestQueue[this.#requestQueue.length - 1], true);
+    };
+
+    /**
+     *  Whether this tab cannot send for now: its last send failed, as without a connection, or it is in offline mode
+     *  @returns {Boolean} true while sending is held back for one of these reasons
+     */
+    #cannotSendNow = () => {
+        return this.#offlineMode || getTimestamp() <= this.#failTimeout;
+    };
+
+    /**
+     *  Take over the requests and events other tabs left in the shared storage, to be sent before this tab's own
+     *  @param {Boolean} sendNow - false at start, where requests from a temporary device ID still get the real one
+     */
+    #takeHandedOver = (sendNow) => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        var requests = this.#getValueFromStorage("cly_queue", true);
+        if (Array.isArray(requests) && requests.length) {
+            this.#removeValueFromStorage("cly_queue", true);
+            this.#log(logLevelEnums.DEBUG, "takeHandedOver, Taking over [" + requests.length + "] request(s) other tabs left");
+            this.#requestQueue = requests.concat(this.#requestQueue);
+            if (this.#requestQueue.length > this.#SCSizeReqQueue) {
+                this.#requestQueue = this.#requestQueue.slice(-this.#SCSizeReqQueue);
+            }
+            this.#saveRequestQueue();
+            this.#noteOrderSensitive(requests, sendNow);
+        }
+        // events are only left there by SDK versions that shared the event queue between tabs
+        var events = this.#getValueFromStorage("cly_event");
+        if (Array.isArray(events) && events.length) {
+            this.#removeValueFromStorage("cly_event");
+            this.#eventQueue = events.concat(this.#eventQueue);
+            this.#saveEventQueue();
+        }
+    };
+
+    /**
+     *  Hand over what this tab has not sent when its page is left, and take over what other tabs left whenever this
+     *  tab comes to the front
+     */
+    #listenForTabChanges = () => {
+        add_event_listener(window, "onpagehide" in window ? "pagehide" : "unload", () => {
+            this.#handOver();
+        });
+        add_event_listener(window, "pageshow", (event) => {
+            if (event && event.persisted && !document.hidden) {
+                this.#takeHandedOver(true);
+            }
+        });
+        add_event_listener(document, "visibilitychange", () => {
+            if (document.hidden) {
+                this.#sendWhenLeft();
+            }
+            else {
+                this.#takeHandedOver(true);
+            }
+        });
+    };
+
+    /**
+     *  Whether what this tab's storage holds is a copy of the page that opened this tab: a tab opened by script starts with
+     *  a copy of its opener's storage, while the opener keeps and sends its own unsent data
+     *  @returns {Boolean} true on a new visit of a tab another page opened, false otherwise or when the browser cannot tell
+     */
+    #isOpenersCopy = () => {
+        try {
+            if (!window.opener) {
+                return false;
+            }
+            var entries = typeof performance.getEntriesByType === "function" ? performance.getEntriesByType("navigation") : [];
+            if (entries && entries.length) {
+                return entries[0].type === "navigate";
+            }
+            // older browsers number the type, 0 being a new visit
+            return !!(performance.navigation && performance.navigation.type === 0);
+        }
+        catch (e) {
+            return false;
+        }
+    };
+
+    /**
      *  Apply modified storage changes
      *  @param {String} key - key of storage modified
      *  @param {Varies} newValue - new value for storage
@@ -8662,13 +8982,23 @@ class CountlyClass {
         switch (key) {
             // queue of requests
             case "cly_queue":
-                var mirroredRequests = this.deserialize(newValue || "[]");
-                this.#requestQueue = Array.isArray(mirroredRequests) ? mirroredRequests : [];
+                if (this.#tabStore) {
+                    // another tab left its unsent requests: the tab in front sends them, only one window has the focus
+                    if (newValue && !document.hidden && document.hasFocus()) {
+                        this.#takeHandedOver(true);
+                    }
+                }
+                else {
+                    var mirroredRequests = this.deserialize(newValue || "[]");
+                    this.#requestQueue = Array.isArray(mirroredRequests) ? mirroredRequests : [];
+                }
                 break;
             // queue of events
             case "cly_event":
-                var mirroredEvents = this.deserialize(newValue || "[]");
-                this.#eventQueue = Array.isArray(mirroredEvents) ? mirroredEvents : [];
+                if (!this.#tabStore) {
+                    var mirroredEvents = this.deserialize(newValue || "[]");
+                    this.#eventQueue = Array.isArray(mirroredEvents) ? mirroredEvents : [];
+                }
                 break;
             case "cly_remote_configs":
                 this.#remoteConfigs = this.deserialize(newValue || "{}");
@@ -8705,6 +9035,10 @@ class CountlyClass {
         this.#setValueInStorage("cly_queue", []);
         this.#eventQueue = [];
         this.#setValueInStorage("cly_event", []);
+        if (this.#tabStore) {
+            this.#saveRequestQueue();
+            this.#saveEventQueue();
+        }
     };
 
     /**

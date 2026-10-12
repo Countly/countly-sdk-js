@@ -64,6 +64,8 @@
 * Mitigated an issue where, after `change_id` with merge, remote config could be fetched before the merge request was sent, returning the values of a new, empty user.
 * Mitigated an issue where, with `storage: "cookie"`, the health check did not report the errors and warnings counted on earlier pages.
 * Mitigated an issue where feedback widget links carried "undefined" as the platform when the SDK did not know it.
+* Mitigated an issue where, with several tabs of a site open, events and session updates could be sent more than once or lost. Each tab now sends what it recorded and sends what it holds as soon as it goes to the background; what it cannot send then, or has not sent when its page is closed, is left for the tab in front or the next visit to send.
+* Mitigated an issue where namespaces sharing an app key took over each other's device ID and queued data while open in several tabs.
 
 ## 26.1.3
 

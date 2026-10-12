@@ -296,6 +296,12 @@ function disablePush() {
     return cy.wrap(null).then(() => Countly.disable_push_notifications());
 }
 
+// loses what the page had queued, in its tab and in what tabs left behind
+function dropStoredQueue() {
+    localStorage.removeItem(hp.appKey + "/cly_queue");
+    sessionStorage.removeItem(hp.appKey + "/cly_queue");
+}
+
 function tokenRequests(callback) {
     cy.fetch_local_request_queue().then((rq) => {
         callback(rq.filter((request) => request.token_session));
@@ -1383,7 +1389,7 @@ describe("Web push tests", () => {
             expectTokenRequestCount(1);
             cy.then(() => {
                 // the first request was lost: the queue overflowed or another tab's copy replaced it
-                localStorage.removeItem(hp.appKey + "/cly_queue");
+                dropStoredQueue();
                 reloadWithPushRecord({ push_vapid_public_key: VAPID_KEY });
             });
             cy.wait(hp.sWait);
@@ -1665,7 +1671,7 @@ describe("Web push tests", () => {
             enablePush();
             expectTokenRequestCount(1);
             cy.then(() => {
-                localStorage.removeItem(hp.appKey + "/cly_queue");
+                dropStoredQueue();
                 reloadWithPushRecord({ require_consent: true, push_vapid_public_key: VAPID_KEY, clear_stored_id: true, device_id: "someone else" });
             });
             cy.wait(hp.sWait);
@@ -1682,7 +1688,7 @@ describe("Web push tests", () => {
             initMain({ push_vapid_public_key: VAPID_KEY });
             enablePush();
             cy.then(() => {
-                localStorage.removeItem(hp.appKey + "/cly_queue");
+                dropStoredQueue();
                 reloadWithPushRecord({ push_vapid_public_key: VAPID_KEY, clear_stored_id: true, device_id: "someone else", country_code: "TR", city: "Izmir", ip_address: "10.1.2.3" });
                 Countly.begin_session();
             });
@@ -1704,7 +1710,7 @@ describe("Web push tests", () => {
             cy.then(() => Countly.add_consent(["push"]));
             enablePush();
             cy.then(() => {
-                localStorage.removeItem(hp.appKey + "/cly_queue");
+                dropStoredQueue();
                 // the site passes the logged-in user's own id again
                 reloadWithPushRecord({ require_consent: true, push_vapid_public_key: VAPID_KEY, clear_stored_id: true });
             });
@@ -2694,7 +2700,7 @@ describe("Web push tests", () => {
                 enablePush();
                 expectTokenRequestCount(1);
                 cy.then(() => {
-                    localStorage.removeItem(hp.appKey + "/cly_queue");
+                    dropStoredQueue();
                     reloadWithPushRecord(config);
                 });
                 cy.wait(hp.sWait);
@@ -3180,7 +3186,7 @@ describe("Web push tests", () => {
             cy.then(() => {
                 anonymous = Countly.get_device_id();
                 Countly.set_id("logged in user");
-                localStorage.removeItem(hp.appKey + "/cly_queue");
+                dropStoredQueue();
                 reloadWithPushRecord({ device_id: "logged in user", push_vapid_public_key: VAPID_KEY });
             });
             cy.then(() => push.emit(keptClick("kept-anonymous", { device_id: anonymous, t: 1, recordable: true })));

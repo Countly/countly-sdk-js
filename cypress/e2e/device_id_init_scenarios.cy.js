@@ -2069,8 +2069,8 @@ describe("Requests queued under a temporary device ID", () => {
                 expect(queued.length).to.eq(1);
                 expect(queued[0].device_id).to.eq("realID");
                 expect(queued[0].t).to.eq(DeviceIdTypeInternalEnumsTest.DEVELOPER_SUPPLIED);
-                cy.getLocalStorage("YOUR_APP_KEY/cly_queue").then((stored) => {
-                    expect(JSON.parse(stored)[0].device_id).to.eq("realID");
+                cy.fetch_local_request_queue().then((stored) => {
+                    expect(stored[0].device_id).to.eq("realID");
                 });
             });
         });

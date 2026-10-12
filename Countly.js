@@ -1,6 +1,6 @@
 import CountlyClass from "./modules/CountlyClass.js";
 import { featureList, DeviceIdTypeInternalEnums, CDN } from "./modules/Constants.js";
-import { checkIfLoggingIsOn } from "./modules/Utils.js";
+import { checkIfLoggingIsOn, stripTrailingSlash } from "./modules/Utils.js";
 import { isBrowser, Countly } from "./modules/Platform.js";
 
 var apmLibrariesNotLoaded = true; // used to prevent loading apm scripts multiple times.
@@ -171,11 +171,22 @@ Countly.DeviceIdType = {
  */
 if (isBrowser) {
     window.addEventListener("storage", function (e) {
+        try {
+            // each tab keeps its queues in its own sessionStorage, which other frames of that tab can change too
+            if (e.storageArea && e.storageArea !== window.localStorage) {
+                return;
+            }
+        }
+        catch (ex) {
+            return;
+        }
         var parts = (e.key + "").split("/");
         var key = parts.pop();
         var appKey = parts.pop();
-        if (Countly.i && Countly.i[appKey]) {
-            Countly.i[appKey]._internals.onStorageChange(key, e.newValue);
+        var inst = Countly.i && Countly.i[appKey];
+        // what is left of the key is the namespace, which has to be the instance's own
+        if (inst && parts.join("/") === stripTrailingSlash(inst.namespace || "")) {
+            inst._internals.onStorageChange(key, e.newValue);
         }
     });
 }
