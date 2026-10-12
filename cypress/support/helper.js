@@ -16,6 +16,7 @@ function haltAndClearStorage(callback) {
     }
     cy.wait(sWait).then(() => {
         cy.clearAllLocalStorage();
+        cy.clearAllSessionStorage();
         cy.clearAllCookies();
         cy.wait(sWait).then(() => {
             callback();

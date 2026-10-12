@@ -25,9 +25,7 @@ describe("Upload user profile picture", () => {
             Countly.uploadUserProfilePicture(binary);
 
             cy.wait(500).then(() => {
-                cy.getLocalStorage("YOUR_APP_KEY/cly_queue").then((val) => {
-                    expect(val).to.be.ok;
-                    const queue = JSON.parse(val);
+                cy.fetch_local_request_queue().then((queue) => {
                     expect(queue.length).to.be.greaterThan(0);
 
                     const imgReq = queue.find(r => r.__imageUpload === true || r.imageData);
@@ -153,12 +151,7 @@ describe("Upload user profile picture", () => {
             Countly.uploadUserProfilePicture(txtBlob);
 
             cy.wait(300).then(() => {
-                cy.getLocalStorage("YOUR_APP_KEY/cly_queue").then((val) => {
-                    if (!val) {
-                        expect(val).to.be.not.ok;
-                        return;
-                    }
-                    const queue = JSON.parse(val || '[]');
+                cy.fetch_local_request_queue().then((queue) => {
                     const imgReq = queue.find(r => r.__imageUpload === true || r.imageData);
                     expect(imgReq).to.not.exist;
                 });
