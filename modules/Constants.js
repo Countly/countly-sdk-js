@@ -289,6 +289,15 @@ var pushConstants = Object.freeze({
 var SDK_VERSION = "26.8.0";
 var SDK_NAME = "javascript_native_web";
 
+/**
+ * Segmentation keys the server and the widget and content pages read on content and feedback widget events, which
+ * the global content segmentation leaves out: the server drops a survey event carrying "closed" outside a journey,
+ * skips widget processing for any "campaign_id", counts keys starting with "answ" as survey answers and drops a
+ * rating event whose "rating" is not 1 to 5, and the widget pages fill in only keys the event leaves empty
+ */
+var contentReservedSegmentationKeys = Object.freeze(["widget_id", "platform", "app_version", "rating", "ratingSum", "comment", "email", "contactMe", "platform_version_rate", "shown", "closed", "answered", "answers", "type", "summaryUpdated", "campaign_id", "schedule_id", "content_id", "journey_id", "journey_definition_id", "journey_instance_id", "journeyId", "journeyDefinitionId", "journeyInstanceId", "blockId", "dismissed", "element", "element_id", "started", "commented"]);
+var contentReservedSegmentationPrefix = "answ";
+
 // Using this on document.referrer would return an array with 17 elements in it. The 12th element (array[11]) would be the path we are looking for. Others would be things like password and such (use https://regex101.com/ to check more)
 // an example URL:
 // http://user:pass@host:8080/path/to/resource?query=value#fragment
@@ -314,4 +323,4 @@ var SDK_NAME = "javascript_native_web";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE };

@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -110,6 +110,8 @@ class CountlyClass {
     #contentZoneEntryTimer;
     #contentMessageListener;
     #contentResizeListener;
+    #globalContentSegmentation = {};
+    #contentTheme = null;
     #contentIframeID;
     #crashFilterCallback;
     #serverConfigCache;
@@ -723,6 +725,14 @@ class CountlyClass {
         this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
         this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
         this.contentWhitelist = getConfig("content_whitelist", ob, []);
+        var globalContentSegmentation = getConfig("global_content_segmentation", ob, null);
+        if (globalContentSegmentation !== null) {
+            this.#setGlobalContentSegmentation(globalContentSegmentation, "initialize");
+        }
+        var contentTheme = getConfig("content_theme", ob, null);
+        if (contentTheme !== null) {
+            this.#setContentTheme(contentTheme, "initialize");
+        }
         this.salt = getConfig("salt", ob, null);
         this.push_vapid_public_key = getConfig("push_vapid_public_key", ob, null);
         this.push_service_worker_path = getConfig("push_service_worker_path", ob, "/countly_sw.js");
@@ -1937,6 +1947,8 @@ class CountlyClass {
         // like a reload, halt() keeps a stored push opt-out and drops the one storage "none" keeps in memory
         this.#pushRecordInMemory = {};
         this.#pushWorkerVersionsWarned = [];
+        this.#globalContentSegmentation = {};
+        this.#contentTheme = null;
         this.#idBeforeOfflineMode = null;
         this.#SCLimitKeyLength = undefined;
         this.#SCLimitValueSize  = undefined;
@@ -5048,6 +5060,7 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating lower than 1. Changing it back to 1 now.");
             event.segmentation.rating = 1;
         }
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
         this.#log(logLevelEnums.INFO, "recordRatingWidgetWithID, Reporting Rating Widget: ", event);
         this.#add_cly_events(event);
     };
@@ -5173,6 +5186,7 @@ class CountlyClass {
             // add response to the segmentation
             event.segmentation = addNewProperties(event.segmentation, widgetResult, props);
         }
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
 
         // add event
         this.#log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Reporting " + type + ": ", event);
@@ -5559,7 +5573,7 @@ class CountlyClass {
     * @param {Object} presentableFeedback - Current presentable feedback
     * @param {String} [id] - DOM id to append the feedback widget (optional, in case not used pass undefined)
     * @param {String} [className] - Class name to append the feedback widget (optional, in case not used pass undefined)
-    * @param {Object} [feedbackWidgetSegmentation] - Segmentation object to be passed to the feedback widget (optional)
+    * @param {Object} [feedbackWidgetSegmentation] - Segmentation object to be passed to the feedback widget, which the global content segmentation is added behind (optional)
     * */
     present_feedback_widget = (presentableFeedback, id, className, feedbackWidgetSegmentation) => {
         if (!isBrowser) {
@@ -5636,8 +5650,9 @@ class CountlyClass {
             url += "&sdk_version=" + encodeURIComponent(this.#sdkVersion);
             var customObjectToSendWithTheWidget = {};
             customObjectToSendWithTheWidget.tc = 1; // indicates SDK supports opening links from the widget in a new tab
-            if (feedbackWidgetSegmentation) {
-                customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
+            var widgetSegmentation = this.#withGlobalContentSegmentation(feedbackWidgetSegmentation);
+            if (Object.keys(widgetSegmentation).length) {
+                customObjectToSendWithTheWidget.sg = widgetSegmentation;
             }
             const resInfo = this.#getResolution(true);
             customObjectToSendWithTheWidget.width = resInfo.width;
@@ -5656,6 +5671,7 @@ class CountlyClass {
                 url += "&provided_url=" + encodeURIComponent(providedPath);
             }
             url += "&widget_v=web";
+            url = this.#withContentTheme(url);
 
             var iframe = document.createElement("iframe");
             iframe.src = url;
@@ -6139,6 +6155,161 @@ class CountlyClass {
             this.#exitContentZoneInternal();
             this.#closeContentFrame();
         },
+        setGlobalContentSegmentation: (segmentation) => {
+            this.#setGlobalContentSegmentation(segmentation, "content.setGlobalContentSegmentation");
+        },
+        setTheme: (theme) => {
+            this.#setContentTheme(theme, "content.setTheme");
+        },
+    };
+
+    /**
+     * Keep the segmentation recorded with every content and feedback widget event, in place of the one kept before.
+     * Values other than strings, numbers, booleans and lists of those are left out, as are the keys the server and
+     * the widget and content pages read on these events, and what is kept is held to the SDK's limits.
+     * @param {?Object} segmentation - the segmentation; null or an empty object clears it
+     * @param {string} caller - name of the calling method, for the log
+     */
+    #setGlobalContentSegmentation = (segmentation, caller) => {
+        if (segmentation === null || segmentation === undefined || (typeof segmentation === "object" && !Array.isArray(segmentation) && !Object.keys(segmentation).length)) {
+            this.#globalContentSegmentation = {};
+            this.#log(logLevelEnums.DEBUG, caller + ", Cleared the global content segmentation");
+            return;
+        }
+        if (typeof segmentation !== "object" || Array.isArray(segmentation)) {
+            this.#globalContentSegmentation = {};
+            this.#log(logLevelEnums.WARNING, caller + ", The global content segmentation must be an object, cleared it instead");
+            return;
+        }
+        var isValue = (value) => typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && isFinite(value));
+        var isReserved = (key) => contentReservedSegmentationKeys.indexOf(key) !== -1 || key.indexOf(contentReservedSegmentationPrefix) === 0;
+        var kept = {};
+        var reserved = [];
+        var unsupported = [];
+        Object.keys(segmentation).forEach((key) => {
+            var value = segmentation[key];
+            // a key over the key length limit is sent cut, which can make it one the server reads
+            if (isReserved(key) || isReserved(key.slice(0, this.#SCLimitKeyLength))) {
+                reserved.push(key);
+            }
+            else if (isValue(value)) {
+                kept[key] = value;
+            }
+            else if (Array.isArray(value)) {
+                var items = value.filter(isValue);
+                if (items.length < value.length) {
+                    unsupported.push(key + " (some items)");
+                }
+                kept[key] = items.map((item) => truncateSingleValue(item, this.#SCLimitValueSize, caller, this.#log));
+            }
+            else {
+                unsupported.push(key);
+            }
+        });
+        if (reserved.length) {
+            this.#log(logLevelEnums.WARNING, caller + ", Left out keys the server and the widget and content pages read on these events: [" + reserved.join(", ") + "]");
+        }
+        if (unsupported.length) {
+            this.#log(logLevelEnums.WARNING, caller + ", Left out values that are not a string, number, boolean or a list of those: [" + unsupported.join(", ") + "]");
+        }
+        this.#globalContentSegmentation = truncateObject(kept, this.#SCLimitKeyLength, this.#SCLimitValueSize, this.#SCLimitSegmentationValues, caller, this.#log);
+        this.#log(logLevelEnums.DEBUG, caller + ", Global content segmentation set: [" + JSON.stringify(this.#globalContentSegmentation) + "]");
+    };
+
+    /**
+     * A segmentation with the global content segmentation added after its own keys, which win, so the SDK's
+     * segmentation limit drops global keys first.
+     * @param {?Object} segmentation - the event's own segmentation
+     * @returns {Object} the merged segmentation
+     */
+    #withGlobalContentSegmentation = (segmentation) => {
+        var merged = {};
+        if (segmentation && typeof segmentation === "object" && !Array.isArray(segmentation)) {
+            Object.keys(segmentation).forEach((key) => {
+                merged[key] = segmentation[key];
+            });
+        }
+        Object.keys(this.#globalContentSegmentation).forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(merged, key)) {
+                merged[key] = this.#globalContentSegmentation[key];
+            }
+        });
+        return merged;
+    };
+
+    /**
+     * Keep the theme content and feedback widgets are told to show: "dark" or "light", false to tell them none, or
+     * null to tell them the page's own.
+     * @param {?(string|boolean)} theme - the theme
+     * @param {string} caller - name of the calling method, for the log
+     */
+    #setContentTheme = (theme, caller) => {
+        if (theme === null || theme === undefined) {
+            this.#contentTheme = null;
+            this.#log(logLevelEnums.DEBUG, caller + ", Content and feedback widgets follow the page's theme");
+            return;
+        }
+        if (theme !== "dark" && theme !== "light" && theme !== false) {
+            this.#log(logLevelEnums.WARNING, caller + ", Unknown theme: [" + theme + "], expected \"dark\", \"light\", false or null; keeping " + (this.#contentTheme === null ? "the page's theme" : "[" + this.#contentTheme + "]"));
+            return;
+        }
+        this.#contentTheme = theme;
+        this.#log(logLevelEnums.DEBUG, caller + (theme === false ? ", Content and feedback widgets are told no theme" : ", Content and feedback widgets are shown in the [" + theme + "] theme"));
+    };
+
+    /**
+     * The theme content and feedback widgets are told to show, as their th parameter: the theme set for them, else
+     * the color-scheme the page declares, in its CSS or else in its color-scheme meta tag, when it names only one,
+     * else the browser's setting; none when it is turned off.
+     * @returns {?string} "d" or "l", or null when no theme is known or it is turned off
+     */
+    #currentContentTheme = () => {
+        if (this.#contentTheme === false) {
+            return null;
+        }
+        if (this.#contentTheme) {
+            return this.#contentTheme === "dark" ? "d" : "l";
+        }
+        try {
+            var schemes = (value) => (value || "").split(/[\s,]+/).filter((scheme) => scheme === "dark" || scheme === "light");
+            var declared = schemes(window.getComputedStyle(document.documentElement).colorScheme);
+            if (!declared.length) {
+                // the meta tag sets the color-scheme of a page whose CSS sets none, but does not show in the computed style
+                var meta = document.querySelector("meta[name='color-scheme']");
+                declared = schemes(meta && meta.getAttribute("content"));
+            }
+            if (declared.length === 1) {
+                return declared[0] === "dark" ? "d" : "l";
+            }
+            if (typeof window.matchMedia === "function") {
+                if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+                    return "d";
+                }
+                if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+                    return "l";
+                }
+            }
+        }
+        catch (e) {
+            this.#log(logLevelEnums.DEBUG, "currentContentTheme, Could not read the page's theme: " + e);
+        }
+        return null;
+    };
+
+    /**
+     * A content or widget page URL with the current theme added to its query, before any fragment.
+     * @param {string} url - the page URL
+     * @returns {string} the URL with th=d or th=l, unchanged when no theme is known
+     */
+    #withContentTheme = (url) => {
+        var theme = this.#currentContentTheme();
+        if (!theme || typeof url !== "string") {
+            return url;
+        }
+        var hashAt = url.indexOf("#");
+        var page = hashAt === -1 ? url : url.slice(0, hashAt);
+        var hash = hashAt === -1 ? "" : url.slice(hashAt);
+        return page + (page.indexOf("?") === -1 ? "?" : "&") + "th=" + theme + hash;
     };
 
     /**
@@ -6360,7 +6531,7 @@ class CountlyClass {
                     // insert into the query (before any #hash); server ignores values with ':' or '//'
                     search += (search ? "&" : "?") + "provided_url=" + encodeURIComponent(providedPath);
                 }
-                contentUrl = base + search + parts.hash;
+                contentUrl = this.#withContentTheme(base + search + parts.hash);
                 this.#log(logLevelEnums.DEBUG, "displayContent, Content iframe URL:[" + contentUrl + "]");
             }
             var iframe = document.createElement("iframe");
@@ -6435,7 +6606,11 @@ class CountlyClass {
             };
             // event is expected to be an array of events
             for (var i = 0; i < events.length; i++) {
-                this.#add_cly_events(events[i]); // let this method handle the event
+                var contentEvent = events[i];
+                if (contentEvent && typeof contentEvent === "object") {
+                    contentEvent.segmentation = this.#withGlobalContentSegmentation(contentEvent.segmentation);
+                }
+                this.#add_cly_events(contentEvent); // let this method handle the event
             }
         }
 
@@ -6548,7 +6723,7 @@ class CountlyClass {
             var iframe = document.createElement("iframe");
             iframe.name = "countly-feedback-iframe";
             iframe.id = "countly-feedback-iframe";
-            iframe.src = this.url + "/feedback?widget_id=" + encodeURIComponent(currentWidget._id) + "&app_key=" + encodeURIComponent(this.app_key) + "&device_id=" + encodeURIComponent(this.device_id) + "&sdk_version=" + encodeURIComponent(this.#sdkVersion);
+            iframe.src = this.#withContentTheme(this.url + "/feedback?widget_id=" + encodeURIComponent(currentWidget._id) + "&app_key=" + encodeURIComponent(this.app_key) + "&device_id=" + encodeURIComponent(this.device_id) + "&sdk_version=" + encodeURIComponent(this.#sdkVersion));
             // inject them to dom
             document.body.appendChild(wrapper);
             wrapper.appendChild(closeIcon);

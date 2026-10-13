@@ -28,8 +28,9 @@ describe("Content proxy path rebasing", () => {
                 var iframe = document.getElementById("cly-content-iframe");
                 expect(iframe, "content iframe should be created").to.exist;
                 // server returned http://test/_external/content?...; rebased onto this.url with
-                // provided_url appended (path only, encoded) so the content page's assets resolve
-                expect(iframe.getAttribute("src")).to.eq(
+                // provided_url appended (path only, encoded) so the content page's assets resolve;
+                // the theme the SDK adds last follows the test browser's setting
+                expect(iframe.getAttribute("src").replace(/&th=[dl]$/, "")).to.eq(
                     "http://localhost:9000/countly/_external/content?id=111&uid=tester&app_id=222&provided_url=%2Fcountly"
                 );
             });

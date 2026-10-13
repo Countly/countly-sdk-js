@@ -122,6 +122,8 @@
         "content.enterContentZone",
         "content.refreshContentZone",
         "content.exitContentZone",
+        "content.setGlobalContentSegmentation",
+        "content.setTheme",
         "feedback.showNPS",
         "feedback.showSurvey",
         "feedback.showRating",

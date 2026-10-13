@@ -650,6 +650,8 @@ declare module "countly-sdk-web" {
      * - enterContentZone(contentFilterCallback) - enters a content zone
      * - refreshContentZone() - refreshes the content zone
      * - exitContentZone() - exits a content zone
+     * - setGlobalContentSegmentation(segmentation) - sets the segmentation recorded with every content and feedback widget event
+     * - setTheme(theme) - sets the theme content and feedback widgets are shown in
      */
     const content: Content;
     interface Content {
@@ -666,6 +668,21 @@ declare module "countly-sdk-web" {
        * Exits content zone
        */
       exitContentZone(): void;
+      /**
+       * Sets the segmentation recorded with every content and feedback widget event and given to the feedback widgets
+       * the SDK opens, in place of the one set before. An event's own keys win over it. Keys the server reads on these
+       * events, such as "rating", "closed", "campaign_id" or keys starting with "answ", are left out, as are values
+       * other than strings, numbers, booleans and lists of those. It stays when the device ID changes.
+       * @param {Object|null} segmentation - the segmentation; null or an empty object clears it
+       */
+      setGlobalContentSegmentation(segmentation: { [key: string]: string | number | boolean | Array<string | number | boolean> } | null): void;
+      /**
+       * Sets the theme content and feedback widgets are shown in. By default they follow the page: the color-scheme
+       * it declares in its CSS or its color-scheme meta tag when it names only one, otherwise the browser's light or
+       * dark setting. Content already on the screen keeps the theme it opened with.
+       * @param {"dark"|"light"|false|null} theme - the theme, false to tell them no theme at all, or null to follow the page again
+       */
+      setTheme(theme: "dark" | "light" | false | null): void;
     }
     /**
      * This function retrieves all associated widget information (IDs, type, name etc in an array/list of objects) of your app
@@ -698,7 +715,7 @@ declare module "countly-sdk-web" {
      * @param {Object} presentableFeedback - Current presentable feedback
      * @param {string} [id] - DOM id to append the feedback widget (optional, in case not used pass undefined)
      * @param {string} [className] - Class name to append the feedback widget (optional, in case not used pass undefined)
-     * @param {Object} [feedbackWidgetSegmentation] - Segmentation object to be passed to the feedback widget (optional)
+     * @param {Object} [feedbackWidgetSegmentation] - Segmentation object to be passed to the feedback widget, which the global content segmentation is added behind (optional)
      */
     function present_feedback_widget(
       presentableFeedback: object,
