@@ -5,126 +5,7 @@
 const MESSAGE_ID = "507f1f77bcf86cd799439011";
 const { SDK_VERSION, pushMessageTypes, pushWorkerParams, pushConstants, internalEventKeyEnums } = require("../../modules/Constants.js");
 
-var clientCount = 0;
-
-// like postMessage, a page gets a copy of the message as it was when posted
-function fakeClient(url, focused) {
-    clientCount++;
-    return {
-        id: "client-" + clientCount,
-        url: url,
-        focused: !!focused,
-        messages: [],
-        focusCalls: 0,
-        postMessage(message) {
-            this.messages.push(structuredClone(message));
-        },
-        focus() {
-            this.focusCalls++;
-            return Promise.resolve(this);
-        }
-    };
-}
-
-// timers the worker sets through self.setTimeout, run by the test when it decides the time is up
-function manualTimers() {
-    var pending = [];
-    return {
-        setTimeout(callback) {
-            pending.push(callback);
-            return pending.length;
-        },
-        clearTimeout(id) {
-            pending[id - 1] = null;
-        },
-        runAll() {
-            pending.slice().forEach((callback, i) => {
-                if (callback) {
-                    pending[i] = null;
-                    callback();
-                }
-            });
-        }
-    };
-}
-
-// `setup` runs against the fake global before the worker source is evaluated, the way a host
-// worker's own code would run before an importScripts() of countly_sw.js
-function loadWorker(source, setup) {
-    var handlers = {};
-    var self = {
-        skipWaitingCalls: 0,
-        skipWaiting() {
-            this.skipWaitingCalls++;
-            return Promise.resolve();
-        },
-        setTimeout(callback, ms) {
-            return window.setTimeout(callback, ms);
-        },
-        clearTimeout(id) {
-            window.clearTimeout(id);
-        },
-        addEventListener(type, callback) {
-            (handlers[type] = handlers[type] || []).push(callback);
-        },
-        clients: {
-            list: [],
-            claimCalls: 0,
-            opened: [],
-            claim() {
-                this.claimCalls++;
-                return Promise.resolve();
-            },
-            matchAll() {
-                return Promise.resolve(this.list.slice());
-            },
-            openWindow(url) {
-                this.opened.push(url);
-                return Promise.resolve(null);
-            }
-        },
-        registration: {
-            shown: [],
-            showNotification(title, options) {
-                this.shown.push({ title: title, options: options });
-                return Promise.resolve();
-            },
-            pushManager: {
-                subscribeCalls: [],
-                subscribe(options) {
-                    this.subscribeCalls.push(options);
-                    return Promise.resolve({
-                        endpoint: "https://push.example/new",
-                        expirationTime: null,
-                        options: options,
-                        toJSON() {
-                            return { endpoint: this.endpoint, expirationTime: null, keys: { p256dh: "p256dh-new", auth: "auth-new" } };
-                        }
-                    });
-                }
-            }
-        }
-    };
-    if (setup) {
-        setup(self);
-    }
-    new Function("self", source)(self);
-    // runs every handler registered for `type` and settles once their waitUntil promises have
-    function dispatch(type, event) {
-        var pending = [];
-        event = event || {};
-        event.waitUntil = (promise) => {
-            pending.push(promise);
-        };
-        (handlers[type] || []).forEach((callback) => callback(event));
-        return Promise.all(pending);
-    }
-    return { self: self, handlers: handlers, dispatch: dispatch };
-}
-
-function pushEvent(payload) {
-    return { data: { json: () => payload, text: () => JSON.stringify(payload) } };
-}
+const { fakeClient, manualTimers, loadWorker, pushEvent, fakeFetch, formBody } = require("../support/push_worker.js");
 
 describe("Web push service worker", () => {
     var source = null;
@@ -233,13 +114,13 @@ describe("Web push service worker", () => {
             // until someone acknowledges it, a page announcing itself is handed the action too
             var late = fakeClient("https://x/late", false);
             return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: late }).then(() => {
-                expect(late.messages.length).to.equal(1);
-                expect(late.messages[0].aid).to.equal(target.messages[0].aid);
+                expect(actionsHandedTo(late).length).to.equal(1);
+                expect(actionsHandedTo(late)[0].aid).to.equal(target.messages[0].aid);
                 return worker.dispatch("message", { data: { type: "countly_push_ack", aid: target.messages[0].aid } });
             }).then(() => {
                 var later = fakeClient("https://x/later", false);
                 return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: later }).then(() => {
-                    expect(later.messages.length).to.equal(0);
+                    expect(actionsHandedTo(later).length).to.equal(0);
                 });
             });
         });
@@ -255,9 +136,9 @@ describe("Web push service worker", () => {
             expect(worker.self.clients.opened).to.deep.equal(["https://x/2"]);
             var page = fakeClient("https://x/2", true);
             return worker.dispatch("message", { data: { type: "countly_push_ready" }, source: page }).then(() => {
-                expect(page.messages.length).to.equal(1);
-                expect(page.messages[0].buttonIndex).to.equal(2);
-                expect(page.messages[0].messageId).to.equal(MESSAGE_ID);
+                expect(actionsHandedTo(page).length).to.equal(1);
+                expect(actionsHandedTo(page)[0].buttonIndex).to.equal(2);
+                expect(actionsHandedTo(page)[0].messageId).to.equal(MESSAGE_ID);
             });
         });
     });
@@ -369,6 +250,7 @@ describe("Web push service worker", () => {
             CLY_CLOSED: pushMessageTypes.CLOSED,
             CLY_LOG: pushMessageTypes.LOG,
             CLY_CONFIG: pushMessageTypes.CONFIG,
+            CLY_WORKER_VERSION: pushMessageTypes.WORKER_VERSION,
             CLY_PARAM_DEBUG: pushWorkerParams.debug,
             CLY_PARAM_PERSIST: pushWorkerParams.persist,
             CLY_MAX_PENDING: pushConstants.MAX_SEEN_ACTION_IDS,
@@ -380,9 +262,23 @@ describe("Web push service worker", () => {
             var reads = Object.keys(copies).map((name) => JSON.stringify(name) + ": typeof " + name + " === 'undefined' ? undefined : " + name);
             var worker = loadWorker(source + "\n;self.copies = {" + reads.join(", ") + "};");
             expect(worker.self.copies).to.deep.equal(copies);
-            // a message type added to Constants.js needs its worker copy listed above
+            // a message type or worker URL parameter added to Constants.js needs its worker copy listed above
             var copiedTypes = Object.keys(copies).map((name) => copies[name]).filter((value) => Object.values(pushMessageTypes).indexOf(value) !== -1);
             expect(copiedTypes.sort()).to.deep.equal(Object.values(pushMessageTypes).sort());
+            var copiedParams = Object.keys(copies).map((name) => copies[name]).filter((value) => Object.values(pushWorkerParams).indexOf(value) !== -1);
+            expect(copiedParams.sort()).to.deep.equal(Object.values(pushWorkerParams).sort());
+        });
+    });
+
+    it("Tells a page that announces itself which version it is", () => {
+        var worker = loadWorker(source, (self) => {
+            self.registration.scope = "https://x/countly-push/";
+        });
+        var page = fakeClient("https://x/", true);
+        cy.then(() => worker.dispatch("message", { data: { type: "countly_push_ready" }, source: page })).then(() => {
+            expect(page.messages.filter((message) => message.type === "countly_push_worker_version")).to.deep.equal([
+                { type: "countly_push_worker_version", version: SDK_VERSION, scope: "https://x/countly-push/" }
+            ]);
         });
     });
 
@@ -532,22 +428,6 @@ describe("Web push service worker", () => {
     // ---- reporting a click itself when no page is open -----------------------------------------
 
     const REPORTING_CONFIG = { url: "https://srv.example/i", app_key: "app-key-1", device_id: "device-1", t: 0, sdk_name: "javascript_native_web", sdk_version: SDK_VERSION, av: "1.0" };
-
-    // a fetch() handed to the worker through `self`: records every call and answers as told
-    function fakeFetch(answer) {
-        var calls = [];
-        var fn = function (url, init) {
-            calls.push({ url: url, init: init || {} });
-            return typeof answer === "function" ? answer() : Promise.resolve(answer || { ok: true });
-        };
-        fn.calls = calls;
-        return fn;
-    }
-
-    // the fields of a form-encoded request body, each value as the text that was sent
-    function formBody(call) {
-        return Object.fromEntries(new URLSearchParams(call.init.body));
-    }
 
     // a worker that a page has already told how to reach the server
     function configuredWorker(setup) {
@@ -1264,6 +1144,21 @@ describe("Web push service worker", () => {
         });
     });
 
+    it("Still tells the open pages when the new subscription cannot even be put into a request", () => {
+        cy.then(() => configuredWorker()).then((worker) => {
+            var page = fakeClient("https://x/", true);
+            worker.self.clients.list = [page];
+            // a lone surrogate, which encodeURIComponent refuses while the request is built
+            var details = Object.assign({}, REPORTING_CONFIG, { vapid_key: VAPID_KEY, device_id: "device-\uD800" });
+            return worker.dispatch("message", { data: { type: "countly_push_config", config: details } }).then(() => {
+                return worker.dispatch("pushsubscriptionchange", { oldSubscription: { options: { applicationServerKey: VAPID_BYTES.buffer } } });
+            }).then(() => {
+                expect(worker.self.fetch.calls.length).to.equal(0);
+                expect(page.messages.filter((m) => m.type === "countly_push_subscription_change").length).to.equal(1);
+            });
+        });
+    });
+
     // ---- writing down whose click it is --------------------------------------------------------
 
     it("Writes down with a click it keeps whose server details it held when the click was made", () => {
@@ -1387,6 +1282,29 @@ describe("Web push service worker", () => {
                     var later = fakeClient("https://x/", true);
                     return worker.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: later }).then(() => {
                         expect(actionsHandedTo(later).map((m) => m.buttonIndex)).to.deep.equal([1]);
+                    });
+                });
+        });
+    });
+
+    it("Deletes what an earlier life stored also when its URL already says the site stores nothing, handing over the clicks kept there", () => {
+        cy.then(() => deleteDb()).then(() => {
+            // while the site still stored, the worker kept its details, whose clicks they are and a click no page took yet
+            var before = persistentWorker((self) => {
+                self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+            });
+            return before.dispatch("message", { data: { type: "countly_push_ready", config: REPORTING_CONFIG, owner: { device_id: "device-1", t: 0 } }, source: fakeClient("https://x/", true) })
+                .then(() => click(before, "btn_1"))
+                .then(() => {
+                    // the site switched to storage "none", so the browser installed the worker again under its new URL
+                    var after = persistentWorker((self) => {
+                        self.location = { href: "https://x/countly_sw.js?cly_persist=0" };
+                        self.fetch = fakeFetch(() => Promise.reject(new Error("offline")));
+                    });
+                    var page = fakeClient("https://x/", true);
+                    return after.dispatch("message", { data: memoryOnlyReady(REPORTING_CONFIG), source: page }).then(() => storedRecords()).then((stored) => {
+                        expect(stored).to.deep.equal({ config: [], actions: [] });
+                        expect(actionsHandedTo(page).map((m) => m.buttonIndex)).to.deep.equal([1]);
                     });
                 });
         });

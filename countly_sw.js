@@ -32,7 +32,7 @@
  */
 
 // Most of these mirror modules/Constants.js by hand; never rename a message type, other SDK versions use it.
-var CLY_SW_VERSION = "26.1.3";
+var CLY_SW_VERSION = "26.8.0";
 
 var CLY_ACTION = "countly_push_action";
 var CLY_SUBSCRIPTION_CHANGE = "countly_push_subscription_change";
@@ -42,6 +42,7 @@ var CLY_RECEIVED = "countly_push_received";
 var CLY_CLOSED = "countly_push_closed";
 var CLY_LOG = "countly_push_log";
 var CLY_CONFIG = "countly_push_config";
+var CLY_WORKER_VERSION = "countly_push_worker_version";
 var CLY_PARAM_DEBUG = "cly_debug";
 var CLY_PARAM_PERSIST = "cly_persist";
 var CLY_MAX_ACTIONS = 2; // Countly messages carry at most two buttons
@@ -617,6 +618,18 @@ function clyOwnerRecord() {
 }
 
 /**
+ * Take the server details and the user a page's ready or config message carries. Whether to store
+ * anything is followed first: turning storing off is synchronous, so the details of a page that
+ * stores nothing never open the database.
+ * @param {Object} data - the countly_push_ready or countly_push_config message
+ * @returns {Promise} settles once both are done
+ */
+function clyTakeDetails(data) {
+    var persisting = clyFollowPersist(data.persist);
+    return Promise.all([persisting, clyStoreConfig(data.config, data.owner)]);
+}
+
+/**
  * Keep (or, for null, drop) the server details a page handed over, with the owner of new clicks.
  * @param {?Object} config - the details, or null when the page must not have clicks recorded
  * @param {?Object} [owner] - { device_id, t } of the page's user, or null when no new click may be recorded
@@ -727,26 +740,29 @@ function clySend(config, fields) {
     if (typeof self.fetch !== "function") {
         return Promise.reject(new Error("no fetch in this worker"));
     }
-    var now = new Date();
-    var params = {
-        app_key: config.app_key,
-        device_id: config.device_id,
-        t: config.t,
-        sdk_name: config.sdk_name,
-        sdk_version: config.sdk_version,
-        av: config.av,
-        timestamp: now.getTime(),
-        hour: now.getHours(),
-        dow: now.getDay(),
-        tz: -now.getTimezoneOffset()
-    };
-    Object.keys(fields).forEach(function (key) {
-        params[key] = fields[key];
-    });
-    if (self.navigator && self.navigator.userAgent) {
-        params.metrics = JSON.stringify({ _ua: self.navigator.userAgent });
-    }
-    return clyRequestBody(params, config.salt).then(function (body) {
+    // building the request can throw, for a value encodeURIComponent refuses, and must reject like any other failure
+    return Promise.resolve().then(function () {
+        var now = new Date();
+        var params = {
+            app_key: config.app_key,
+            device_id: config.device_id,
+            t: config.t,
+            sdk_name: config.sdk_name,
+            sdk_version: config.sdk_version,
+            av: config.av,
+            timestamp: now.getTime(),
+            hour: now.getHours(),
+            dow: now.getDay(),
+            tz: -now.getTimezoneOffset()
+        };
+        Object.keys(fields).forEach(function (key) {
+            params[key] = fields[key];
+        });
+        if (self.navigator && self.navigator.userAgent) {
+            params.metrics = JSON.stringify({ _ua: self.navigator.userAgent });
+        }
+        return clyRequestBody(params, config.salt);
+    }).then(function (body) {
         return clyFetch(config.url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body });
     }).then(function (response) {
         if (!response || !response.ok) {
@@ -1091,8 +1107,9 @@ self.addEventListener("notificationclose", function (event) {
 });
 
 /**
- * Page-to-worker messages: acknowledgements, server details and ready handshakes. A handshake
- * without a `config` field comes from an older page SDK and leaves the stored details alone.
+ * Page-to-worker messages: acknowledgements, server details and ready handshakes, which the worker
+ * answers with its version and the clicks it kept. A handshake without a `config` field comes from
+ * an older page SDK and leaves the stored details alone.
  */
 self.addEventListener("message", function (event) {
     var data = event.data;
@@ -1107,7 +1124,7 @@ self.addEventListener("message", function (event) {
         });
     }
     else if (data.type === CLY_CONFIG) {
-        work = Promise.all([clyFollowPersist(data.persist), clyStoreConfig(data.config, data.owner)]);
+        work = clyTakeDetails(data);
     }
     else if (data.type === CLY_READY && event.source) {
         if (data.debug === true && !clyDebug) {
@@ -1115,7 +1132,9 @@ self.addEventListener("message", function (event) {
             clyLog("debug", "debug logging turned on by a page");
         }
         var source = event.source;
-        work = (data.config === undefined ? Promise.resolve() : Promise.all([clyFollowPersist(data.persist), clyStoreConfig(data.config, data.owner)])).then(clyAllActions).then(function (pending) {
+        // sites serve their own copy of this file, so the page can tell one left behind on an SDK upgrade
+        source.postMessage({ type: CLY_WORKER_VERSION, version: CLY_SW_VERSION, scope: clyScope() });
+        work = (data.config === undefined ? Promise.resolve() : clyTakeDetails(data)).then(clyAllActions).then(function (pending) {
             return Promise.all(pending.map(function (action) {
                 return clyReporting[action.aid] || action;
             }));

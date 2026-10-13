@@ -37,6 +37,9 @@ jobs:
       - name: Build ESM, CJS and UMD bundles
         run: npm run build
 
+      - name: Check the typings and the quick loader against the SDK, and the countly-sdk-web sync
+        run: npm run test:tooling
+
       - name: Upload bundles
         uses: actions/upload-artifact@v7
         with:
@@ -70,7 +73,7 @@ jobs:
 
       # the bundles are consumed as-is, so no dependency install: the smoke test only needs Node itself
       - name: Smoke test the bundles in a non-browser runtime
-        run: npm run test:node
+        run: npm run test:smoke
 
   cypress:
     name: Cypress ${{ matrix.browser }} ${{ matrix.shard }} on ${{ matrix.os }}

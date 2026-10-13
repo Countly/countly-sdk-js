@@ -3,6 +3,11 @@
 var Countly = require("../../Countly.js");
 var hp = require("../support/helper.js");
 const { SDK_VERSION, pushConstants } = require("../../modules/Constants.js");
+const { loadWorker, fakeClient, fakeFetch, formBody } = require("../support/push_worker.js");
+// Releases whose service worker this SDK is also tested with, kept by npm run sync:web from what
+// countly-sdk-web committed: sites serve their own copy of countly_sw.js, so a page can meet an
+// older worker after any SDK upgrade.
+const RELEASED_WORKERS = require("../fixtures/released_workers.json");
 
 // An uncompressed P-256 public key is 65 bytes starting with 0x04. Two distinct keys let us
 // exercise the "operator rotated the VAPID keypair" path.
@@ -274,6 +279,35 @@ function sandboxServiceWorker() {
         }
     });
     push.restore.push(() => Object.defineProperty(window.navigator, "serviceWorker", mocked));
+}
+
+// The page SDK and a service worker evaluated from `source`, connected the way a browser connects
+// them: the page posts to the registration's active worker, and the worker answers the page it heard
+// from and finds it among its clients. Messages are copied and delivered later, as postMessage does.
+function connectWorker(source) {
+    var worker = loadWorker(source, (self) => {
+        self.registration.scope = COUNTLY_SCOPE;
+        self.fetch = fakeFetch();
+    });
+    var page = fakeClient(location.href, true);
+    var active = {
+        scriptURL: new URL("/countly_sw.js", location.href).href,
+        postMessage: (message) => {
+            var copy = structuredClone(message);
+            window.setTimeout(() => worker.dispatch("message", { data: copy, source: page }), 0);
+        }
+    };
+    page.postMessage = (message) => {
+        var copy = structuredClone(message);
+        page.messages.push(structuredClone(message));
+        window.setTimeout(() => push.emit(copy, active), 0);
+    };
+    push.registration.active = active;
+    // a returning visitor: the worker is registered already, under Countly's own scope, which covers no page
+    push.registeredScopeWorker = push.registration;
+    push.container.controller = null;
+    worker.self.clients.list = [page];
+    return { worker: worker, page: page };
 }
 
 function initMain(config) {
@@ -728,6 +762,100 @@ describe("Web push tests", () => {
         });
     });
 
+    it("Keeps to the scope it subscribed under on a later page, also when that scope was given only to enable_push_notifications", () => {
+        hp.haltAndClearStorage(() => {
+            var ownScope = new URL("/my-push/", location.href).href;
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.wait(hp.sWait);
+            enablePush({ push_service_worker_scope: "/my-push/" }).then((result) => {
+                expect(result.subscribed).to.equal(true);
+            });
+            pushStorage("cly_push_scope").should("equal", ownScope);
+            cy.then(() => {
+                push.registerCalls.length = 0;
+                push.grantPermission();
+                reloadWithPushRecord({ push_vapid_public_key: VAPID_KEY });
+            });
+            cy.wait(hp.sWait).then(() => {
+                // the next page's silent registration does not add a second worker at the default scope
+                expect(push.registerCalls.map((call) => call.scope)).to.deep.equal([ownScope]);
+            });
+        });
+    });
+
+    it("Looks its registration up under the scope this browser's subscription was made under before the configured one", () => {
+        hp.haltAndClearStorage(() => {
+            localStorage.setItem(hp.appKey + "/cly_push_endpoint", "https://push.example/endpoint1");
+            localStorage.setItem(hp.appKey + "/cly_push_scope", new URL("/stored-push/", location.href).href);
+            initMain({ push_vapid_public_key: VAPID_KEY, push_service_worker_scope: "/configured-push/" });
+            cy.wait(hp.sWait).then(() => {
+                expect(push.getRegistrationScopes[0]).to.equal(new URL("/stored-push/", location.href).href);
+            });
+        });
+    });
+
+    it("Says the worker is missing when the registration promise gives none", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, push_auto_register: false });
+            enablePush({ push_service_worker_registration: Promise.resolve(null) }).then((result) => {
+                expect(result).to.deep.equal({ subscribed: false, reason: "service_worker_missing" });
+            });
+        });
+    });
+
+    it("Replaces its own worker under the default scope after the site renamed the worker file in the same folder", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, push_service_worker_path: "/countly-sw.js" });
+            cy.then(() => {
+                // a returning visitor's registration still runs the file under its old name
+                push.registeredScopeWorker = push.registration;
+            });
+            enablePush().then((result) => {
+                expect(result.subscribed).to.equal(true);
+                expect(push.registerCalls).to.deep.equal([{ path: "/countly-sw.js?cly_debug=1", scope: COUNTLY_SCOPE }]);
+            });
+        });
+    });
+
+    it("Uses a registration still being made, as register() returns it, given to enable_push_notifications", () => {
+        hp.haltAndClearStorage(() => {
+            var supplied = { scope: new URL("/app/", location.href).href, pushManager: push.pushManager, active: { scriptURL: new URL("/app/sw.js", location.href).href } };
+            initMain({ push_vapid_public_key: VAPID_KEY, push_auto_register: false });
+            enablePush({ push_service_worker_registration: Promise.resolve(supplied) }).then((result) => {
+                expect(result.subscribed).to.equal(true);
+                expect(push.registerCalls.length).to.equal(0);
+            });
+            pushStorage("cly_push_scope").should("equal", supplied.scope);
+        });
+    });
+
+    it("Uses a registration still being made, as register() returns it, given at init", () => {
+        hp.haltAndClearStorage(() => {
+            var supplied = { scope: new URL("/app/", location.href).href, pushManager: push.pushManager, active: { scriptURL: new URL("/app/sw.js", location.href).href, postMessage: (m) => push.controllerMessages.push(Object.assign({ to: "supplied" }, m)) } };
+            initMain({ push_vapid_public_key: VAPID_KEY, push_auto_register: false, push_service_worker_registration: Promise.resolve(supplied) });
+            enablePush().then((result) => {
+                expect(result.subscribed).to.equal(true);
+                expect(push.registerCalls.length).to.equal(0);
+                expect(push.controllerMessages.filter((m) => m.type === "countly_push_ready").map((m) => m.to)).to.deep.equal(["supplied"]);
+            });
+            pushStorage("cly_push_scope").should("equal", supplied.scope);
+        });
+    });
+
+    it("Says why when the registration given to it could not be made", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, push_auto_register: false });
+            var failed = Promise.reject(new DOMException("Failed to register a ServiceWorker: A bad HTTP response code (404) was received when fetching the script.", "TypeError"));
+            failed.catch(() => { });
+            enablePush({ push_service_worker_registration: failed }).then((result) => {
+                expect(result.subscribed).to.equal(false);
+                expect(result.reason).to.equal("error");
+                expect(result.error).to.contain("404");
+                expect(push.registerCalls.length).to.equal(0);
+            });
+        });
+    });
+
     it("Registers its worker under the countly-push folder next to the worker file by default", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY, push_service_worker_path: "/js/countly_sw.js" });
@@ -995,7 +1123,7 @@ describe("Web push tests", () => {
                 push.emit({ type: "countly_push_subscription_change" });
             });
             cy.wait(hp.sWait).then(() => {
-                var said = lines.filter((line) => line.indexOf("[DEBUG]") === 0 && line.indexOf("autoRegisterPush, push_auto_register is off and no token is registered for the current user in this browser, nothing to keep current") !== -1);
+                var said = lines.filter((line) => line.indexOf("[DEBUG]") === 0 && line.indexOf("autoRegisterPush, push_auto_register is off and this page knows of no token registered for the current user, so the subscription the browser replaced is not registered") !== -1);
                 expect(said.length).to.equal(1);
             });
             tokenRequests((requests) => {
@@ -1401,14 +1529,14 @@ describe("Web push tests", () => {
         });
     });
 
-    it("Sends the same token again in one page once the de-duplication window has passed", () => {
+    it("Sends the same token only once per page load without automatic session tracking, however long the page stays open", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY });
             enablePush();
             expectTokenRequestCount(1);
             cy.then(() => {
                 var realNow = Date.now;
-                Date.now = () => realNow() + pushConstants.TOKEN_DEBOUNCE_MS + 1000;
+                Date.now = () => realNow() + 24 * 60 * 60 * 1000;
                 try {
                     Countly._internals.sendPushToken(push.subscription, VAPID_KEY, COUNTLY_SCOPE);
                 }
@@ -1416,7 +1544,130 @@ describe("Web push tests", () => {
                     Date.now = realNow;
                 }
             });
-            expectTokenRequestCount(2);
+            enablePush();
+            expectTokenRequestCount(1);
+        });
+    });
+
+    it("Sends the token once per session with automatic session tracking, not again on a page that continues the session", () => {
+        hp.haltAndClearStorage(() => {
+            push.grantPermission();
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => Countly.track_sessions());
+            cy.wait(hp.sWait);
+            expectTokenRequestCount(1);
+            cy.then(() => {
+                dropStoredQueue();
+                reloadWithPushRecord({ push_vapid_public_key: VAPID_KEY });
+                Countly.track_sessions();
+            });
+            cy.wait(hp.sWait);
+            cy.fetch_local_request_queue().then((rq) => {
+                expect(rq.filter((request) => request.begin_session).length).to.equal(0);
+                expect(rq.filter((request) => request.token_session).length).to.equal(0);
+            });
+        });
+    });
+
+    it("Sends the token again with automatic session tracking once a later page begins a new session, after the session request", () => {
+        hp.haltAndClearStorage(() => {
+            push.grantPermission();
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => Countly.track_sessions());
+            cy.wait(hp.sWait);
+            expectTokenRequestCount(1);
+            cy.then(() => {
+                dropStoredQueue();
+                // the session expired between the two pages
+                localStorage.removeItem(hp.appKey + "/cly_session");
+                reloadWithPushRecord({ push_vapid_public_key: VAPID_KEY });
+                Countly.track_sessions();
+            });
+            cy.wait(hp.sWait);
+            cy.fetch_local_request_queue().then((rq) => {
+                var sessionAt = rq.findIndex((request) => request.begin_session);
+                var tokenAt = rq.findIndex((request) => request.token_session);
+                expect(rq.filter((request) => request.token_session).length).to.equal(1);
+                expect(sessionAt).to.not.equal(-1);
+                expect(sessionAt).to.be.below(tokenAt);
+            });
+        });
+    });
+
+    it("Sends the token again with automatic session tracking when a new session begins while the page is open", () => {
+        hp.haltAndClearStorage(() => {
+            push.grantPermission();
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => Countly.track_sessions());
+            cy.wait(hp.sWait);
+            expectTokenRequestCount(1);
+            cy.then(() => {
+                // the visitor comes back after the session expired
+                localStorage.removeItem(hp.appKey + "/cly_session");
+                Countly.session_duration(30);
+            });
+            cy.wait(hp.sWait);
+            cy.fetch_local_request_queue().then((rq) => {
+                expect(rq.filter((request) => request.begin_session).length).to.equal(2);
+                expect(rq.filter((request) => request.token_session).length).to.equal(2);
+            });
+        });
+    });
+
+    it("Registers a subscription the browser replaced at once with automatic session tracking, within the same session", () => {
+        hp.haltAndClearStorage(() => {
+            push.grantPermission();
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => Countly.track_sessions());
+            cy.wait(hp.sWait);
+            expectTokenRequestCount(1);
+            cy.then(() => {
+                push.subscription.endpoint = "https://push.example/rotated";
+                push.emit({ type: "countly_push_subscription_change" });
+            });
+            cy.wait(hp.sWait);
+            tokenRequests((requests) => {
+                expect(requests.length).to.equal(2);
+                expect(JSON.parse(requests[1].web_token).endpoint).to.equal("https://push.example/rotated");
+            });
+        });
+    });
+
+    it("Warns once per version when the service worker the site serves is another version than the SDK", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            var lines = null;
+            cy.then(() => {
+                lines = printedLines();
+                push.emit({ type: "countly_push_worker_version", version: SDK_VERSION, scope: COUNTLY_SCOPE });
+                push.emit({ type: "countly_push_worker_version", version: "26.7.0", scope: COUNTLY_SCOPE });
+                push.emit({ type: "countly_push_worker_version", version: "26.7.0", scope: COUNTLY_SCOPE });
+                // another app's worker, under a scope of its own, is none of this SDK's business
+                push.emit({ type: "countly_push_worker_version", version: "26.6.0", scope: new URL("/other-push/", location.href).href });
+            });
+            cy.then(() => {
+                var warnings = lines.filter((line) => line.indexOf("push service worker") !== -1 && line.indexOf("version") !== -1);
+                expect(warnings.length).to.equal(1);
+                expect(warnings[0]).to.contain("26.7.0");
+                expect(warnings[0]).to.contain(SDK_VERSION);
+            });
+        });
+    });
+
+    it("Registers the token once for the next user with automatic session tracking after a device ID change without merge", () => {
+        hp.haltAndClearStorage(() => {
+            push.grantPermission();
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => Countly.track_sessions());
+            cy.wait(hp.sWait);
+            expectTokenRequestCount(1);
+            cy.then(() => Countly.change_id("someone else", false));
+            cy.wait(hp.sWait).then(() => {
+                var requests = Countly._internals.getRequestQueue().filter((request) => request.token_session);
+                expect(requests.length).to.equal(3);
+                expect(requests[1]).to.include({ device_id: "web push tester", web_token: "BLACKLISTED" });
+                expect(requests[2].device_id).to.equal("someone else");
+            });
         });
     });
 
@@ -2197,6 +2448,59 @@ describe("Web push tests", () => {
         });
     });
 
+    it("Takes Countly's push subscription off the browser when the visitor opts out, so no notification arrives any more", () => {
+        hp.haltAndClearStorage(() => {
+            var lines = printedLines();
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            enablePush().then((result) => {
+                expect(result.subscribed).to.equal(true);
+                Countly.opt_out();
+            });
+            cy.wait(hp.sWait).then(() => {
+                expect(push.unsubscribeCalls).to.equal(1);
+                expect(push.subscription).to.equal(null);
+                expect(lines.filter((line) => line.indexOf("rejected the token") !== -1), "no token request it could not queue").to.deep.equal([]);
+            });
+            pushStorage("cly_push_endpoint").should("equal", null);
+            expectTokenRequestCount(1);
+        });
+    });
+
+    it("Leaves another push provider's subscription alone when the visitor opts out", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY, push_service_worker_scope: "/" });
+            cy.then(() => {
+                push.registeredScopeWorker = push.registration;
+                push.subscription = foreignSubscription(OTHER_VAPID_KEY);
+                Countly.opt_out();
+            });
+            cy.wait(hp.sWait).then(() => {
+                expect(push.unsubscribeCalls).to.equal(0);
+                expect(push.subscription.endpoint).to.equal("https://push.example/someone-elses");
+            });
+        });
+    });
+
+    it("Does not subscribe a visitor who opted out again by itself once they opt in", () => {
+        hp.haltAndClearStorage(() => {
+            push.grantPermission();
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.wait(hp.sWait).then(() => {
+                expect(push.subscribeCalls).to.equal(1);
+                Countly.opt_out();
+            });
+            cy.wait(hp.sWait).then(() => {
+                Countly.opt_in();
+                reloadWithPushRecord({ push_vapid_public_key: VAPID_KEY });
+            });
+            cy.wait(hp.sWait).then(() => {
+                // permission alone is not consent: only enable_push_notifications subscribes them again
+                expect(push.subscribeCalls).to.equal(1);
+                expect(push.subscription).to.equal(null);
+            });
+        });
+    });
+
     it("Takes the server details back from the worker at every load of a visitor who opted out", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY });
@@ -2249,6 +2553,20 @@ describe("Web push tests", () => {
         });
     });
 
+    it("Takes the server details back from the worker for any true value of ignore_visitor", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.wait(hp.sWait).then(() => {
+                Countly.halt();
+                push.controllerMessages.length = 0;
+                initMain({ push_vapid_public_key: VAPID_KEY, ignore_visitor: 1 });
+            });
+            cy.wait(hp.sWait).then(() => {
+                expect(withoutScope(push.controllerMessages)).to.deep.equal([{ type: "countly_push_config", config: null, owner: null }]);
+            });
+        });
+    });
+
     it("Leaves the worker's details alone on a visit that is ignored only because it is prerendered", () => {
         hp.haltAndClearStorage(() => {
             Object.defineProperty(document, "visibilityState", { value: "prerender", configurable: true });
@@ -2264,10 +2582,10 @@ describe("Web push tests", () => {
         it("Takes the server details back from the worker when the server switches " + what + " off", () => {
             hp.haltAndClearStorage(() => {
                 // answered after the ready handshake, as a real server is
-                cy.intercept("POST", "https://your.domain.count.ly/o/sdk", { statusCode: 200, body: { v: 1, t: 1, c: settings }, delay: 100 }).as("serverConfig");
+                cy.intercept("POST", "https://your.domain.count.ly/o/sdk", { statusCode: 200, body: { v: 1, t: 1, c: settings }, delay: 100 });
                 cy.then(() => initMain({ push_vapid_public_key: VAPID_KEY }));
-                cy.wait("@serverConfig");
-                cy.wait(hp.sWait2).then(() => {
+                // retried until this page's own answer is in: a request an earlier test left pending can take the stubbed answer first
+                cy.wrap(null, { timeout: 4000 }).should(() => {
                     var configs = push.controllerMessages.filter((m) => m.type === "countly_push_ready" || m.type === "countly_push_config").map((m) => m.config);
                     expect(configs[0].device_id).to.equal("web push tester");
                     expect(configs[configs.length - 1]).to.equal(null);
@@ -3158,6 +3476,55 @@ describe("Web push tests", () => {
         });
     });
 
+    it("Files gathered log lines under the current user also when a batch fills while another user's kept click is queued", () => {
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: hp.appKey,
+                url: "https://your.domain.count.ly",
+                device_id: "web push tester",
+                test_mode: true,
+                test_mode_eq: true,
+                debug: true,
+                push_vapid_public_key: VAPID_KEY,
+                fake_request_handler: (req) => {
+                    if (req.functionName === "server_config") {
+                        return { status: 200, responseText: JSON.stringify({ v: 2, t: 1786273877636, c: {}, lg: { e: true, i: "0123456789abcdef0123456789abcdef", l: "ewidv", b: 10 } }) };
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            var failNextQueueWrite = false;
+            var setItem = Storage.prototype.setItem;
+            cy.stub(Storage.prototype, "setItem").callsFake(function (key, value) {
+                if (failNextQueueWrite && this === window.sessionStorage && key.indexOf("/cly_queue") !== -1 && String(value).indexOf("previous user") !== -1) {
+                    failNextQueueWrite = false;
+                    // the warning about this failed write is the line that completes a batch
+                    var buffer = Countly._internals.getLogBuffer();
+                    var size = Countly._internals.getLogGatheringState().batchSize;
+                    while (buffer.length < size - 1) {
+                        buffer.push({ t: Date.now(), l: "d", m: "[Countly] earlier line" });
+                    }
+                    buffer.length = size - 1;
+                    throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+                }
+                return setItem.call(this, key, value);
+            });
+            // after the start, when requests go straight into the queue
+            cy.wait(hp.sWait).then(() => {
+                failNextQueueWrite = true;
+                push.emit(keptClick("kept-for-previous-user", { device_id: "previous user", t: 0, recordable: true }), { postMessage: () => { } });
+            });
+            cy.wait(hp.sWait).then(() => {
+                expect(failNextQueueWrite, "the queue write failed").to.equal(false);
+                var queued = Countly._internals.getRequestQueue();
+                expect(queued.filter((request) => request.events && request.device_id === "previous user").length, "the click, under its own user").to.equal(1);
+                var logBatches = queued.filter((request) => request.sdk_logs);
+                expect(logBatches.length, "a batch was filed").to.be.greaterThan(0);
+                expect(logBatches.map((request) => request.device_id)).to.deep.equal(logBatches.map(() => "web push tester"));
+            });
+        });
+    });
+
     it("Records another user's kept click only once push consent is given on this page", () => {
         hp.haltAndClearStorage(() => {
             initMain({ require_consent: true, push_vapid_public_key: VAPID_KEY });
@@ -3216,6 +3583,54 @@ describe("Web push tests", () => {
         });
     });
 
+    // alice signed in with merge on this tab; then someone else signed in on another tab, which deleted the merges and changed the device ID here
+    function signedInHereThenSomeoneElseOnAnotherTab() {
+        Countly.init({ app_key: hp.appKey, url: "https://your.domain.count.ly", test_mode: true, test_mode_eq: true, debug: true, push_vapid_public_key: VAPID_KEY });
+        return cy.then(() => {
+            var anonymous = Countly.get_device_id();
+            Countly.set_id("alice@example.com");
+            localStorage.removeItem(hp.appKey + "/cly_push_merged_ids");
+            Countly._internals.onStorageChange("cly_id", "someone else");
+            return anonymous;
+        });
+    }
+
+    it("Does not bring back merged device IDs another tab deleted when it remembers a new merge", () => {
+        hp.haltAndClearStorage(() => {
+            signedInHereThenSomeoneElseOnAnotherTab().then(() => {
+                Countly.change_id("someone else's account", true);
+                expect(JSON.parse(localStorage.getItem(hp.appKey + "/cly_push_merged_ids"))).to.deep.equal([["someone else", "someone else's account"]]);
+            });
+        });
+    });
+
+    it("Does not follow merged device IDs another tab deleted for a kept click", () => {
+        hp.haltAndClearStorage(() => {
+            signedInHereThenSomeoneElseOnAnotherTab().then((anonymous) => {
+                push.emit(keptClick("kept-anonymous", { device_id: anonymous, t: 1, recordable: true }));
+            });
+            cy.wait(hp.sWait).then(() => {
+                var owners = queuedPushActions().map((event) => event.device_id);
+                expect(owners.length, "recorded once").to.equal(1);
+                expect(owners).to.not.include("alice@example.com");
+            });
+        });
+    });
+
+    it("Keeps the newest merged device IDs up to their own limit", () => {
+        hp.haltAndClearStorage(() => {
+            initMain({ push_vapid_public_key: VAPID_KEY });
+            cy.then(() => {
+                for (var n = 0; n <= pushConstants.MAX_MERGED_DEVICE_IDS; n++) {
+                    Countly.change_id("account " + n, true);
+                }
+                var kept = JSON.parse(localStorage.getItem(hp.appKey + "/cly_push_merged_ids"));
+                expect(kept.length).to.equal(pushConstants.MAX_MERGED_DEVICE_IDS);
+                expect(kept[kept.length - 1]).to.deep.equal(["account " + (pushConstants.MAX_MERGED_DEVICE_IDS - 1), "account " + pushConstants.MAX_MERGED_DEVICE_IDS]);
+            });
+        });
+    });
+
     it("Never records a click made while the visitor had opted out, also once they opted in again", () => {
         hp.haltAndClearStorage(() => {
             initMain({ push_vapid_public_key: VAPID_KEY });
@@ -3253,6 +3668,125 @@ describe("Web push tests", () => {
             });
             cy.wait(hp.sWait).then(() => {
                 expect(queuedPushActions().map((event) => event.device_id)).to.deep.equal(["account 7"]);
+            });
+        });
+    });
+
+    it("Does not say it loses the push record with storage none, as the page keeps it in memory", () => {
+        hp.haltAndClearStorage(() => {
+            var lines = printedLines();
+            initMain({ push_vapid_public_key: VAPID_KEY, storage: "none" });
+            enablePush().then((result) => {
+                expect(result.subscribed).to.equal(true);
+                expect(lines.filter((line) => line.indexOf("won't be stored") !== -1 && line.indexOf("cly_push_") !== -1)).to.deep.equal([]);
+            });
+        });
+    });
+
+    // Only what every released worker does belongs here, as each one is run through the same tests
+    [{ version: SDK_VERSION, current: true }].concat(RELEASED_WORKERS.map((version) => ({ version: version, current: false }))).forEach((release) => {
+        describe("With the service worker of " + (release.current ? "this SDK version" : "release " + release.version), () => {
+            var source = null;
+            var bodyClick = () => ({ notification: { close() { }, data: { i: MESSAGE_ID, l: new URL("/sale", location.href).href, b: [] } }, action: "" });
+
+            before(() => {
+                (release.current ? cy.readFile("countly_sw.js") : cy.readFile("cypress/fixtures/countly_sw-" + release.version + ".js")).then((code) => {
+                    source = code;
+                });
+            });
+
+            it("Exchanges the ready handshake, warning only when the worker is another version", () => {
+                hp.haltAndClearStorage(() => {
+                    var link = null;
+                    var lines = null;
+                    cy.then(() => {
+                        link = connectWorker(source);
+                        lines = printedLines();
+                        push.grantPermission();
+                        initMain({ push_vapid_public_key: VAPID_KEY });
+                    });
+                    cy.wrap(null).should(() => {
+                        var reports = link.page.messages.filter((message) => message.type === "countly_push_worker_version");
+                        expect(reports.length).to.be.above(0);
+                        expect(reports[0].version).to.equal(release.version);
+                    });
+                    cy.then(() => {
+                        var warned = lines.some((line) => line.indexOf("version [" + release.version + "] while the SDK is version [" + SDK_VERSION + "]") !== -1);
+                        expect(warned).to.equal(release.version !== SDK_VERSION);
+                    });
+                });
+            });
+
+            it("Has the next page record once a click the worker kept while no page was open", () => {
+                hp.haltAndClearStorage(() => {
+                    var link = null;
+                    cy.then(() => {
+                        link = connectWorker(source);
+                        link.worker.self.clients.list = [];
+                        return link.worker.dispatch("notificationclick", bodyClick());
+                    }).then(() => {
+                        link.worker.self.clients.list = [link.page];
+                        push.grantPermission();
+                        initMain({ push_vapid_public_key: VAPID_KEY });
+                    });
+                    cy.wrap(null).should(() => {
+                        var actions = queuedPushActions();
+                        expect(actions.length).to.equal(1);
+                        expect(actions[0].segmentation).to.deep.equal({ i: MESSAGE_ID, b: 0, p: "w" });
+                    });
+                    // acknowledged by the page, so the page announcing itself again, as after a worker
+                    // update, is not handed it again (another page asking this soon would be refused anyway)
+                    cy.wait(hp.sWait).then(() => {
+                        var handed = () => link.page.messages.filter((message) => message.type === "countly_push_action").length;
+                        expect(handed()).to.equal(1);
+                        return link.worker.dispatch("message", { data: { type: "countly_push_ready" }, source: link.page }).then(() => {
+                            expect(handed()).to.equal(1);
+                        });
+                    });
+                });
+            });
+
+            it("Has the open page record once a click the worker hands it", () => {
+                hp.haltAndClearStorage(() => {
+                    var link = null;
+                    cy.then(() => {
+                        link = connectWorker(source);
+                        push.grantPermission();
+                        initMain({ push_vapid_public_key: VAPID_KEY });
+                    });
+                    cy.wait(hp.sWait).then(() => link.worker.dispatch("notificationclick", bodyClick()));
+                    cy.wrap(null).should(() => {
+                        var actions = queuedPushActions();
+                        expect(actions.length).to.equal(1);
+                        expect(actions[0].segmentation).to.deep.equal({ i: MESSAGE_ID, b: 0, p: "w" });
+                        expect(link.worker.self.fetch.calls).to.deep.equal([]);
+                    });
+                });
+            });
+
+            it("Lets the worker record a click itself while no page is open, with the server details the page gave it", () => {
+                hp.haltAndClearStorage(() => {
+                    var link = null;
+                    cy.then(() => {
+                        link = connectWorker(source);
+                        push.grantPermission();
+                        initMain({ push_vapid_public_key: VAPID_KEY });
+                    });
+                    // the page told the worker how to reach the server, then was closed
+                    cy.wait(hp.sWait2).then(() => {
+                        link.worker.self.clients.list = [];
+                        return link.worker.dispatch("notificationclick", bodyClick());
+                    }).then(() => {
+                        var calls = link.worker.self.fetch.calls;
+                        expect(calls.length).to.equal(1);
+                        expect(calls[0].url.indexOf("https://your.domain.count.ly/")).to.equal(0);
+                        var body = formBody(calls[0]);
+                        expect(body).to.include({ app_key: hp.appKey, device_id: "web push tester" });
+                        var events = JSON.parse(body.events);
+                        expect(events.map((event) => event.key)).to.deep.equal(["[CLY]_push_action"]);
+                        expect(events[0].segmentation).to.deep.equal({ i: MESSAGE_ID, b: 0, p: "w" });
+                    });
+                });
             });
         });
     });
