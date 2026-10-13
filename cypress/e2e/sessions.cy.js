@@ -117,7 +117,11 @@ describe("Browser session tests, manual 1", () => {
 describe("Browser session tests, manual 2", () => {
     it("Single bounce test with manual sessions 2", () => {
         cy.visit("./cypress/fixtures/session_test_manual_2.html?use_session_cookie=true").wait(waitTime);
-        cy.contains("Event").click().wait(300);
+        cy.contains("Event").click();
+        // the page ends its session as it unloads, so it is left only once the heartbeat queued the event before that
+        cy.window().should((win) => {
+            expect(win.Countly._internals.getEventQueue()).to.have.length(0);
+        });
         cy.visit("./cypress/fixtures/base.html");
         cy.fetch_local_request_queue(app_key).then((rq) => {
             cy.log(rq);
@@ -178,7 +182,11 @@ describe("Browser session tests, manual 1, no cookie", () => {
 describe("Browser session tests, manual 2, no cookie", () => {
     it("Single bounce test with manual sessions 2 and no cookies", () => {
         cy.visit("./cypress/fixtures/session_test_manual_2.html").wait(waitTime);
-        cy.contains("Event").click().wait(500);
+        cy.contains("Event").click();
+        // the page ends its session as it unloads, so it is left only once the heartbeat queued the event before that
+        cy.window().should((win) => {
+            expect(win.Countly._internals.getEventQueue()).to.have.length(0);
+        });
         cy.visit("./cypress/fixtures/base.html");
         cy.fetch_local_request_queue(app_key).then((rq) => {
             cy.log(rq);
