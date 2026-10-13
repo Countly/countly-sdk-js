@@ -1,4 +1,4 @@
-## NEXT RELEASE
+## 26.8.0
 
 * ! Minor Breaking Change ! When consent is required, Content now needs the new `content` consent. `enterContentZone` called before the consent is given takes effect once it is given, and removing the consent closes the content zone.
 * ! Minor Breaking Change ! Event and segmentation filters of the server configuration now apply only to custom events.
@@ -27,6 +27,7 @@
   * `opt_out` also takes Countly's push subscription off the browser; push then stays off after `opt_in` until `enable_push_notifications` is called
 * Added support for server initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
 * Added support for server requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
+* Added TypeScript definitions for `attempt_to_send_stored_requests`, `check_any_consent`, `opt_in`, `opt_out`, `recordError`, `recordRatingWidgetWithID` and `track_view`.
 
 * Mitigated an issue where a log line carrying an object that could not be serialized would throw while `debug` was enabled.
 * Mitigated an issue where withdrawing a consent was not reported to the server.
@@ -67,6 +68,7 @@
 * Mitigated an issue where feedback widget links carried "undefined" as the platform when the SDK did not know it.
 * Mitigated an issue where, with several tabs of a site open, events and session updates could be sent more than once or lost. Each tab now sends what it recorded and sends what it holds as soon as it goes to the background; what it cannot send then, or has not sent when its page is closed, is left for the tab in front or the next visit to send.
 * Mitigated an issue where namespaces sharing an app key took over each other's device ID and queued data while open in several tabs.
+* Mitigated an issue where, on a page using the quick async loader, calling methods such as `add_consent`, `opt_out` or `track_view` before the SDK loaded threw an error.
 
 ## 26.1.3
 

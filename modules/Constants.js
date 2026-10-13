@@ -240,6 +240,7 @@ var pushMessageTypes = Object.freeze({
     CLOSED: "countly_push_closed",
     LOG: "countly_push_log",
     CONFIG: "countly_push_config",
+    WORKER_VERSION: "countly_push_worker_version",
 });
 
 /**
@@ -254,8 +255,8 @@ var pushWorkerParams = Object.freeze({
 
 /**
  * Local storage keys holding the last registered push subscription, the explicit opt-out
- * (set by disable_push_notifications, cleared by enable_push_notifications, kept across halt())
- * and the device IDs merged into others
+ * (set by disable_push_notifications, cleared by enable_push_notifications, kept across halt()),
+ * the device IDs merged into others and the token sent in the current session
  */
 var pushStorageKeys = Object.freeze({
     endpoint: "cly_push_endpoint",
@@ -263,6 +264,7 @@ var pushStorageKeys = Object.freeze({
     scope: "cly_push_scope",
     optOut: "cly_push_opt_out",
     mergedIds: "cly_push_merged_ids",
+    sessionToken: "cly_push_session_token",
 });
 
 /**
@@ -271,14 +273,12 @@ var pushStorageKeys = Object.freeze({
  * MAX_MERGED_DEVICE_IDS: how many device ID merges are remembered for the clicks the service worker kept
  * VAPID_PUBLIC_KEY_BYTE_LENGTH / VAPID_PUBLIC_KEY_PREFIX: an uncompressed P-256 point is 65 bytes and starts with 0x04
  * SUBSCRIBE_TIMEOUT_MS: how long enable_push_notifications waits for the browser to create a subscription before giving up on that attempt
- * TOKEN_DEBOUNCE_MS: how long the same token is not queued again for the same device ID
  * DEFAULT_SCOPE_FOLDER: the worker's default scope, a folder next to the worker file
  */
 var pushConstants = Object.freeze({
     MAX_SEEN_ACTION_IDS: 20,
     MAX_MERGED_DEVICE_IDS: 20,
     SUBSCRIBE_TIMEOUT_MS: 30000,
-    TOKEN_DEBOUNCE_MS: 60000,
     VAPID_PUBLIC_KEY_BYTE_LENGTH: 65,
     VAPID_PUBLIC_KEY_PREFIX: 4,
     TOKEN_PROVIDER: "WEB",
@@ -286,7 +286,7 @@ var pushConstants = Object.freeze({
     DEFAULT_SCOPE_FOLDER: "countly-push/",
 });
 
-var SDK_VERSION = "26.1.3";
+var SDK_VERSION = "26.8.0";
 var SDK_NAME = "javascript_native_web";
 
 // Using this on document.referrer would return an array with 17 elements in it. The 12th element (array[11]) would be the path we are looking for. Others would be things like password and such (use https://regex101.com/ to check more)

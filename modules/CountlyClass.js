@@ -188,6 +188,7 @@ class CountlyClass {
     #pushMergedIds;
     #pushConsentWithdrawals = 0;
     #pushRecordInMemory = {};
+    #pushWorkerVersionsWarned = [];
     #ignoredByChoice = false;
     #idBeforeOfflineMode;
     #passwordFields = new WeakMap();
@@ -1209,6 +1210,9 @@ class CountlyClass {
                     this.#log(logLevelEnums.DEBUG, "initPushMessageListener, The browser replaced the push subscription");
                     this.#autoRegisterPush(true);
                 }
+                else if (data.type === pushMessageTypes.WORKER_VERSION) {
+                    this.#checkPushWorkerVersion(data.version);
+                }
             };
             navigator.serviceWorker.addEventListener("message", this.#pushMessageHandler);
             if (this.#isPushConfigured()) {
@@ -1221,6 +1225,20 @@ class CountlyClass {
         setTimeout(() => {
             this.#autoRegisterPush();
         }, 1);
+    };
+
+    /**
+     *  Warn when the service worker is another version than this SDK. Sites serve their own copy of
+     *  countly_sw.js, and a copy left behind on an SDK upgrade can lack what this SDK relies on.
+     *  @memberof Countly._internals
+     *  @param {string} version - the version the worker reported
+     */
+    #checkPushWorkerVersion = (version) => {
+        if (version === SDK_VERSION || this.#pushWorkerVersionsWarned.indexOf(version) !== -1) {
+            return;
+        }
+        this.#pushWorkerVersionsWarned.push(version);
+        this.#log(logLevelEnums.WARNING, "checkPushWorkerVersion, The push service worker your site serves is version [" + version + "] while the SDK is version [" + SDK_VERSION + "]; serve the countly_sw.js of the SDK version your pages run");
     };
 
     /**
@@ -1411,10 +1429,10 @@ class CountlyClass {
      *  done silently: notification permission must already be granted, because Safari and Firefox
      *  only allow Notification.requestPermission from a user gesture and a prompt fired at init
      *  would simply be refused. New visitors still go through enable_push_notifications, wired to
-     *  a button; returning ones get their token kept in sync on every load, after a device ID
-     *  change and as soon as push consent arrives. Never after an explicit
-     *  disable_push_notifications: permission alone is not consent to re-subscribe someone who
-     *  asked to be unsubscribed.
+     *  a button; returning ones get their token kept in sync on every load (once per session while
+     *  sessions are tracked automatically), after a device ID change and as soon as push consent
+     *  arrives. Never after an explicit disable_push_notifications: permission alone is not consent
+     *  to re-subscribe someone who asked to be unsubscribed.
      *  @memberof Countly._internals
      *  @param {Boolean} [keepRegistered] - true to renew this SDK's registration even with push_auto_register off
      */
@@ -1918,6 +1936,7 @@ class CountlyClass {
         this.#pushMergedIds = null;
         // like a reload, halt() keeps a stored push opt-out and drops the one storage "none" keeps in memory
         this.#pushRecordInMemory = {};
+        this.#pushWorkerVersionsWarned = [];
         this.#idBeforeOfflineMode = null;
         this.#SCLimitKeyLength = undefined;
         this.#SCLimitValueSize  = undefined;
@@ -2300,6 +2319,7 @@ class CountlyClass {
                     req.metrics = JSON.stringify(this.#getMetrics());
                     this.userData.save(true); // ensure user data is saved before session start
                     this.#toRequestQueue(req);
+                    this.#renewPushTokenForSession();
                 }
                 this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
             }
@@ -6780,6 +6800,7 @@ class CountlyClass {
         this.#removePushRecord(pushStorageKeys.endpoint);
         this.#removePushRecord(pushStorageKeys.vapidKey);
         this.#removePushRecord(pushStorageKeys.scope);
+        this.#removePushRecord(pushStorageKeys.sessionToken);
     }
 
     /**
@@ -6929,8 +6950,8 @@ class CountlyClass {
 
     /**
      *  Build and queue the web-push token_session request. Pass `null` to register the BLACKLISTED
-     *  sentinel (unsubscribe path). The same token is queued at most once per
-     *  pushConstants.TOKEN_DEBOUNCE_MS for the same device ID.
+     *  sentinel (unsubscribe path). The same token is queued for the same device ID once per page
+     *  load, or once per session while sessions are tracked automatically.
      *
      *  Android delays this by 10 seconds so begin_session is processed before the token write, but
      *  a page timer is not durable — navigating away inside the window would lose a live
@@ -6953,9 +6974,8 @@ class CountlyClass {
             }
         }
 
-        var last = this.#lastPushToken;
-        if (subscription && last && last.token === tokenValue && last.deviceId === this.device_id && Date.now() - last.at < pushConstants.TOKEN_DEBOUNCE_MS) {
-            this.#log(logLevelEnums.DEBUG, "sendPushToken, This token was queued for this device ID less than [" + pushConstants.TOKEN_DEBOUNCE_MS + "] ms ago, not queueing it again");
+        if (subscription && this.#isPushTokenSent(tokenValue, subscription.endpoint)) {
+            this.#log(logLevelEnums.DEBUG, "sendPushToken, This token was already queued for this device ID " + (this.#autoSessionTracking ? "in this session" : "on this page") + ", not queueing it again");
         }
         else {
             var req = {
@@ -6971,7 +6991,13 @@ class CountlyClass {
                 this.#log(logLevelEnums.WARNING, "sendPushToken, The request queue rejected the token, not recording it as registered");
                 return;
             }
-            this.#lastPushToken = subscription ? { token: tokenValue, deviceId: this.device_id, at: Date.now() } : null;
+            this.#lastPushToken = subscription ? { token: tokenValue, deviceId: this.device_id } : null;
+            if (subscription) {
+                this.#setPushRecord(pushStorageKeys.sessionToken, { endpoint: subscription.endpoint, deviceId: this.device_id });
+            }
+            else {
+                this.#removePushRecord(pushStorageKeys.sessionToken);
+            }
         }
 
         if (subscription) {
@@ -6987,6 +7013,36 @@ class CountlyClass {
             if (!inUseBefore) {
                 this.#announceToPushWorker();
             }
+        }
+    }
+
+    /**
+     *  Whether a token was already queued for the current device ID: on this page, or while
+     *  sessions are tracked automatically, in the current session, which pages that continue it
+     *  share through storage.
+     *  @memberof Countly._internals
+     *  @param {string} tokenValue - the serialized subscription
+     *  @param {string} endpoint - the subscription's endpoint
+     *  @returns {Boolean} true when it need not be queued again
+     */
+    #isPushTokenSent = (tokenValue, endpoint) => {
+        if (this.#autoSessionTracking) {
+            var sent = this.#getPushRecord(pushStorageKeys.sessionToken);
+            return !!sent && sent.endpoint === endpoint && sent.deviceId === this.device_id;
+        }
+        var last = this.#lastPushToken;
+        return !!last && last.token === tokenValue && last.deviceId === this.device_id;
+    }
+
+    /**
+     *  Let a new session send the push token again. A page that already sent it registers it again
+     *  right away; a page that has not yet sends it with its own registration.
+     *  @memberof Countly._internals
+     */
+    #renewPushTokenForSession = () => {
+        this.#removePushRecord(pushStorageKeys.sessionToken);
+        if (this.#autoSessionTracking && this.#lastPushToken) {
+            this.#autoRegisterPush(true);
         }
     }
 

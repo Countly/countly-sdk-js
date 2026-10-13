@@ -32,7 +32,7 @@
  */
 
 // Most of these mirror modules/Constants.js by hand; never rename a message type, other SDK versions use it.
-var CLY_SW_VERSION = "26.1.3";
+var CLY_SW_VERSION = "26.8.0";
 
 var CLY_ACTION = "countly_push_action";
 var CLY_SUBSCRIPTION_CHANGE = "countly_push_subscription_change";
@@ -42,6 +42,7 @@ var CLY_RECEIVED = "countly_push_received";
 var CLY_CLOSED = "countly_push_closed";
 var CLY_LOG = "countly_push_log";
 var CLY_CONFIG = "countly_push_config";
+var CLY_WORKER_VERSION = "countly_push_worker_version";
 var CLY_PARAM_DEBUG = "cly_debug";
 var CLY_PARAM_PERSIST = "cly_persist";
 var CLY_MAX_ACTIONS = 2; // Countly messages carry at most two buttons
@@ -1106,8 +1107,9 @@ self.addEventListener("notificationclose", function (event) {
 });
 
 /**
- * Page-to-worker messages: acknowledgements, server details and ready handshakes. A handshake
- * without a `config` field comes from an older page SDK and leaves the stored details alone.
+ * Page-to-worker messages: acknowledgements, server details and ready handshakes, which the worker
+ * answers with its version and the clicks it kept. A handshake without a `config` field comes from
+ * an older page SDK and leaves the stored details alone.
  */
 self.addEventListener("message", function (event) {
     var data = event.data;
@@ -1130,6 +1132,8 @@ self.addEventListener("message", function (event) {
             clyLog("debug", "debug logging turned on by a page");
         }
         var source = event.source;
+        // sites serve their own copy of this file, so the page can tell one left behind on an SDK upgrade
+        source.postMessage({ type: CLY_WORKER_VERSION, version: CLY_SW_VERSION, scope: clyScope() });
         work = (data.config === undefined ? Promise.resolve() : clyTakeDetails(data)).then(clyAllActions).then(function (pending) {
             return Promise.all(pending.map(function (action) {
                 return clyReporting[action.aid] || action;
