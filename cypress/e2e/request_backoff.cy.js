@@ -122,12 +122,14 @@ describe("Request Back-off Mechanism Tests", () => {
                                     cy.log("Request Queue: " + JSON.stringify(rq));
                                     expect(rq.length).to.equal(0);
                                     Countly.add_event({ key: "test_3" });
-                                    cy.wait(2000).then(() => {
-                                        cy.fetch_local_request_queue().then((rq) => {
-                                            cy.log("Request Queue: " + JSON.stringify(rq));
-                                            expect(rq.length).to.equal(0);
-                                            cy.task("stopServer");
-                                        });
+                                    // with the back-off over the event goes out right away, a new back-off would hold it past this wait
+                                    cy.window({ timeout: 10000 }).should(() => {
+                                        expect(Countly._internals.getEventQueue().length + Countly._internals.getRequestQueue().length, "events and requests not sent yet").to.equal(0);
+                                    });
+                                    cy.fetch_local_request_queue().then((rq) => {
+                                        cy.log("Request Queue: " + JSON.stringify(rq));
+                                        expect(rq.length).to.equal(0);
+                                        cy.task("stopServer");
                                     });
                                 });
                             });
@@ -246,12 +248,14 @@ describe("Request Back-off Mechanism Tests", () => {
                                     cy.log("Request Queue: " + JSON.stringify(rq));
                                     expect(rq.length).to.equal(0);
                                     Countly.add_event({ key: "test_3" });
-                                    cy.wait(2000).then(() => {
-                                        cy.fetch_local_request_queue().then((rq) => {
-                                            cy.log("Request Queue: " + JSON.stringify(rq));
-                                            expect(rq.length).to.equal(0);
-                                            cy.task("stopServer");
-                                        });
+                                    // with the back-off over the event goes out right away, a new back-off would hold it past this wait
+                                    cy.window({ timeout: 10000 }).should(() => {
+                                        expect(Countly._internals.getEventQueue().length + Countly._internals.getRequestQueue().length, "events and requests not sent yet").to.equal(0);
+                                    });
+                                    cy.fetch_local_request_queue().then((rq) => {
+                                        cy.log("Request Queue: " + JSON.stringify(rq));
+                                        expect(rq.length).to.equal(0);
+                                        cy.task("stopServer");
                                     });
                                 });
                             });
