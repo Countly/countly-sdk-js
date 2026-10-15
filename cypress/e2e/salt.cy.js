@@ -4,7 +4,6 @@ var Countly = require("../../Countly.js");
 var Utils = require("../../modules/Utils.js");
 // import * as Countly from "../../dist/countly_umd.js";
 var hp = require("../support/helper.js");
-const crypto = require('crypto');
 
 function initMain(salt) {
     Countly.init({
@@ -62,27 +61,19 @@ describe("Salt Tests", () => {
                         hp.check_commons(paramsObject);
                         expect(paramsObject.checksum256).to.be.ok;
                         expect(paramsObject.checksum256.length).to.equal(64);
+                        expect(paramsObject.checksum256).to.match(/^[A-F0-9]{64}$/);
                         // TODO: directly check the checksum with the node crypto api. Will need some extra decoding logic
                     }
                 });
             });
         });
     });
-    it('Node and Web Crypto comparison', () => {
-        const hash = sha256("text" + salt); // node crypto api
-        Utils.calculateChecksum("text", salt).then((hash2) => { // SDK uses web crypto api
+    it('Web Crypto checksum matches a known SHA-256 digest', () => {
+        // sha256("text" + "salt"), computed with node's crypto module, so the SDK's Web Crypto path is
+        // checked against an independent implementation without pulling node builtins into the browser bundle
+        const hash = "3353E16497AD272FEA4382119FF2801E54F0A4CF2057F4E32D00317BDA5126C3";
+        Utils.calculateChecksum("text", salt).then((hash2) => {
             expect(hash2).to.equal(hash);
         });
     });
 });
-
-/**
- * Calculate sha256 hash of given data
- * @param {*} data - data to hash
- * @returns {string} - sha256 hash
- */
-function sha256(data) {
-    const hash = crypto.createHash('sha256');
-    hash.update(data);
-    return hash.digest('hex');
-}

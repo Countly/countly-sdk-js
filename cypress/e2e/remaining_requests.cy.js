@@ -20,7 +20,7 @@ describe("Remaining requests tests ", () => {
             Countly.end_session(undefined, true);
 
             cy.wait(1000).then(() => {
-                var queues = Countly._internals.getLocalQueues();
+                var queues = hp.waitingQueues();
                 expect(queues.eventQ.length).to.equal(0);
                 expect(queues.requestQ.length).to.equal(3);
                 expect(queues.requestQ[0]["begin_session"]).to.equal(1);
@@ -28,10 +28,11 @@ describe("Remaining requests tests ", () => {
                 expect(JSON.parse(queues.requestQ[2]["events"])[0].key).to.equal("[CLY]_orientation");
                 
                 var requests = Countly._internals.testingGetRequests();
-                expect(requests.length).to.equal(2);
+                expect(requests.length).to.equal(3);
                 expect(requests[0].params["rr"]).to.equal(undefined);
-                expect(requests[1].params["rr"]).to.equal(3);
-                expect(requests[1].params["av"]).to.equal(av);
+                expect(requests[1].params["rr"]).to.equal(undefined);
+                expect(requests[2].params["rr"]).to.equal(3);
+                expect(requests[2].params["av"]).to.equal(av);
             });
         });
     });
@@ -43,22 +44,20 @@ describe("Remaining requests tests ", () => {
             Countly.begin_session();
             Countly.end_session(undefined, true);
             cy.fetch_local_request_queue().then((rq) => {
-                // We expect 3 requests in queue: begin_session, end_session, orientation. health check was not in the queue
                 expect(rq.length).to.equal(3);
-                expect(rq[0].rr).to.equal(3);
+                expect(rq[0].rr).to.equal(undefined);
                 expect(rq[1].rr).to.equal(undefined);
                 expect(rq[2].rr).to.equal(undefined);
 
                 // Change ID
                 Countly.change_id("newID");
                 cy.fetch_local_request_queue().then((rq2) => {
-                    // We expect 4 requests in queue: begin_session, end_session, orientation and change ID
+                    // We expect the same 3 requests: the session had ended, so none starts for the new ID
                     cy.log(rq2);
-                    expect(rq2.length).to.equal(4);
-                    expect(rq2[0].rr).to.equal(3); // still 3 as it was assigned at the time of the first request creation
+                    expect(rq2.length).to.equal(3);
+                    expect(rq2[0].rr).to.equal(undefined);
                     expect(rq2[1].rr).to.equal(undefined);
                     expect(rq2[2].rr).to.equal(undefined);
-                    expect(rq2[3].rr).to.equal(undefined);
                 });
             });
         });

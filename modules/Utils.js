@@ -1,5 +1,5 @@
 import { isBrowser, Countly } from "./Platform.js";
-import { logLevelEnums } from "./Constants.js";
+import { logLevelEnums, urlParseRE } from "./Constants.js";
 
 /**
  *  Get selected values from multi select input
@@ -132,17 +132,44 @@ function dispatchErrors(error, fatality, segments) {
  */
 function prepareParams(params, salt) {
     var str = [];
-    for (var i in params) {
+    // deterministic ordering for checksum stability
+    var keys = Object.keys(params || {}).sort();
+    for (var k = 0; k < keys.length; k++) {
+        var i = keys[k];
         str.push(i + "=" + encodeURIComponent(params[i]));
     }
     var data = str.join("&");
     if (salt) {
         return calculateChecksum(data, salt).then(checksum => {
-            data += "&checksum256=" + checksum;
+            data += "&checksum256=" + checksum.toUpperCase();
             return data;
         });
     }
     return Promise.resolve(data);
+}
+
+/**
+ *  Gives the fields of a multipart request with their plain values, in the order the checksum is calculated
+ *  @memberof Countly._internals
+ *  @param {Object} params - key value object of the fields
+ *  @param {String} salt - salt to sign the fields with, if any
+ *  @returns {Promise<Array>} [key, value] pairs, the checksum last when there is a salt
+ */
+function prepareFormFields(params, salt) {
+    var fields = [];
+    var keys = Object.keys(params || {}).sort();
+    for (var k = 0; k < keys.length; k++) {
+        fields.push([keys[k], String(params[keys[k]])]);
+    }
+    if (salt) {
+        // the server signs the plain field values again, as key=value pairs joined with "&"
+        var data = fields.map((field) => field[0] + "=" + field[1]).join("&");
+        return calculateChecksum(data, salt).then(checksum => {
+            fields.push(["checksum256", checksum.toUpperCase()]);
+            return fields;
+        });
+    }
+    return Promise.resolve(fields);
 }
 
 /**
@@ -271,9 +298,30 @@ function calculateChecksum(data, salt) {
         const hashArray = Array.from(new Uint8Array(hashBuffer)); // convert buffer to byte array
         const hashHex = hashArray
         .map((b) => b.toString(16).padStart(2, "0"))
-        .join(""); // convert bytes to hex string
-        return hashHex;
+        .join(""); // convert bytes to hex string (lowercase)
+        return hashHex.toUpperCase();
     }); 
+}
+
+/**
+ * Decodes standard base64 text into bytes, with atob or, in runtimes without it, Buffer
+ * @param {String} base64 - standard base64 text
+ * @returns {Uint8Array} the decoded bytes
+ * @throws when atob rejects the text, or when the runtime has neither atob nor Buffer
+ */
+function base64ToBytes(base64) {
+    if (typeof atob === "function") {
+        var binary = atob(base64);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+    }
+    if (typeof Buffer !== "undefined") {
+        return new Uint8Array(Buffer.from(base64, "base64"));
+    }
+    throw new Error("No base64 decoder in this runtime");
 }
 
 /**
@@ -378,6 +426,132 @@ function currentUserAgentDataString(uaOverride) {
         ua += navigator.userAgentData.platform;
     }
     return ua;
+}
+
+/**
+ * Parse Windows version from UA-CH platformVersion
+ * Chromium based browsers use platformVersion major >= 13 for Windows 11 and lower values for Windows 10.
+ *
+ * @param {string} platformVersion - platformVersion value from userAgentData.getHighEntropyValues
+ * @returns {string|null} "11", "10" or null if not parsable
+ */
+function parseWindowsVersionFromPlatformVersion(platformVersion) {
+    if (typeof platformVersion !== "string" || !platformVersion) {
+        return null;
+    }
+
+    var major = parseInt(platformVersion.split(".")[0], 10);
+    if (isNaN(major)) {
+        return null;
+    }
+
+    return major >= 13 ? "11" : "10";
+}
+
+/**
+ * Retrieve User-Agent Client Hints (high entropy values) when available.
+ *
+ * @param {Object} uaDataOverride - optional userAgentData override for testing
+ * @returns {Promise<Object|null>} resolved hints object or null
+ */
+function getUserAgentClientHintsInternal(uaData) {
+    if (!uaData || typeof uaData.getHighEntropyValues !== "function") {
+        return Promise.resolve(null);
+    }
+
+    return uaData.getHighEntropyValues([
+        "platform",
+        "platformVersion",
+        "architecture",
+        "bitness",
+        "model",
+        "uaFullVersion",
+        "fullVersionList"
+    ]).then((values) => {
+        if (!values || typeof values !== "object") {
+            return null;
+        }
+
+        var browserName = null;
+        var browserVersion = null;
+        var versionList = Array.isArray(values.fullVersionList) ? values.fullVersionList : [];
+        var fallbackList = Array.isArray(uaData.brands) ? uaData.brands : [];
+
+        var normalizeBrand = (brand) => {
+            return typeof brand === "string" ? brand.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+        };
+
+        var isGreaseBrand = (brand) => {
+            var normalized = normalizeBrand(brand);
+            return normalized === "notabrand" || normalized === "notabrand99" || normalized.indexOf("notabrand") === 0;
+        };
+
+        var isChromiumBrand = (brand) => normalizeBrand(brand) === "chromium";
+
+        var pickEntry = (list, allowChromiumFallback) => list.find((entry) => {
+            if (!entry || !entry.brand) {
+                return false;
+            }
+            if (isGreaseBrand(entry.brand)) {
+                return false;
+            }
+            if (!allowChromiumFallback && isChromiumBrand(entry.brand)) {
+                return false;
+            }
+            return true;
+        });
+
+        var browserEntry = pickEntry(versionList, false)
+            || pickEntry(fallbackList, false)
+            || pickEntry(versionList, true)
+            || pickEntry(fallbackList, true);
+
+        if (browserEntry) {
+            browserName = browserEntry.brand || null;
+            browserVersion = browserEntry.version || null;
+        }
+
+        var parsed = {
+            platform: values.platform || uaData.platform || null,
+            platformVersion: values.platformVersion || null,
+            architecture: values.architecture || null,
+            bitness: values.bitness || null,
+            model: values.model || null,
+            uaFullVersion: values.uaFullVersion || null,
+            fullVersionList: values.fullVersionList || null,
+            browserName: browserName,
+            browserVersion: browserVersion,
+            windowsVersion: null
+        };
+
+        if (parsed.platform && parsed.platform.toLowerCase() === "windows") {
+            parsed.windowsVersion = parseWindowsVersionFromPlatformVersion(parsed.platformVersion);
+        }
+
+        return parsed;
+    }).catch(() => null);
+}
+
+var prefetchedUserAgentClientHintsPromise = null;
+if (isBrowser && typeof navigator !== "undefined" && navigator.userAgentData && typeof navigator.userAgentData.getHighEntropyValues === "function") {
+    prefetchedUserAgentClientHintsPromise = getUserAgentClientHintsInternal(navigator.userAgentData);
+}
+
+function getUserAgentClientHints(uaDataOverride) {
+    if (uaDataOverride) {
+        return getUserAgentClientHintsInternal(uaDataOverride);
+    }
+
+    if (prefetchedUserAgentClientHintsPromise) {
+        return prefetchedUserAgentClientHintsPromise;
+    }
+
+    if (isBrowser && typeof navigator !== "undefined" && navigator.userAgentData && typeof navigator.userAgentData.getHighEntropyValues === "function") {
+        prefetchedUserAgentClientHintsPromise = getUserAgentClientHintsInternal(navigator.userAgentData);
+        return prefetchedUserAgentClientHintsPromise;
+    }
+
+    return Promise.resolve(null);
 }
 
 /**
@@ -634,7 +808,222 @@ function hideLoader() {
     }
 }
 
+/**
+ * Split a URL string into its parts using the shared urlParseRE regex. Kept regex-based
+ * (rather than the URL constructor) to preserve IE11 support, and it needs no DOM access.
+ * Relative URLs (no scheme/host) return an empty origin and everything in pathname.
+ * @memberof Countly._internals
+ * @param {String} urlString - URL to parse
+ * @returns {Object} object with origin, pathname, search and hash string properties
+ */
+function parseUrlParts(urlString) {
+    var parts = { origin: "", pathname: "", search: "", hash: "" };
+    if (typeof urlString !== "string") {
+        return parts;
+    }
+    var matches = urlParseRE.exec(urlString);
+    if (!matches) {
+        return parts;
+    }
+    // matches[4] = "protocol:", matches[10] = "host[:port]", matches[13] = path,
+    // matches[16] = "?query", matches[17] = "#hash" (see urlParseRE comments in Constants.js)
+    if (matches[4] && matches[10]) {
+        parts.origin = matches[4] + "//" + matches[10];
+    }
+    parts.pathname = matches[13] || "";
+    parts.search = matches[16] || "";
+    parts.hash = matches[17] || "";
+    return parts;
+}
+
+/**
+ * Schemes a content link may never open, in any form: they run script, load a document that inherits an
+ * origin, reach the local machine or an OS handler. The same list the Countly server applies to content.
+ */
+var BLOCKED_LINK_SCHEMES = ["javascript", "vbscript", "livescript", "mocha", "data", "blob", "filesystem", "jar", "file", "view-source", "about", "intent", "ms-msdt", "search-ms", "ms-search", "smb", "nfs", "chrome", "chrome-extension", "moz-extension", "moz-icon", "resource", "ftp", "ws", "wss"];
+
+/**
+ * Schemes that carry a recipient rather than a host, allowed for contact links.
+ */
+var CONTACT_LINK_SCHEMES = ["mailto", "tel", "sms", "geo", "facetime", "skype"];
+
+var LINK_SCHEME_RE = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
+
+/**
+ * Tells whether a content link may be opened: web links, contact links, relative links and app deep links in
+ * scheme:// form pass; anything that would execute where it is opened does not.
+ * @param {*} value - the link
+ * @returns {Boolean} true when the link may be opened
+ */
+function isSafeActionUrl(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+    var authored = value.trim();
+    // browsers drop control characters and spaces while parsing a URL, so "java\tscript:" still runs
+    // eslint-disable-next-line no-control-regex
+    var url = authored.replace(/[\u0000- ]/g, "");
+    if (!url) {
+        return false;
+    }
+    var scheme = LINK_SCHEME_RE.exec(url);
+    if (!scheme) {
+        return true;
+    }
+    var name = scheme[1].toLowerCase();
+    if (BLOCKED_LINK_SCHEMES.indexOf(name) !== -1) {
+        return false;
+    }
+    if (name === "http" || name === "https" || CONTACT_LINK_SCHEMES.indexOf(name) !== -1) {
+        return true;
+    }
+    // an unknown scheme passes only in the deep link shape as written, which the stripping above must not create
+    var authoredScheme = LINK_SCHEME_RE.exec(authored);
+    return authoredScheme !== null && authored.slice(authoredScheme[0].length, authoredScheme[0].length + 2) === "//";
+}
+
+/**
+ * Parts of a form field's name or label that mark it as holding a secret or payment, bank or identity data,
+ * found anywhere in the lowercased name without separators
+ */
+var SENSITIVE_FIELD_PARTS = ["password", "passwd", "passwort", "passcode", "passphrase", "cardnum", "ccnum", "ccexp", "cardexp", "creditcard", "debitcard", "cardholder", "nameoncard", "securitycode", "securitynum", "seccode", "verificationcode", "onetimecode", "authcode", "iban", "routingnum", "sortcode", "accountnum", "bankaccount", "socialsec", "socsec", "nationalid", "taxid", "taxnum", "passport", "driverlicen", "driverslicen", "apikey", "privatekey", "clientsecret", "accesstoken", "authtoken", "csrf", "xsrf"];
+
+/**
+ * Short words that mark a sensitive field only as a whole word of its name, so "pin_code" matches and "shipping" does not
+ */
+var SENSITIVE_FIELD_WORDS = ["pass", "pwd", "pw", "pin", "otp", "cc", "cvv", "cvc", "csc", "cvn", "exp", "expiry", "pan", "ssn", "bic", "swift", "token", "secret", "auth"];
+
+/**
+ * Parts and whole words of a form field's name or label that mark it as a phone number field
+ */
+var PHONE_FIELD_PARTS = ["phone", "mobile", "telefon", "msisdn"];
+var PHONE_FIELD_WORDS = ["tel", "cell", "gsm"];
+
+/**
+ * Tells whether a form field's name, id or label contains one of the given parts, or one of the given words as a
+ * whole word (words split at separators, digits and camelCase humps)
+ * @param {*} text - name, id or label text of the field
+ * @param {Array<String>} parts - parts matched anywhere
+ * @param {Array<String>} words - words matched as whole words
+ * @returns {Boolean} true when the text matches
+ */
+function fieldNameMatches(text, parts, words) {
+    if (typeof text !== "string" || !text) {
+        return false;
+    }
+    var joined = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (var i = 0; i < parts.length; i++) {
+        if (joined.indexOf(parts[i]) !== -1) {
+            return true;
+        }
+    }
+    var split = text.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().split(/[^a-z]+/);
+    for (var j = 0; j < split.length; j++) {
+        if (words.indexOf(split[j]) !== -1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Tells whether a form field's name, id or label marks it as holding a secret or payment, bank or identity data
+ * @param {*} text - name, id or label text of the field
+ * @returns {Boolean} true when the field looks sensitive
+ */
+function isSensitiveFieldName(text) {
+    return fieldNameMatches(text, SENSITIVE_FIELD_PARTS, SENSITIVE_FIELD_WORDS);
+}
+
+/**
+ * Tells whether a form field's name, id or label marks it as a phone number field
+ * @param {*} text - name, id or label text of the field
+ * @returns {Boolean} true when the field looks like a phone number field
+ */
+function isPhoneFieldName(text) {
+    return fieldNameMatches(text, PHONE_FIELD_PARTS, PHONE_FIELD_WORDS);
+}
+
+/**
+ * Tells whether a value holds a payment card number: a run of 13 to 19 digits, single spaces or dashes allowed
+ * between them, that passes the Luhn check
+ * @param {*} value - form field value
+ * @returns {Boolean} true when a card number is found in the value
+ */
+function looksLikeCardNumber(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+    var runs = /\d(?:[ -]?\d)*/g;
+    var run;
+    while ((run = runs.exec(value)) !== null) {
+        // card numbers are never written after a "+", international phone numbers are
+        if (run.index > 0 && value.charAt(run.index - 1) === "+") {
+            continue;
+        }
+        var digits = run[0].replace(/\D/g, "");
+        if (digits.length < 13 || digits.length > 19) {
+            continue;
+        }
+        var sum = 0;
+        for (var i = 0; i < digits.length; i++) {
+            var digit = +digits.charAt(digits.length - 1 - i);
+            if (i % 2 === 1) {
+                digit *= 2;
+                if (digit > 9) {
+                    digit -= 9;
+                }
+            }
+            sum += digit;
+        }
+        if (sum % 10 === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Tells whether a whole value is shaped like a US social security number, 123-45-6789 or 123456789
+ * @param {*} value - form field value
+ * @returns {Boolean} true when the value is SSN-shaped
+ */
+function looksLikeSsn(value) {
+    // the separators must match, so a ZIP+4 code such as 12345-6789 is not taken for one
+    return typeof value === "string" && /^\d{3}([ -]?)\d{2}\1\d{4}$/.test(value.trim());
+}
+
+/**
+ * Tells whether a whole value is shaped like a phone number: digits, spaces and ( ) . / - signs with an optional
+ * leading +, holding 5 to 15 digits
+ * @param {*} value - form field value
+ * @returns {Boolean} true when the value is phone-shaped
+ */
+function isPhoneShaped(value) {
+    if (typeof value !== "string" || !/^\+?[\d\s()./-]+$/.test(value.trim())) {
+        return false;
+    }
+    var digitCount = value.replace(/\D/g, "").length;
+    return digitCount >= 5 && digitCount <= 15;
+}
+
+/**
+ * Tells whether a whole value is one email address
+ * @param {*} value - form field value
+ * @returns {Boolean} true when the value is one email address
+ */
+function isWholeEmail(value) {
+    return typeof value === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim());
+}
+
 export {
+    isSafeActionUrl,
+    isSensitiveFieldName,
+    isPhoneFieldName,
+    looksLikeCardNumber,
+    looksLikeSsn,
+    isPhoneShaped,
+    isWholeEmail,
     getMultiSelectValues,
     secureRandom,
     generateUUID,
@@ -644,6 +1033,7 @@ export {
     getConfig,
     dispatchErrors,
     prepareParams,
+    prepareFormFields,
     stripTrailingSlash,
     createNewObjectFromProperties,
     addNewProperties,
@@ -666,5 +1056,9 @@ export {
     checkIfLoggingIsOn,
     hideLoader,
     currentUserAgentDataString,
-    calculateChecksum
-}; 
+    getUserAgentClientHints,
+    parseWindowsVersionFromPlatformVersion,
+    calculateChecksum,
+    base64ToBytes,
+    parseUrlParts
+};

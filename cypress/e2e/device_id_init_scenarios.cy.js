@@ -115,18 +115,29 @@ function checkRequestsForT(queue, expectedInternalType) {
         expect(queue[i].t).to.eq(expectedInternalType);
     }
 }
-function checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, temp) {
+// settingsFetchedFor: the IDs change_id switched to outside offline mode, each fetching the behavior settings again
+function checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, temp, afterOffline, settingsFetchedFor) {
     var directReqs = Countly._internals.testingGetRequests(); // get direct requests
     cy.log("Requests: " + JSON.stringify(directReqs));
+    settingsFetchedFor = settingsFetchedFor || [];
 
-    expect(directReqs.length).to.eq(temp ? 0 : 2);
+    expect(directReqs.length).to.eq(temp ? 0 : (afterOffline ? 4 : 3) + settingsFetchedFor.length);
     for (var i = 0; i < directReqs.length; i++) {
-        expect(directReqs[i].params.device_id).to.eq(afterInitDeviceId);
-        expect(directReqs[i].params.t).to.eq(afterInitDeviceIdType);
+        if (afterOffline && directReqs[i].functionName == "server_config" && i == directReqs.length - 1) {
+            expect(directReqs[i].params.device_id).to.be.oneOf(["id_2", "storedID", "newID"]);
+            expect(directReqs[i].params.t).to.eq(DeviceIdTypeInternalEnumsTest.DEVELOPER_SUPPLIED);
+        } else if (i >= 3 && i < 3 + settingsFetchedFor.length) {
+            expect(directReqs[i].functionName).to.eq("server_config");
+            expect(directReqs[i].params.device_id).to.eq(settingsFetchedFor[i - 3]);
+            expect(directReqs[i].params.t).to.eq(DeviceIdTypeInternalEnumsTest.DEVELOPER_SUPPLIED);
+        } else {
+            expect(directReqs[i].params.device_id).to.eq(afterInitDeviceId);
+            expect(directReqs[i].params.t).to.eq(afterInitDeviceIdType);
+        }
     }
 }
 function checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType) {
-    var queues = Countly._internals.getLocalQueues(); // get local queues
+    var queues = hp.waitingQueues(); // get what waits to be sent
     cy.log("Queues: " + JSON.stringify(queues));
 
     expect(queues.eventQ.length).to.eq(0);
@@ -139,7 +150,7 @@ function checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType) {
 }
 
 function checkStoredReqQueueAfterIDChange(changedID, changedIDType, afterOffline) {
-    var queues = Countly._internals.getLocalQueues(); // get local queues
+    var queues = hp.waitingQueues(); // get what waits to be sent
     cy.log("QueuesE: " + JSON.stringify(queues.eventQ));
     cy.log("QueuesQ: " + JSON.stringify(queues.requestQ));
     // print each item in the queue
@@ -148,12 +159,12 @@ function checkStoredReqQueueAfterIDChange(changedID, changedIDType, afterOffline
     }
 
     expect(queues.eventQ.length).to.eq(0);
-    var expectedL = 5;
+    var expectedL = 6;
     if (afterOffline) {
-        expectedL = 3; // basic after offline tests where entering offline mode should not trigger session end and getting out of offline mode should not trigger session begin (default 5 with those)
+        expectedL = 3; // basic after offline tests where entering offline mode should not trigger session end and getting out of offline mode should not trigger session begin (default 6 with those)
     }
     if (afterOffline == 2) {
-        expectedL = 6; // offline mode with change id
+        expectedL = 7; // offline mode with change id
     }
     if (afterOffline == 3) {
         expectedL = 4; // offline mode with change id
@@ -232,10 +243,13 @@ function changeIDTests(afterInitDeviceId, afterInitDeviceIdType, afterOffline) {
 
     generateSomeEvents();
 
+    // leaving offline mode fetched the settings for the first new ID already
+    var settingsFetchedFor = afterOffline ? [] : ["id_1"];
+
     // wait for things to resolve
-    cy.wait(550).then(() => {
-        // direct requests would have the old device id (hc and session)
-        checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+    cy.wait(1200).then(() => {
+        // direct requests would have the old device id (hc and session), then the settings fetch for the new one
+        checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, false, settingsFetchedFor);
 
         // after ID events
         checkStoredReqQueueAfterIDChange(changedID, changedIDType, afterOffline);
@@ -251,9 +265,9 @@ function changeIDTests(afterInitDeviceId, afterInitDeviceIdType, afterOffline) {
         generateSomeEvents();
 
         // wait for things to resolve
-        cy.wait(550).then(() => {
+        cy.wait(1200).then(() => {
             // direct requests would have the old device id (hc and session)
-            checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+            checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true, settingsFetchedFor);
 
             // after ID events
             checkStoredReqQueueAfterIDChange(changedID2, changedIDType2, afterOffline? 3 : 2); // no end and begin session in offline mode => device id change scenario
@@ -297,6 +311,34 @@ describe("Device Id tests during first init", ()=>{
                 checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
                 checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
                 changeIDTests(afterInitDeviceId, afterInitDeviceIdType);
+            });
+        });
+    });
+    it("1b-SDK is initialized with a null custom device id and generates one", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain(null, false, undefined);
+            const afterInitDeviceId = Countly.get_device_id();
+            const afterInitDeviceIdType = Countly.get_device_id_type();
+            expect(afterInitDeviceIdType).to.eq(Countly.DeviceIdType.SDK_GENERATED);
+            validateSdkGeneratedId(afterInitDeviceId);
+            validateInternalDeviceIdType(DeviceIdTypeInternalEnumsTest.SDK_GENERATED);
+            generateSomeEvents();
+            cy.wait(hp.sWait2).then(() => {
+                checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+            });
+        });
+    });
+    it("1c-SDK is initialized with an empty custom device id and generates one", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain("", false, undefined);
+            const afterInitDeviceId = Countly.get_device_id();
+            const afterInitDeviceIdType = Countly.get_device_id_type();
+            expect(afterInitDeviceIdType).to.eq(Countly.DeviceIdType.SDK_GENERATED);
+            validateSdkGeneratedId(afterInitDeviceId);
+            validateInternalDeviceIdType(DeviceIdTypeInternalEnumsTest.SDK_GENERATED);
+            generateSomeEvents();
+            cy.wait(hp.sWait2).then(() => {
+                checkEachStoredReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
             });
         });
     });
@@ -349,6 +391,18 @@ describe("Device Id tests during first init", ()=>{
         hp.haltAndClearStorage(() => {
             initMain(undefined, false, "?cly_device_id=someID");
             setURLCheck("someID");
+        });
+    });
+    it("4b-SDK is initialized with an encoded utm device id and uses it as it was before encoding", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain(undefined, false, "?cly_device_id=john%2Btest%40mail.com%26x%3Dy");
+            setURLCheck("john+test@mail.com&x=y");
+        });
+    });
+    it("4c-SDK is initialized with a utm device id that is not encoded and keeps it as it is", ()=>{
+        hp.haltAndClearStorage(() => {
+            initMain(undefined, false, "?cly_device_id=john+test@mail.com=1");
+            setURLCheck("john+test@mail.com=1");
         });
     });
     it("5-SDK is initialized with custom device id, with offline mode, without utm device id", ()=>{
@@ -419,9 +473,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
-                    // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                cy.wait(1200).then(() => {
+                    // direct requests would have the old device id (hc and session), then the settings fetch for the new one
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, false, ["storedID"]);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType);
@@ -457,9 +511,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true); // no end and begin session in offline mode => device id change scenario
@@ -495,9 +549,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
-                    // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                cy.wait(1200).then(() => {
+                    // direct requests would have the old device id (hc and session), then the settings fetch for the new one
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, false, ["storedID"]);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType);
@@ -533,9 +587,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
@@ -571,7 +625,7 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
                     checkEachDirectReqForIDandT(changedID, changedIDType);
 
@@ -609,7 +663,7 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
                     checkEachDirectReqForIDandT(changedID, changedIDType);
 
@@ -647,9 +701,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
-                    // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED);
+                cy.wait(1200).then(() => {
+                    // direct requests would have the old device id (hc and session), then the settings fetch for the new one
+                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED, false, false, ["storedID"]);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType);
@@ -685,9 +739,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
@@ -1716,9 +1770,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
-                    // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                cy.wait(1200).then(() => {
+                    // direct requests would have the old device id (hc and session), then the settings fetch for the new one
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, false, ["storedID"]);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType);
@@ -1754,9 +1808,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true); // no end and begin session in offline mode => device id change scenario
@@ -1792,9 +1846,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
-                    // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                cy.wait(1200).then(() => {
+                    // direct requests would have the old device id (hc and session), then the settings fetch for the new one
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, false, ["storedID"]);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType);
@@ -1830,9 +1884,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, afterInitDeviceIdType, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
@@ -1868,7 +1922,7 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
                     checkEachDirectReqForIDandT(changedID, changedIDType);
 
@@ -1906,7 +1960,7 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
                     checkEachDirectReqForIDandT(changedID, changedIDType);
 
@@ -1944,9 +1998,9 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
-                    // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED);
+                cy.wait(1200).then(() => {
+                    // direct requests would have the old device id (hc and session), then the settings fetch for the new one
+                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED, false, false, ["storedID"]);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType);
@@ -1982,13 +2036,65 @@ describe("Device Id tests during first init", ()=>{
                 generateSomeEvents();
 
                 // wait for things to resolve
-                cy.wait(550).then(() => {
+                cy.wait(1200).then(() => {
                     // direct requests would have the old device id (hc and session)
-                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED);
+                    checkEachDirectReqForIDandT(afterInitDeviceId, DeviceIdTypeInternalEnumsTest.URL_PROVIDED, false, true);
 
                     // after ID events
                     checkStoredReqQueueAfterIDChange(changedID, changedIDType, true);
                 });
+            });
+        });
+    });
+});
+
+describe("Requests queued under a temporary device ID", () => {
+    function seedTemporaryIdSession() {
+        cy.setLocalStorage("YOUR_APP_KEY/cly_id", "[CLY]_temp_id");
+        cy.setLocalStorage("YOUR_APP_KEY/cly_queue", JSON.stringify([{ app_key: "YOUR_APP_KEY", device_id: "[CLY]_temp_id", t: DeviceIdTypeInternalEnumsTest.TEMPORARY_ID, events: JSON.stringify([{ key: "while_temporary", count: 1 }]) }]));
+        return cy.setLocalStorage("YOUR_APP_KEY/cly_id_type", DeviceIdTypeInternalEnumsTest.TEMPORARY_ID);
+    }
+    function queuedWhileTemporary() {
+        return Countly._internals.getLocalQueues().requestQ.filter((r) => r.events && r.events.indexOf("while_temporary") !== -1);
+    }
+    function initWithoutSending(deviceId, clear) {
+        Countly.init({ app_key: "YOUR_APP_KEY", url: "https://d.count.ly", device_id: deviceId, clear_stored_id: clear, test_mode: true, debug: true, getSearchQuery: () => "" });
+    }
+
+    it("are sent with the device ID the SDK starts with", () => {
+        hp.haltAndClearStorage(() => {
+            seedTemporaryIdSession().then(() => {
+                initWithoutSending("realID");
+                var queued = queuedWhileTemporary();
+                expect(queued.length).to.eq(1);
+                expect(queued[0].device_id).to.eq("realID");
+                expect(queued[0].t).to.eq(DeviceIdTypeInternalEnumsTest.DEVELOPER_SUPPLIED);
+                cy.fetch_local_request_queue().then((stored) => {
+                    expect(stored[0].device_id).to.eq("realID");
+                });
+            });
+        });
+    });
+    it("are sent with the generated device ID when the stored one is cleared", () => {
+        hp.haltAndClearStorage(() => {
+            seedTemporaryIdSession().then(() => {
+                initWithoutSending(undefined, true);
+                var queued = queuedWhileTemporary();
+                expect(queued.length).to.eq(1);
+                validateSdkGeneratedId(queued[0].device_id);
+                expect(queued[0].device_id).to.eq(Countly.get_device_id());
+                expect(queued[0].t).to.eq(DeviceIdTypeInternalEnumsTest.SDK_GENERATED);
+            });
+        });
+    });
+    it("keep the temporary ID while the SDK stays in temporary ID mode", () => {
+        hp.haltAndClearStorage(() => {
+            seedTemporaryIdSession().then(() => {
+                initWithoutSending(undefined);
+                expect(Countly.get_device_id()).to.eq("[CLY]_temp_id");
+                var queued = queuedWhileTemporary();
+                expect(queued.length).to.eq(1);
+                expect(queued[0].device_id).to.eq("[CLY]_temp_id");
             });
         });
     });

@@ -1,7 +1,13 @@
-
-
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, featureEnums, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logLevelEnums, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE } from "./Constants.js";
+import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
+    isSafeActionUrl,
+    isSensitiveFieldName,
+    isPhoneFieldName,
+    looksLikeCardNumber,
+    looksLikeSsn,
+    isPhoneShaped,
+    isWholeEmail,
     getMultiSelectValues,
     secureRandom,
     generateUUID,
@@ -10,6 +16,7 @@ import {
     getConfig,
     dispatchErrors,
     prepareParams,
+    prepareFormFields,
     stripTrailingSlash,
     createNewObjectFromProperties,
     addNewProperties,
@@ -32,7 +39,10 @@ import {
     showLoader,
     checkIfLoggingIsOn,
     hideLoader,
-    calculateChecksum
+    getUserAgentClientHints,
+    calculateChecksum,
+    base64ToBytes,
+    parseUrlParts
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
 
@@ -43,16 +53,31 @@ class CountlyClass {
     #sessionStarted;
     #apiPath;
     #readPath;
+    #logTransportInProgress;
     #beatInterval;
-    #queueSize;
     #requestQueue;
     #eventQueue;
     #remoteConfigs;
     #crashLogs;
     #timedEvents;
     #ignoreReferrers;
+    #trackFormValues;
     #crashSegments;
     #autoExtend;
+    #autoSessionTracking;
+    #halted;
+    #serverConfigTimer;
+    #serverConfigAfterMerge;
+    #remoteConfigAfterMerge;
+    #tabStore;
+    #sendingUpTo;
+    #requestOnItsWay;
+    #waitingToRetry;
+    #collectUntil;
+    #collectTimer;
+    #pausedUntil;
+    #pauseTimer;
+    #deferredRequests;
     #lastBeat;
     #storedDuration;
     #lastView;
@@ -62,9 +87,6 @@ class CountlyClass {
     #failTimeoutAmount;
     #inactivityTime;
     #inactivityCounter;
-    #sessionUpdate;
-    #maxEventBatch;
-    #maxCrashLogs;
     #useSessionCookie;
     #sessionCookieTimeout;
     #readyToProcess;
@@ -87,45 +109,144 @@ class CountlyClass {
     #shouldSendHC;
     #consents;
     #generatedRequests;
-    #contentTimeInterval;
     #contentEndPoint;
     #inContentZone;
+    #contentZoneWanted;
+    #contentZoneExited = false;
     #contentZoneTimer;
-    #contentZoneTimerInterval;
+    #contentZoneEntryTimer;
+    #contentMessageListener;
+    #contentResizeListener;
+    #globalContentSegmentation = {};
+    #contentTheme = null;
     #contentIframeID;
+    #crashFilterCallback;
+    #serverConfigCache;
+    #SCNetwork;
+    #SCSizeReqQueue;
+    #SCSizeEventBatch;
+    #SCIntervalSessionUpdate;
+    #SCIntervalContent;
+    #SCInterval;
+    #SCTrackingAll;
+    #SCTrackingSession;
+    #SCTrackingViews; 
+    #SCTrackingCrashes;
+    #SCTrackingEvents;
+    #SCTrackingLocation;
+    #SCEnableContent;
+    #SCEnableConsentRequired;
+    #SCEnableRefreshContentZone;
+    #SCLimitKeyLength;
+    #SCLimitValueSize;
+    #SCLimitSegmentationValues;
+    #SCLimitBreadcrumbCount;
+    #SCLimitStackTraceLinesPerThread;
+    #SCLimitStackTraceLineLength;
+    #SCBackoffMechanismEnabled;
+    #SCBackoffAcceptedTimeout;
+    #SCBackoffRQPercentage;
+    #SCBackoffRequestAge;
+    #SCBackoffDuration;
+    #SCEventBlacklist;
+    #SCEventWhitelist;
+    #SCUserPropertyBlacklist;
+    #SCUserPropertyWhitelist;
+    #SCSegmentationBlacklist;
+    #SCSegmentationWhitelist;
+    #SCEventSegmentationBlacklist;
+    #SCEventSegmentationWhitelist;
+    #SCJourneyTriggerEvents;
+    #SCLogGathering;
+    #logBuffer;
+    #logHeld;
+    #logBufferDropped;
+    #logCaptureInProgress;
+    #lastLogFlushTime;
+    #initContentSent;
+    #initTimestamp;
+    #isSCDisabled;
+    #connectionTestRunning = false;
+    #standingInForAnotherUser = false;
+    #lastRequestDuration;
+    #backoffEndTime;
+    #isInBackoff;
+    #backOffLogShown;
+    #lastRequestWasBackoff;
+    #testModeTime;
+    #requestTimeoutDuration;
+    #contentFilterCallback;
+    #isProcessingAsyncFromUserDataSave;
+    #journeyTriggerInProgress;
+    #journeyTriggerPending;
+    #journeyPendingEventIds;
+    #fakeRequestHandler;
+    #uaClientHints;
+    #uaClientHintsStatus;
+    #clientHintsPromise;
+    #pendingRequestBuffer;
+    #clientHintsBufferTimeoutId;
+    #seenPushActionIds;
+    #pushMessageHandler;
+    #pushEnableInFlight;
+    #pushNotificationListener;
+    #lastPushToken;
+    #pushRegistration;
+    #suppliedPushRegistration;
+    #pushListeningSince;
+    #pushMergedIds;
+    #pushConsentWithdrawals = 0;
+    #pushRecordInMemory = {};
+    #pushWorkerVersionsWarned = [];
+    #ignoredByChoice = false;
+    #idBeforeOfflineMode;
+    #passwordFields = new WeakMap();
+    #passwordWatchRoots = new WeakMap();
+    #encodedCookiePrefix = "~cly~";
+
+    /**
+     * Create a new Countly instance with configuration
+     * @param {Object} ob - Configuration object for Countly initialization
+     */
     constructor(ob) {
         this.#self = this;
         this.#global = !Countly.i;
         this.#sessionStarted = false;
         this.#apiPath = "/i";
         this.#readPath = "/o/sdk";
-        this.#beatInterval = getConfig("interval", ob, configurationDefaultValues.BEAT_INTERVAL);
-        this.#queueSize = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
         this.#requestQueue = [];
         this.#eventQueue = [];
         this.#remoteConfigs = {};
         this.#crashLogs = [];
         this.#timedEvents = {};
-        this.#ignoreReferrers = getConfig("ignore_referrers", ob, []);
         this.#crashSegments = null;
         this.#autoExtend = true;
+        this.#autoSessionTracking = false;
+        this.#halted = false;
+        this.#serverConfigTimer = null;
+        this.#serverConfigAfterMerge = false;
+        this.#remoteConfigAfterMerge = false;
+        this.#tabStore = false;
+        this.#sendingUpTo = null;
+        this.#requestOnItsWay = null;
+        this.#waitingToRetry = false;
+        this.#collectUntil = 0;
+        this.#collectTimer = null;
+        this.#pausedUntil = 0;
+        this.#pauseTimer = null;
+        this.#deferredRequests = [];
         this.#lastBeat;
         this.#storedDuration = 0;
         this.#lastView = null;
         this.#lastViewTime = 0;
         this.#lastViewStoredDuration = 0;
         this.#failTimeout = 0;
-        this.#failTimeoutAmount = getConfig("fail_timeout", ob, configurationDefaultValues.FAIL_TIMEOUT_AMOUNT);
-        this.#inactivityTime = getConfig("inactivity_time", ob, configurationDefaultValues.INACTIVITY_TIME);
         this.#inactivityCounter = 0;
-        this.#sessionUpdate = getConfig("session_update", ob, configurationDefaultValues.SESSION_UPDATE);
-        this.#maxEventBatch = getConfig("max_events", ob, configurationDefaultValues.MAX_EVENT_BATCH);
-        this.#maxCrashLogs = getConfig("max_logs", ob, null);
-        this.#useSessionCookie = getConfig("use_session_cookie", ob, true);
-        this.#sessionCookieTimeout = getConfig("session_cookie_timeout", ob, configurationDefaultValues.SESSION_COOKIE_TIMEOUT);
         this.#readyToProcess = true;
+        this.#lastRequestDuration = 0;
+        this.#backoffEndTime = 0;
+        this.#isInBackoff = false;
         this.#hasPulse = false;
-        this.#offlineMode = getConfig("offline_mode", ob, false);
         this.#lastParams = {};
         this.#trackTime = true;
         this.#startTime = getTimestamp();
@@ -138,16 +259,73 @@ class CountlyClass {
         this.#currentViewId = null; // this is the global variable for tracking the current view's ID. Used in view tracking. Becomes previous view ID at the end.
         this.#previousViewId = null; // this is the global variable for tracking the previous view's ID. Used in view tracking. First view has no previous view ID.
         this.#freshUTMTags = null;
-        this.#sdkName = getConfig("sdk_name", ob, SDK_NAME);
-        this.#sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
         this.#shouldSendHC = false;
         this.#generatedRequests = [];
-        this.#contentTimeInterval = 30000;
         this.#contentEndPoint = "/o/sdk/content";
         this.#inContentZone = false;
+        this.#contentZoneWanted = false;
         this.#contentZoneTimer = null;
+        this.#contentZoneEntryTimer = null;
+        this.#contentMessageListener = null;
+        this.#contentResizeListener = null;
         this.#contentIframeID = "cly-content-iframe";
-
+        this.#crashFilterCallback = null;
+        this.#SCNetwork = true;
+        this.#SCSizeReqQueue = getConfig("queue_size", ob, configurationDefaultValues.QUEUE_SIZE);
+        this.#SCSizeEventBatch = getConfig("max_events", ob, configurationDefaultValues.MAX_EVENT_BATCH);
+        this.#SCIntervalSessionUpdate = getConfig("session_update", ob, configurationDefaultValues.SESSION_UPDATE);
+        this.#SCIntervalContent = Math.max(getConfig("content_zone_timer_interval", ob, 30), 15) * 1000; // min 15 seconds
+        this.#SCInterval = 4; // 4 hours
+        this.#SCTrackingAll = true;
+        this.#SCTrackingSession = true;
+        this.#SCTrackingCrashes = true;
+        this.#SCTrackingViews = true;
+        this.#SCTrackingEvents = true;
+        this.#SCTrackingLocation = true;
+        this.#SCEnableContent = false;
+        this.#SCEnableRefreshContentZone = true;    
+        this.#SCEnableConsentRequired = getConfig("require_consent", ob, false);
+        this.#SCLimitKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
+        this.#SCLimitValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
+        this.#SCLimitSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
+        this.#SCLimitBreadcrumbCount = getConfig("max_breadcrumb_count", ob, configurationDefaultValues.MAX_BREADCRUMB_COUNT);
+        this.#SCLimitStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
+        this.#SCLimitStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
+        this.#SCBackoffMechanismEnabled = !getConfig("disable_backoff_mechanism", ob, false);
+        this.#SCBackoffAcceptedTimeout = 10; // 10 seconds
+        this.#SCBackoffRQPercentage = 0.5; // 50% of the request queue
+        this.#SCBackoffRequestAge = 24; // 24 hours
+        this.#SCBackoffDuration = 60; // 60 seconds
+        this.#SCEventBlacklist = [];
+        this.#SCEventWhitelist = [];
+        this.#SCUserPropertyBlacklist = [];
+        this.#SCUserPropertyWhitelist = [];
+        this.#SCSegmentationBlacklist = [];
+        this.#SCSegmentationWhitelist = [];
+        this.#SCEventSegmentationBlacklist = {};
+        this.#SCEventSegmentationWhitelist = {};
+        this.#SCJourneyTriggerEvents = [];
+        // undecided until the server answers, so the init lines below are captured and adopted or dropped later
+        this.#resetLogGathering(false);
+        this.#requestTimeoutDuration = 30000; // 30 seconds
+        this.#contentFilterCallback = null;
+        this.#isProcessingAsyncFromUserDataSave = false;
+        this.#journeyTriggerInProgress = false;
+        this.#journeyTriggerPending = false;
+        this.#journeyPendingEventIds = new Set();
+        this.#fakeRequestHandler = getConfig("fake_request_handler", ob, null);
+        this.#uaClientHints = null;
+        this.#uaClientHintsStatus = "not_started";
+        this.#clientHintsPromise = null;
+        this.#pendingRequestBuffer = null;
+        this.#clientHintsBufferTimeoutId = null;
+        this.app_key = getConfig("app_key", ob, null);
+        this.url = stripTrailingSlash(getConfig("url", ob, ""));
+        this.serialize = getConfig("serialize", ob, Countly.serialize);
+        this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
+        this.#isSCDisabled = getConfig("disable_sdk_behavior_settings_updates", ob, false);
+        this.#backOffLogShown = false;
+        this.#testModeTime = getConfig("test_mode_time", ob, 0); 
         try {
             localStorage.setItem("cly_testLocal", true);
             // clean up test
@@ -164,7 +342,351 @@ class CountlyClass {
             this.#consents[Countly.features[it]] = {};
         }
 
+        this.#initializeClientHints();
+
         this.#initialize(ob);
+
+        // start SDK
+        this.#notifyLoaders();
+
+        setTimeout(() => {
+            if (!Countly.noHeartBeat) {
+                this.#heartBeat();
+            } else {
+                this.#log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
+            }
+
+            if (this.remote_config) {
+                this.fetch_remote_config(this.remote_config);
+            }
+        }, 1);
+        if (isBrowser) {
+            document.documentElement.setAttribute("data-countly-useragent", currentUserAgentString());
+        }
+        this.#initTimestamp = getMsTimestamp();
+        // send instant health check request
+        this.#HealthCheck.sendInstantHCRequest(); 
+        if (this.#SCEnableContent) {
+            this.#enterContentZoneInternal();
+            this.#initContentSent = true;
+        }
+        this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
+    };
+
+    /**
+     * Fetch User-Agent Client Hints and cache values for metrics enrichment.
+     * @private
+     */
+    #initializeClientHints = () => {
+        if (!isBrowser) {
+            this.#uaClientHintsStatus = "unavailable";
+            this.#pendingRequestBuffer = null; // no buffering needed
+            return;
+        }
+
+        var uaRaw = currentUserAgentString();
+        var uaDataAvailable = typeof navigator !== "undefined" && !!navigator.userAgentData;
+        var getHighEntropyValuesAvailable = uaDataAvailable && typeof navigator.userAgentData.getHighEntropyValues === "function";
+        var uaDataPlatform = uaDataAvailable ? navigator.userAgentData.platform : undefined;
+        var uaDataBrands = uaDataAvailable ? navigator.userAgentData.brands : undefined;
+
+        this.#log(logLevelEnums.DEBUG, "ua_logic, raw ua string:[" + uaRaw + "]");
+        this.#log(logLevelEnums.DEBUG, "ua_logic, userAgentData available:[" + uaDataAvailable + "], getHighEntropyValues available:[" + getHighEntropyValuesAvailable + "]");
+        this.#log(logLevelEnums.DEBUG, "ua_logic, userAgentData low-entropy platform:[" + uaDataPlatform + "], brands:[" + JSON.stringify(uaDataBrands) + "]");
+
+        this.#uaClientHintsStatus = "pending";
+        this.#pendingRequestBuffer = []; // enable request buffering until hints resolve
+
+        // Safety timeout: flush buffer even if hints never resolve (e.g. API blocked)
+        this.#clientHintsBufferTimeoutId = setTimeout(() => {
+            if (this.#pendingRequestBuffer !== null) {
+                this.#log(logLevelEnums.WARNING, "ua_logic, client hints resolution timed out after 1s, flushing pending requests with available metrics");
+                this.#flushPendingRequestBuffer();
+            }
+        }, 1000);
+
+        this.#clientHintsPromise = getUserAgentClientHints().then((clientHints) => {
+            if (clientHints && typeof clientHints === "object") {
+                this.#uaClientHints = clientHints;
+                this.#uaClientHintsStatus = "resolved";
+                this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints resolved:[" + JSON.stringify(clientHints) + "]");
+            }
+            else {
+                this.#uaClientHintsStatus = "unavailable";
+                this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints unavailable or not returned");
+            }
+        }).catch((err) => {
+            this.#uaClientHints = null;
+            this.#uaClientHintsStatus = "failed";
+            this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints fetch failed:[" + err + "]");
+        }).finally(() => {
+            this.#flushPendingRequestBuffer();
+        });
+    }
+
+    /**
+     * Flush pending request buffer after client hints resolution.
+     * Re-computes metrics for any buffered begin_session request so that
+     * high-entropy Client Hints values are included. All other buffered
+     * requests are pushed to the queue unchanged, preserving order.
+     * @private
+     */
+    #flushPendingRequestBuffer = () => {
+        // Clear safety timeout
+        if (this.#clientHintsBufferTimeoutId) {
+            clearTimeout(this.#clientHintsBufferTimeoutId);
+            this.#clientHintsBufferTimeoutId = null;
+        }
+
+        var buffer = this.#pendingRequestBuffer;
+        this.#pendingRequestBuffer = null; // disable buffering — subsequent calls go directly to queue
+
+        if (!buffer || buffer.length === 0) {
+            return;
+        }
+
+        this.#log(logLevelEnums.DEBUG, "ua_logic, flushing [" + buffer.length + "] pending request(s) after client hints resolution");
+
+        for (var i = 0; i < buffer.length; i++) {
+            var request = buffer[i];
+            // Re-compute metrics for begin_session requests with now-resolved hints
+            if (request.begin_session) {
+                request.metrics = JSON.stringify(this.#getMetrics());
+            }
+            if (this.#requestQueue.length > this.#SCSizeReqQueue) {
+                this.#requestQueue.shift();
+            }
+            this.#requestQueue.push(request);
+        }
+        this.#saveRequestQueue();
+    }
+
+    /**
+     * Fetch and set server configuration
+     * Retrieves server-side settings and behavior configurations
+     * @private
+     */
+    #getAndSetServerConfig = () => {
+        if (this.device_id === "[CLY]_temp_id") {
+            this.#log(logLevelEnums.INFO, "server_config, Device ID is temporary, not fetching server config");
+            this.#resolveProvisionalLogs("device id is temporary so no server config will be fetched");
+            return;
+        }
+        if (this.#isSCDisabled) {
+            this.#log(logLevelEnums.INFO, "server_config, SDK behavior sync is disabled, not fetching server config");
+            this.#resolveProvisionalLogs("SDK behavior settings sync is disabled");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "server_config, Fetching server config");
+        var params = {};
+        params.app_key = this.app_key;
+        params.device_id = this.device_id;
+        params.sdk_version = this.#sdkVersion;
+        params.sdk_name = this.#sdkName;
+        params.t = this.#deviceIdType;
+        params.timestamp = getMsTimestamp();
+        var date = new Date();
+        params.hour = date.getHours();
+        params.dow = date.getDay();
+        params.av = this.app_version;
+        params.method = "sc";
+        var scStart = Date.now();
+        this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
+            if (err) {
+                // error has been logged by the request function
+                this.#resolveProvisionalLogs("server config request failed");
+                return;
+            }
+            try {
+                var config = JSON.parse(responseText);
+                this.#log(logLevelEnums.INFO, "server_config, Config fetched successfully:[" + JSON.stringify(config) + "]");
+                // the connection test flag is read here, from a live response, and stripped
+                // before anything caches or mirrors the config. It is never persisted, so a
+                // page load or another tab can never replay a battery
+                var armed = !!(config && config.ct);
+                if (config && typeof config.ct !== "undefined") {
+                    delete config.ct;
+                }
+                if (config) {
+                    this.#populateServerConfig(config);
+                    this.#syncPushWorkerConfig();
+                }
+                this.#setValueInStorage("cly_config", JSON.stringify(config));
+                // only a live response decides log gathering, the stored config applied above never does
+                this.#applyLogGatheringConfig(config ? config.lg : undefined);
+                if (armed) {
+                    this.#runConnectionTest(Date.now() - scStart);
+                }
+            }
+            catch (ex) {
+                this.#log(logLevelEnums.ERROR, "server_config, Had an issue while parsing the response: " + ex);
+                this.#resolveProvisionalLogs("server config response could not be parsed");
+            }
+        }, true, true);
+        clearTimeout(this.#serverConfigTimer);
+        this.#serverConfigTimer = setTimeout(() => {
+            this.#getAndSetServerConfig();
+        }, this.#SCInterval * 60 * 60 * 1000);
+    }
+
+    /**
+     * Run the connection test battery the server armed, then report through the request queue.
+     * Probes are bare parameterless GETs that never reach application work, so this needs no
+     * consent and can write nothing. Nothing about the run is persisted: the only guard is the
+     * in-memory flag below, which stops a second armed response from starting a parallel run.
+     * @private
+     * @param {Number} scMs - latency of the config fetch that delivered the flag
+     */
+    #runConnectionTest = (scMs) => {
+        if (this.#connectionTestRunning) {
+            this.#log(logLevelEnums.DEBUG, "connection_test, A battery is already in flight, ignoring this delivery");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "connection_test, Server armed a connection test, running the battery");
+        this.#connectionTestRunning = true;
+
+        runConnectionTest({
+            url: this.url,
+            sdkName: this.#sdkName,
+            sdkVersion: this.#sdkVersion,
+            sc: { status: 200, ms: scMs },
+            // the Tier 2 routes send no CORS headers, so a browser can only reach them
+            // opaquely; elsewhere they are irrelevant
+            tier2: isBrowser ? "cors-first" : "unsupported",
+            headers: this.headers,
+            probe: probeViaFetch
+        }).then((report) => {
+            this.#connectionTestRunning = false;
+            this.#log(logLevelEnums.INFO, "connection_test, Battery finished, queueing report:[" + JSON.stringify(report) + "]");
+            this.#toRequestQueue({ ct_results: JSON.stringify(capReport(report)) });
+        }).catch((error) => {
+            this.#connectionTestRunning = false;
+            this.#log(logLevelEnums.ERROR, "connection_test, Battery failed: " + error);
+        });
+    }
+
+    /**
+     * Populate server configuration with received settings
+     * Updates internal server configuration settings based on server response
+     * @private
+     * @param {Object} mainCache - Server configuration response object
+     */
+    #populateServerConfig = (mainCache) => {
+        if (!mainCache || !mainCache.c || typeof mainCache.c !== "object") {
+            return;
+        }
+        var cache = mainCache.c;
+
+        if (cache.hasOwnProperty("networking")) {
+            this.#SCNetwork = cache.networking;
+        }
+        if (cache.hasOwnProperty("tracking")) {
+            this.#SCTrackingAll = cache.tracking;
+        }
+        if (cache.hasOwnProperty("rqs")) {
+            this.#SCSizeReqQueue = cache.rqs;
+        }
+        if (cache.hasOwnProperty("eqs")) {
+            this.#SCSizeEventBatch = cache.eqs;
+        }
+        if (cache.hasOwnProperty("sui")) {
+            this.#SCIntervalSessionUpdate = cache.sui;
+        }
+        if (cache.hasOwnProperty("czi") && cache.czi > 14) {
+            this.#SCIntervalContent = cache.czi * 1000;
+        }
+        if (cache.hasOwnProperty("ecz")) {
+            this.#SCEnableContent = cache.ecz;
+            if (!this.#initContentSent && this.#SCEnableContent) {
+                this.#enterContentZoneInternal();
+            }
+        }
+        if (cache.hasOwnProperty("cr")) {
+            this.#SCEnableConsentRequired = cache.cr;
+            this.#releaseHeldLogLines();
+        }
+        if (cache.hasOwnProperty("st")) {
+            this.#SCTrackingSession = cache.st;
+        }
+        if (cache.hasOwnProperty("crt")) {
+            this.#SCTrackingCrashes = cache.crt;
+        }
+        if (cache.hasOwnProperty("vt")) {
+            this.#SCTrackingViews = cache.vt;
+        }
+        if (cache.hasOwnProperty("cet")) {
+            this.#SCTrackingEvents = cache.cet;
+        }
+        if (cache.hasOwnProperty("lkl")) {
+            this.#SCLimitKeyLength = cache.lkl;
+        }
+        if (cache.hasOwnProperty("lvs")) {
+            this.#SCLimitValueSize = cache.lvs;
+        }
+        if (cache.hasOwnProperty("lsv")) {
+            this.#SCLimitSegmentationValues = cache.lsv;
+        }
+        if (cache.hasOwnProperty("lbc")) {
+            this.#SCLimitBreadcrumbCount = cache.lbc;
+        }
+        if (cache.hasOwnProperty("ltlpt")) {
+            this.#SCLimitStackTraceLinesPerThread = cache.ltlpt;
+        }
+        if (cache.hasOwnProperty("ltl")) {
+            this.#SCLimitStackTraceLineLength = cache.ltl;
+        }
+        if (cache.hasOwnProperty("scui")) {
+            this.#SCInterval = Math.max(cache.scui,4);
+        }
+        if (cache.hasOwnProperty("lt")) {
+            this.#SCTrackingLocation = cache.lt;
+        }
+        // web does not have support for 'dort' parameter
+        if (cache.hasOwnProperty("rcz")) {
+            this.#SCEnableRefreshContentZone = cache.rcz;
+        }
+        if (cache.hasOwnProperty("bom")) {
+            this.#SCBackoffMechanismEnabled = cache.bom;
+        }
+        if (cache.hasOwnProperty("bom_at")) {
+            this.#SCBackoffAcceptedTimeout = cache.bom_at;
+        }
+        if (cache.hasOwnProperty("bom_rqp")) {
+            this.#SCBackoffRQPercentage = cache.bom_rqp;
+        }
+        if (cache.hasOwnProperty("bom_ra")) {
+            this.#SCBackoffRequestAge = cache.bom_ra;
+        }
+        if (cache.hasOwnProperty("bom_d")) {
+            this.#SCBackoffDuration = cache.bom_d;
+        }
+        if (cache.hasOwnProperty("eb") && Array.isArray(cache.eb)) {
+            this.#SCEventBlacklist = cache.eb;
+        }
+        if (cache.hasOwnProperty("ew") && Array.isArray(cache.ew)) {
+            this.#SCEventWhitelist = cache.ew;
+        }
+        if (cache.hasOwnProperty("upb") && Array.isArray(cache.upb)) {
+            this.#SCUserPropertyBlacklist = cache.upb;
+        }
+        if (cache.hasOwnProperty("upw") && Array.isArray(cache.upw)) {
+            this.#SCUserPropertyWhitelist = cache.upw;
+        }
+        if (cache.hasOwnProperty("sb") && Array.isArray(cache.sb)) {
+            this.#SCSegmentationBlacklist = cache.sb;
+        }
+        if (cache.hasOwnProperty("sw") && Array.isArray(cache.sw)) {
+            this.#SCSegmentationWhitelist = cache.sw;
+        }
+        if (cache.hasOwnProperty("esb") && cache.esb && typeof cache.esb === "object" && !Array.isArray(cache.esb)) {
+            this.#SCEventSegmentationBlacklist = cache.esb;
+        }
+        if (cache.hasOwnProperty("esw") && cache.esw && typeof cache.esw === "object" && !Array.isArray(cache.esw)) {
+            this.#SCEventSegmentationWhitelist = cache.esw;
+        }
+        if (cache.hasOwnProperty("jte") && Array.isArray(cache.jte)) {
+            this.#SCJourneyTriggerEvents = cache.jte;
+        }
     };
 
     /**
@@ -173,15 +695,23 @@ class CountlyClass {
      * @returns 
      */
     #initialize = (ob) => {
-        this.serialize = getConfig("serialize", ob, Countly.serialize);
-        this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
+        this.#ignoreReferrers = getConfig("ignore_referrers", ob, []);
+        this.#trackFormValues = getConfig("track_form_values", ob, true);
+        this.#failTimeoutAmount = getConfig("fail_timeout", ob, configurationDefaultValues.FAIL_TIMEOUT_AMOUNT);
+        this.#inactivityTime = getConfig("inactivity_time", ob, configurationDefaultValues.INACTIVITY_TIME);
+        this.#useSessionCookie = getConfig("use_session_cookie", ob, true);
+        this.#sessionCookieTimeout = getConfig("session_cookie_timeout", ob, configurationDefaultValues.SESSION_COOKIE_TIMEOUT);
+        this.#offlineMode = getConfig("offline_mode", ob, false);
+        this.#sdkName = getConfig("sdk_name", ob, SDK_NAME);
+        this.#sdkVersion = getConfig("sdk_version", ob, SDK_VERSION);
+        this.#beatInterval = getConfig("interval", ob, configurationDefaultValues.BEAT_INTERVAL);
+
         this.getViewName = getConfig("getViewName", ob, Countly.getViewName);
         this.getViewUrl = getConfig("getViewUrl", ob, Countly.getViewUrl);
         this.getSearchQuery = getConfig("getSearchQuery", ob, Countly.getSearchQuery);
         this.DeviceIdType = Countly.DeviceIdType; // it is Countly device Id type Enums for clients to use
         this.namespace = getConfig("namespace", ob, "");
         this.clearStoredId = getConfig("clear_stored_id", ob, false);
-        this.app_key = getConfig("app_key", ob, null);
         this.onload = getConfig("onload", ob, []);
         this.utm = getConfig("utm", ob, { source: true, medium: true, campaign: true, term: true, content: true });
         this.ignore_prefetch = getConfig("ignore_prefetch", ob, true);
@@ -192,48 +722,55 @@ class CountlyClass {
         this.test_mode_eq = getConfig("test_mode_eq", ob, false);
         this.metrics = getConfig("metrics", ob, {});
         this.headers = getConfig("headers", ob, {});
-        this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.app_version = getConfig("app_version", ob, "0.0");
         this.country_code = getConfig("country_code", ob, null);
         this.city = getConfig("city", ob, null);
         this.ip_address = getConfig("ip_address", ob, null);
         this.ignore_bots = getConfig("ignore_bots", ob, true);
-        this.force_post = getConfig("force_post", ob, false);
+        this.force_post = getConfig("force_post", ob, true);
         this.remote_config = getConfig("remote_config", ob, false);
         this.ignore_visitor = getConfig("ignore_visitor", ob, false);
-        this.require_consent = getConfig("require_consent", ob, false);
         this.track_domains = !isBrowser ? undefined : getConfig("track_domains", ob, true);
         this.storage = getConfig("storage", ob, "default");
+        if (this.storage === "cookie") {
+            this.#lsSupport = false;
+        }
         this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
-        this.maxKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
-        this.maxValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
-        this.maxSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
-        this.maxBreadcrumbCount = getConfig("max_breadcrumb_count", ob, null);
-        this.maxStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
-        this.maxStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
         this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
+        this.contentWhitelist = getConfig("content_whitelist", ob, []);
+        var globalContentSegmentation = getConfig("global_content_segmentation", ob, null);
+        if (globalContentSegmentation !== null) {
+            this.#setGlobalContentSegmentation(globalContentSegmentation, "initialize");
+        }
+        var contentTheme = getConfig("content_theme", ob, null);
+        if (contentTheme !== null) {
+            this.#setContentTheme(contentTheme, "initialize");
+        }
         this.salt = getConfig("salt", ob, null);
+        this.push_vapid_public_key = getConfig("push_vapid_public_key", ob, null);
+        this.push_service_worker_path = getConfig("push_service_worker_path", ob, "/countly_sw.js");
+        // null means Countly's own folder next to the worker file, not "/"
+        this.push_service_worker_scope = getConfig("push_service_worker_scope", ob, null);
+        this.push_service_worker_registration = getConfig("push_service_worker_registration", ob, null);
+        this.push_auto_register = getConfig("push_auto_register", ob, true);
+        this.push_subscribe_timeout = getConfig("push_subscribe_timeout", ob, pushConstants.SUBSCRIBE_TIMEOUT_MS);
+        var pushListener = getConfig("push_notification_listener", ob, null);
+        this.#pushNotificationListener = typeof pushListener === "function" ? pushListener : null;
         this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
         this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
-        this.#contentZoneTimerInterval = getConfig("content_zone_timer_interval", ob, null);
+        this.hcBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.backoffCount) || 0;
+        this.hcConsecutiveBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.consecutiveBackoffCount) || 0;
+        this.#lastRequestWasBackoff = false; // Track if the previous request resulted in a backoff
+        this.#crashFilterCallback = getConfig("crash_filter_callback", ob, null);
 
-        if (this.#contentZoneTimerInterval) {
-            this.#contentTimeInterval = Math.max(this.#contentZoneTimerInterval, 15) * 1000;
+        this.#serverConfigCache = this.#getValueFromStorage("cly_config");
+        if (!this.#serverConfigCache) {
+            this.#serverConfigCache = getConfig("behavior_settings", ob, {});
+            this.#setValueInStorage("cly_config", JSON.stringify(this.#serverConfigCache));
         }
-
-        if (this.#maxCrashLogs && !this.maxBreadcrumbCount) {
-            this.maxBreadcrumbCount = this.#maxCrashLogs;
-            this.#log(logLevelEnums.WARNING, "initialize, 'maxCrashLogs' is deprecated. Use 'maxBreadcrumbCount' instead!");
-        }
-        else if (!this.#maxCrashLogs && !this.maxBreadcrumbCount) {
-            this.maxBreadcrumbCount = 100;
-        }
-
-        if (this.storage === "cookie") {
-            this.#lsSupport = false;
-        }
+        this.#populateServerConfig(this.#serverConfigCache);
 
         if (!this.rcAutoOptinAb && !this.useExplicitRcApi) {
             this.#log(logLevelEnums.WARNING, "initialize, Auto opting is disabled, switching to explicit RC API");
@@ -273,6 +810,14 @@ class CountlyClass {
             }
         }
 
+        if (Array.isArray(this.contentWhitelist)) {
+            this.contentWhitelist.push(this.url);
+            this.contentWhitelist = this.contentWhitelist.map((e) => {
+                // remove trailing slashes from the entries
+                return stripTrailingSlash(e);
+            });
+        }
+
         if ((this.passed_data && this.passed_data.app_key && this.passed_data.app_key === this.app_key) || (this.passed_data && !this.passed_data.app_key && this.#global)) {
             if (this.passed_data.token && this.passed_data.purpose) {
                 if (this.passed_data.token !== this.#getValueFromStorage("cly_old_token")) {
@@ -302,19 +847,47 @@ class CountlyClass {
             }
         }
 
+        this.#ignoredByChoice = !!this.#getValueFromStorage("cly_ignore") || !!getConfig("ignore_visitor", ob, false);
         if (this.ignore_visitor) {
             this.#log(logLevelEnums.WARNING, "initialize, ignore_visitor:[" + this.ignore_visitor + "], this user will not be tracked");
+            this.#resolveProvisionalLogs("visitor is ignored so no server config will be fetched");
+            // a prerendered, bot or heatmap visit is ignored too, but must not withdraw the worker's details
+            if (this.#ignoredByChoice && this.#isPushConfigured() && this.#isPushSupported(false)) {
+                this.#findPushRegistration().then(this.#syncPushWorkerConfig);
+            }
             return;
         }
 
         this.#migrate();
 
-        this.#requestQueue = this.#getValueFromStorage("cly_queue") || [];
-        this.#eventQueue = this.#getValueFromStorage("cly_event") || [];
+        this.#tabStore = this.#canUseTabStore();
+        if (this.#tabStore) {
+            if (this.#isOpenersCopy()) {
+                this.#setTabValue("cly_queue", []);
+                this.#setTabValue("cly_event", []);
+            }
+            // each tab sends what it recorded; a reload, or a return after the tab was discarded, finds what it had not sent
+            var ownRequests = this.#getTabValue("cly_queue");
+            this.#requestQueue = Array.isArray(ownRequests) ? ownRequests : [];
+            var ownEvents = this.#getTabValue("cly_event");
+            this.#eventQueue = Array.isArray(ownEvents) ? ownEvents : [];
+            if (!document.hidden) {
+                this.#takeHandedOver(false);
+            }
+            this.#listenForTabChanges();
+        }
+        else {
+            // the request queue is always written to localStorage, so it is read back from there
+            var storedRequests = this.#getValueFromStorage("cly_queue", true);
+            this.#requestQueue = Array.isArray(storedRequests) ? storedRequests : [];
+            var storedEvents = this.#getValueFromStorage("cly_event");
+            this.#eventQueue = Array.isArray(storedEvents) ? storedEvents : [];
+        }
         this.#remoteConfigs = this.#getValueFromStorage("cly_remote_configs") || {};
 
         // flag that indicates that the offline mode was enabled at the end of the previous app session 
         var tempIdModeWasEnabled = (this.#getValueFromStorage("cly_id") === "[CLY]_temp_id");
+        var idBeforeClear = null;
 
         if (this.clearStoredId) {
             // retrieve stored device ID and type from local storage and use it to flush existing events
@@ -328,6 +901,7 @@ class CountlyClass {
                 }
                 // don't process async queue here, just send the events (most likely async data is for the new user)
                 this.#sendEventsForced();
+                idBeforeClear = { id: this.device_id, type: this.#deviceIdType };
                 // set them back to their initial values
                 this.device_id = undefined;
                 this.#deviceIdType = DeviceIdTypeInternalEnums.SDK_GENERATED;
@@ -347,9 +921,10 @@ class CountlyClass {
         } else {
             this.#log(logLevelEnums.DEBUG, "initialize, SDK name:[" + this.#sdkName + "], version:[" + this.#sdkVersion + "], default name:[" + SDK_NAME + "] and default version:[" + SDK_VERSION + "]");
         }
+        this.#log(logLevelEnums.DEBUG, "initialize, stored server config:[" + JSON.stringify(this.#serverConfigCache) + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, app_key:[" + this.app_key + "], url:[" + this.url + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, device_id:[" + getConfig("device_id", ob, undefined) + "]");
-        this.#log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.require_consent + "]");
+        this.#log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.#SCEnableConsentRequired + "]");
         try {
             this.#log(logLevelEnums.DEBUG, "initialize, metric override:[" + JSON.stringify(this.metrics) + "]");
             this.#log(logLevelEnums.DEBUG, "initialize, header override:[" + JSON.stringify(this.headers) + "]");
@@ -426,37 +1001,37 @@ class CountlyClass {
         if (this.#remoteConfigs) {
             this.#log(logLevelEnums.DEBUG, "initialize, stored remote configs:[" + JSON.stringify(this.#remoteConfigs) + "]");
         }
-        if (this.#contentZoneTimerInterval) {
-            this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#contentZoneTimerInterval + "]");
+        if (this.#SCIntervalContent) {
+            this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#SCIntervalContent + "]");
         }
         // functions, if provided, would be printed as true without revealing their content
         this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, 'getSearchQuery' callback override provided:[" + (this.getSearchQuery !== Countly.getSearchQuery) + "]");
 
         // limits are printed here if they were modified 
-        if (this.maxKeyLength !== configurationDefaultValues.MAX_KEY_LENGTH) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxKeyLength set to:[" + this.maxKeyLength + "] characters");
+        if (this.#SCLimitKeyLength !== configurationDefaultValues.MAX_KEY_LENGTH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxKeyLength set to:[" + this.#SCLimitKeyLength + "] characters");
         }
-        if (this.maxValueSize !== configurationDefaultValues.MAX_VALUE_SIZE) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxValueSize set to:[" + this.maxValueSize + "] characters");
+        if (this.#SCLimitValueSize  !== configurationDefaultValues.MAX_VALUE_SIZE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxValueSize set to:[" + this.#SCLimitValueSize  + "] characters");
         }
-        if (this.maxSegmentationValues !== configurationDefaultValues.MAX_SEGMENTATION_VALUES) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxSegmentationValues set to:[" + this.maxSegmentationValues + "] key/value pairs");
+        if (this.#SCLimitSegmentationValues !== configurationDefaultValues.MAX_SEGMENTATION_VALUES) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxSegmentationValues set to:[" + this.#SCLimitSegmentationValues + "] key/value pairs");
         }
-        if (this.maxBreadcrumbCount !== configurationDefaultValues.MAX_BREADCRUMB_COUNT) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxBreadcrumbCount for custom logs set to:[" + this.maxBreadcrumbCount + "] entries");
+        if (this.#SCLimitBreadcrumbCount !== configurationDefaultValues.MAX_BREADCRUMB_COUNT) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxBreadcrumbCount for custom logs set to:[" + this.#SCLimitBreadcrumbCount + "] entries");
         }
-        if (this.maxStackTraceLinesPerThread !== configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLinesPerThread set to:[" + this.maxStackTraceLinesPerThread + "] lines");
+        if (this.#SCLimitStackTraceLinesPerThread !== configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLinesPerThread set to:[" + this.#SCLimitStackTraceLinesPerThread + "] lines");
         }
-        if (this.maxStackTraceLineLength !== configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH) {
-            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLineLength set to:[" + this.maxStackTraceLineLength + "] characters");
+        if (this.#SCLimitStackTraceLineLength !== configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, maxStackTraceLineLength set to:[" + this.#SCLimitStackTraceLineLength + "] characters");
         }
         if (this.#beatInterval !== configurationDefaultValues.BEAT_INTERVAL) {
             this.#log(logLevelEnums.DEBUG, "initialize, interval for heartbeats set to:[" + this.#beatInterval + "] milliseconds");
         }
-        if (this.#queueSize !== configurationDefaultValues.QUEUE_SIZE) {
-            this.#log(logLevelEnums.DEBUG, "initialize, queue_size set to:[" + this.#queueSize + "] items max");
+        if (this.#SCSizeReqQueue !== configurationDefaultValues.QUEUE_SIZE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, queue_size set to:[" + this.#SCSizeReqQueue + "] items max");
         }
         if (this.#failTimeoutAmount !== configurationDefaultValues.FAIL_TIMEOUT_AMOUNT) {
             this.#log(logLevelEnums.DEBUG, "initialize, fail_timeout set to:[" + this.#failTimeoutAmount + "] seconds of wait time after a failed connection to server");
@@ -464,17 +1039,17 @@ class CountlyClass {
         if (this.#inactivityTime !== configurationDefaultValues.INACTIVITY_TIME) {
             this.#log(logLevelEnums.DEBUG, "initialize, inactivity_time set to:[" + this.#inactivityTime + "] minutes to consider a user as inactive after no observable action");
         }
-        if (this.#sessionUpdate !== configurationDefaultValues.SESSION_UPDATE) {
-            this.#log(logLevelEnums.DEBUG, "initialize, session_update set to:[" + this.#sessionUpdate + "] seconds to check if extending a session is needed while the user is active");
+        if (this.#SCIntervalSessionUpdate !== configurationDefaultValues.SESSION_UPDATE) {
+            this.#log(logLevelEnums.DEBUG, "initialize, session_update set to:[" + this.#SCIntervalSessionUpdate + "] seconds to check if extending a session is needed while the user is active");
         }
-        if (this.#maxEventBatch !== configurationDefaultValues.MAX_EVENT_BATCH) {
-            this.#log(logLevelEnums.DEBUG, "initialize, max_events set to:[" + this.#maxEventBatch + "] events to send in one batch");
-        }
-        if (this.#maxCrashLogs) {
-            this.#log(logLevelEnums.WARNING, "initialize, max_logs set to:[" + this.#maxCrashLogs + "] breadcrumbs to store for crash logs max, deprecated ");
+        if (this.#SCSizeEventBatch !== configurationDefaultValues.MAX_EVENT_BATCH) {
+            this.#log(logLevelEnums.DEBUG, "initialize, max_events set to:[" + this.#SCSizeEventBatch + "] events to send in one batch");
         }
         if (this.#sessionCookieTimeout !== configurationDefaultValues.SESSION_COOKIE_TIMEOUT) {
             this.#log(logLevelEnums.DEBUG, "initialize, session_cookie_timeout set to:[" + this.#sessionCookieTimeout + "] minutes to expire a cookies session");
+        }
+        if (!this.#trackFormValues) {
+            this.#log(logLevelEnums.DEBUG, "initialize, track_form_values set to:[false], form submissions are recorded without field values");
         }
 
         var deviceIdParamValue = null;
@@ -487,8 +1062,18 @@ class CountlyClass {
                 searchQuery = searchQuery.substring(1);
             };
             var parts = searchQuery.split("&");
+            // a "+" stays as it is, as links carrying device IDs are often built without encoding
+            var decodeQueryPart = (part) => {
+                try {
+                    return decodeURIComponent(part);
+                }
+                catch (ex) {
+                    return part;
+                }
+            };
             for (var i = 0; i < parts.length; i++) {
-                var nv = parts[i].split("=");
+                var separatorIndex = parts[i].indexOf("=");
+                var nv = separatorIndex === -1 ? [decodeQueryPart(parts[i])] : [decodeQueryPart(parts[i].substring(0, separatorIndex)), decodeQueryPart(parts[i].substring(separatorIndex + 1))];
                 if (nv[0] === "cly_id") {
                     this.#setValueInStorage("cly_cmp_id", nv[1]);
                 }
@@ -563,20 +1148,26 @@ class CountlyClass {
         // if all fails generate an ID
         else {
             this.#log(logLevelEnums.INFO, "initialize, Generating the device ID");
-            this.device_id = getConfig("device_id", ob, this.#getStoredIdOrGenerateId());
-            if (ob && Object.keys(ob).length) {
-                if (ob.device_id !== undefined) {
-                    this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-                }
-            }
-            else if (Countly.device_id !== undefined) {
-                this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
-            }
+            // a device_id given as null or "" is no ID, so it must not replace the generated one
+            this.device_id = this.#getStoredIdOrGenerateId();
         }
 
         // Store the device ID and device ID type
         this.#setValueInStorage("cly_id", this.device_id);
         this.#setValueInStorage("cly_id_type", this.#deviceIdType);
+        if (this.device_id !== "[CLY]_temp_id") {
+            this.#giveTemporaryIdRequestsToCurrentId();
+        }
+
+        if (idBeforeClear && idBeforeClear.id !== this.device_id) {
+            var pushWasInUse = this.#isPushConfigured();
+            this.#releasePushTokenOfLeavingUser(idBeforeClear);
+            this.#removePushRecord(pushStorageKeys.endpoint);
+            this.#forgetPushMerges();
+            if (pushWasInUse && !this.#isPushConfigured() && this.#isPushSupported(false)) {
+                this.#findPushRegistration().then(() => this.#syncPushWorkerConfig(true));
+            }
+        }
 
         // as we have assigned the device ID now we can save the tags
         if (hasUTM) {
@@ -593,27 +1184,621 @@ class CountlyClass {
             this.userData.save();
         }
 
-        this.#notifyLoaders();
+        this.#initPushMessageListener();
 
-        setTimeout(() => {
-            if (!Countly.noHeartBeat) {
-                this.#heartBeat();
-            } else {
-                this.#log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
-            }
-
-            if (this.remote_config) {
-                this.fetch_remote_config(this.remote_config);
-            }
-        }, 1);
-        if (isBrowser) {
-            document.documentElement.setAttribute("data-countly-useragent", currentUserAgentString());
-        }
-        // send instant health check request
-        this.#HealthCheck.sendInstantHCRequest();
-        this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
+        this.#getAndSetServerConfig();
     };
 
+    /**
+     *  Wire up navigator.serviceWorker 'message' events so the reference service worker
+     *  can ask the page to record [CLY]_push_action, and to re-register the
+     *  token after the browser rotates the subscription. Keeps consent enforcement and
+     *  request batching on the page side. No-op outside a browser.
+     *  Actions are acknowledged to the worker that sent them, since a freshly registered worker
+     *  does not control the page until the next load and navigator.serviceWorker.controller may
+     *  still be null. Messages are only acted on, and the ready handshake only sent, when this app
+     *  uses push, otherwise it would record another app's clicks and its handshake would land on
+     *  whatever worker the host application runs. The handler is kept so halt() can remove exactly
+     *  this listener.
+     *  @memberof Countly._internals
+     */
+    #initPushMessageListener = () => {
+        if (!this.#isPushSupported(false)) {
+            return;
+        }
+        this.#seenPushActionIds = [];
+        this.#pushListeningSince = Date.now();
+        var mergedIds = this.#getValueFromStorage(pushStorageKeys.mergedIds);
+        this.#pushMergedIds = Array.isArray(mergedIds) ? mergedIds.filter((pair) => Array.isArray(pair) && pair.length === 2) : [];
+        try {
+            this.#pushMessageHandler = (event) => {
+                var data = event && event.data;
+                if (!data || !this.#isPushConfigured() || (data.scope && !this.#isOwnPushScope(data.scope))) {
+                    return;
+                }
+                if (data.type === pushMessageTypes.ACTION) {
+                    this.#handlePushAction(data, event.source);
+                }
+                else if (data.type === pushMessageTypes.RECEIVED) {
+                    this.#notifyPushListener("received", data);
+                }
+                else if (data.type === pushMessageTypes.CLOSED) {
+                    this.#notifyPushListener("closed", data);
+                }
+                else if (data.type === pushMessageTypes.LOG) {
+                    var levels = { error: logLevelEnums.ERROR, warn: logLevelEnums.WARNING, info: logLevelEnums.INFO };
+                    this.#log(levels[data.level] || logLevelEnums.DEBUG, "[SW] " + data.message);
+                }
+                else if (data.type === pushMessageTypes.SUBSCRIPTION_CHANGE) {
+                    this.#log(logLevelEnums.DEBUG, "initPushMessageListener, The browser replaced the push subscription");
+                    this.#autoRegisterPush(true);
+                }
+                else if (data.type === pushMessageTypes.WORKER_VERSION) {
+                    this.#checkPushWorkerVersion(data.version);
+                }
+            };
+            navigator.serviceWorker.addEventListener("message", this.#pushMessageHandler);
+            if (this.#isPushConfigured()) {
+                this.#announceToPushWorker();
+            }
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "initPushMessageListener, Failed to register service worker message listener: " + e);
+        }
+
+        setTimeout(() => {
+            this.#autoRegisterPush();
+        }, 1);
+    };
+
+    /**
+     *  Warn when the service worker is another version than this SDK. Sites serve their own copy of
+     *  countly_sw.js, and a copy left behind on an SDK upgrade can lack what this SDK relies on.
+     *  @memberof Countly._internals
+     *  @param {string} version - the version the worker reported
+     */
+    #checkPushWorkerVersion = (version) => {
+        if (version === SDK_VERSION || this.#pushWorkerVersionsWarned.indexOf(version) !== -1) {
+            return;
+        }
+        this.#pushWorkerVersionsWarned.push(version);
+        this.#log(logLevelEnums.WARNING, "checkPushWorkerVersion, The push service worker your site serves is version [" + version + "] while the SDK is version [" + SDK_VERSION + "]; serve the countly_sw.js of the SDK version your pages run");
+    };
+
+    /**
+     *  Start the ready handshake with Countly's worker once the registration lookup is done, and
+     *  again whenever another worker takes control of the page.
+     *  @memberof Countly._internals
+     */
+    #announceToPushWorker = () => {
+        try {
+            this.#findPushRegistration().then(this.#drainPendingPushActions);
+            navigator.serviceWorker.addEventListener("controllerchange", this.#drainPendingPushActions);
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "announceToPushWorker, Could not start the handshake with the service worker: " + e);
+        }
+    };
+
+    /**
+     *  Undo #initPushMessageListener. A worker keeps posting to the page after halt(); nothing here
+     *  must act on those messages, and the next init must not end up with two listeners.
+     *  @memberof Countly._internals
+     */
+    #removePushMessageListener = () => {
+        if (!this.#isPushSupported(false)) {
+            return;
+        }
+        try {
+            if (this.#pushMessageHandler) {
+                navigator.serviceWorker.removeEventListener("message", this.#pushMessageHandler);
+                this.#pushMessageHandler = null;
+            }
+            navigator.serviceWorker.removeEventListener("controllerchange", this.#drainPendingPushActions);
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "removePushMessageListener, Failed to remove service worker message listener: " + e);
+        }
+    };
+
+    /**
+     *  Record, report to the push listener and acknowledge a click the service worker handed over,
+     *  or leave it with the worker while it cannot be recorded yet.
+     *  @memberof Countly._internals
+     *  @param {Object} data - the countly_push_action message
+     *  @param {?ServiceWorker} source - the worker that sent it
+     */
+    #handlePushAction = (data, source) => {
+        var dealtWith = this.#hasSeenPushAction(data.aid);
+        var owner = dealtWith ? null : this.#otherPushOwner(data.owner);
+        if (!dealtWith && data.recorded !== true && data.owner !== null) {
+            if (!this.check_consent(featureEnums.PUSH)) {
+                this.#log(logLevelEnums.DEBUG, "handlePushAction, No push consent yet, leaving push action [" + data.aid + "] with the worker until it is given");
+                return;
+            }
+            if (owner && data.owner.recordable !== true) {
+                this.#log(logLevelEnums.DEBUG, "handlePushAction, Push action [" + data.aid + "] belongs to device ID [" + owner.id + "], who had not allowed recording it when it was made, leaving it with the worker for a page of theirs");
+                return;
+            }
+        }
+        if (this.#isNewPushAction(data.aid)) {
+            if (data.recorded === true) {
+                this.#log(logLevelEnums.DEBUG, "handlePushAction, The worker already recorded push action [" + data.aid + "]");
+            }
+            else if (data.owner === null) {
+                this.#log(logLevelEnums.DEBUG, "handlePushAction, Push action [" + data.aid + "] was made while the visitor had opted out, not recording it");
+            }
+            else {
+                this.#recordPushAction(data.messageId, data.buttonIndex, data.ts, owner);
+            }
+            if (owner) {
+                this.#log(logLevelEnums.DEBUG, "handlePushAction, Push action [" + data.aid + "] belongs to device ID [" + owner.id + "], not telling this page's push listener about it");
+            }
+            else {
+                this.#notifyPushListener("clicked", data);
+            }
+        }
+        else {
+            this.#log(logLevelEnums.DEBUG, "handlePushAction, Ignoring duplicate push action [" + data.aid + "]");
+        }
+        this.#postToPushWorker({ type: pushMessageTypes.ACK, aid: data.aid }, source);
+    };
+
+    /**
+     *  The user a kept push click belongs to when that is not the current one, following the
+     *  device IDs merged since the click.
+     *  @memberof Countly._internals
+     *  @param {?Object} [stamp] - what the worker wrote down: { device_id, t, recordable }
+     *  @returns {?Object} { id, type } of that user, or null for the current user
+     */
+    #otherPushOwner = (stamp) => {
+        if (!stamp || (typeof stamp.device_id !== "string" && typeof stamp.device_id !== "number")) {
+            return null;
+        }
+        var id = String(stamp.device_id);
+        if (id === "[CLY]_temp_id") {
+            return null;
+        }
+        var type = typeof stamp.t === "number" ? stamp.t : DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+        var merged = this.#pushMergedIds ? this.#pushMerges() : [];
+        for (var step = 0; step < merged.length && id !== String(this.device_id); step++) {
+            var into = merged.filter((pair) => pair[0] === id)[0];
+            if (!into) {
+                break;
+            }
+            id = into[1];
+            // change_id, the only way device IDs are merged, makes the new one developer supplied
+            type = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
+        }
+        return id === String(this.device_id) ? null : { id: id, type: type };
+    };
+
+    /**
+     *  Remember that a device ID was merged into another one, so a push click the service worker
+     *  kept for the old ID is recorded for the new one.
+     *  @memberof Countly._internals
+     *  @param {string} fromId - the device ID that was merged
+     *  @param {string} toId - the device ID it was merged into
+     */
+    #rememberPushMerge = (fromId, toId) => {
+        if (!this.#pushMergedIds || !this.#isPushConfigured()) {
+            return;
+        }
+        var from = String(fromId);
+        var to = String(toId);
+        var merged = this.#pushMerges().filter((pair) => pair[0] !== from && pair[0] !== to);
+        merged.push([from, to]);
+        this.#pushMergedIds = merged.slice(-pushConstants.MAX_MERGED_DEVICE_IDS);
+        this.#setValueInStorage(pushStorageKeys.mergedIds, this.#pushMergedIds);
+    };
+
+    /**
+     *  The device ID merges remembered for this browser, as stored, so a merge list another tab
+     *  deleted is not brought back from this page's copy; with storage "none" this page's own list.
+     *  @memberof Countly._internals
+     *  @returns {Array} [from, to] pairs, oldest first
+     */
+    #pushMerges = () => {
+        if (this.storage === "none") {
+            return this.#pushMergedIds || [];
+        }
+        var stored = this.#getValueFromStorage(pushStorageKeys.mergedIds);
+        return Array.isArray(stored) ? stored.filter((pair) => Array.isArray(pair) && pair.length === 2) : [];
+    };
+
+    /**
+     *  Forget the remembered device ID merges, once someone else signs in or the visitor opts out.
+     *  @memberof Countly._internals
+     */
+    #forgetPushMerges = () => {
+        if (this.#pushMergedIds) {
+            this.#pushMergedIds = [];
+        }
+        this.#removeValueFromStorage(pushStorageKeys.mergedIds);
+    };
+
+    /**
+     *  Tell whether this page already handled the push action with this id.
+     *  @memberof Countly._internals
+     *  @param {?string} aid - the worker assigned action id, if any
+     *  @returns {Boolean} true for an id among the recently handled ones
+     */
+    #hasSeenPushAction = (aid) => {
+        return !!aid && this.#seenPushActionIds.indexOf(aid) !== -1;
+    };
+
+    /**
+     *  Decide whether a push action relayed by the service worker still has to be recorded, and
+     *  remember it if so. The worker holds an action until a page confirms it and redelivers it on
+     *  the next handshake, so the same action can legitimately arrive more than once. An action
+     *  without an id cannot be tracked, so it is always treated as new.
+     *  @memberof Countly._internals
+     *  @param {?string} aid - the worker assigned action id, if any
+     *  @returns {Boolean} true when the action has not been recorded yet
+     */
+    #isNewPushAction = (aid) => {
+        if (!aid) {
+            return true;
+        }
+        if (this.#hasSeenPushAction(aid)) {
+            return false;
+        }
+        this.#seenPushActionIds.push(aid);
+        if (this.#seenPushActionIds.length > pushConstants.MAX_SEEN_ACTION_IDS) {
+            this.#seenPushActionIds.shift();
+        }
+        return true;
+    }
+
+    /**
+     *  Register for push without the developer having to call anything, but only when it can be
+     *  done silently: notification permission must already be granted, because Safari and Firefox
+     *  only allow Notification.requestPermission from a user gesture and a prompt fired at init
+     *  would simply be refused. New visitors still go through enable_push_notifications, wired to
+     *  a button; returning ones get their token kept in sync on every load (once per session while
+     *  sessions are tracked automatically), after a device ID change and as soon as push consent
+     *  arrives. Never after an explicit disable_push_notifications: permission alone is not consent
+     *  to re-subscribe someone who asked to be unsubscribed.
+     *  @memberof Countly._internals
+     *  @param {Boolean} [keepRegistered] - true to renew this SDK's registration even with push_auto_register off
+     */
+    #autoRegisterPush = (keepRegistered) => {
+        if (!this.push_vapid_public_key) {
+            return;
+        }
+        if (!this.push_auto_register && !(keepRegistered === true && this.#getPushRecord(pushStorageKeys.endpoint))) {
+            if (keepRegistered === true) {
+                this.#log(logLevelEnums.DEBUG, "autoRegisterPush, push_auto_register is off and this page knows of no token registered for the current user, so the subscription the browser replaced is not registered; with storage \"none\" a token an earlier page registered is not known here, and enable_push_notifications registers it again");
+            }
+            return;
+        }
+        if (this.#getPushRecord(pushStorageKeys.optOut)) {
+            this.#log(logLevelEnums.DEBUG, "autoRegisterPush, Push was disabled explicitly, waiting for an explicit enable_push_notifications call");
+            return;
+        }
+        if (!this.#isPushSupported(true) || Notification.permission !== "granted") {
+            this.#log(logLevelEnums.DEBUG, "autoRegisterPush, Notification permission has not been granted yet, waiting for an explicit enable_push_notifications call");
+            return;
+        }
+        if (!this.check_consent(featureEnums.PUSH)) {
+            return;
+        }
+        this.enable_push_notifications().then((result) => {
+            if (result && result.subscribed) {
+                this.#log(logLevelEnums.DEBUG, "autoRegisterPush, Silent registration done, endpoint: [" + result.endpoint + "]");
+            }
+            else {
+                this.#log(logLevelEnums.WARNING, "autoRegisterPush, Silent registration did not subscribe, reason: [" + (result && result.reason) + "]" + (result && result.error ? " " + result.error : ""));
+            }
+        });
+    };
+
+    /**
+     *  Take the push token away from the user who is leaving, in a request under their own device ID.
+     *  @memberof Countly._internals
+     *  @param {Object} [leavingUser] - { id, type } of the leaving user; the current one when absent
+     */
+    #releasePushTokenOfLeavingUser = (leavingUser) => {
+        var leaving = leavingUser || { id: this.device_id, type: this.#deviceIdType };
+        var registeredHere = this.#getPushRecord(pushStorageKeys.endpoint) || (this.#lastPushToken && this.#lastPushToken.deviceId === leaving.id);
+        if (!registeredHere) {
+            return;
+        }
+        this.#log(logLevelEnums.DEBUG, "releasePushTokenOfLeavingUser, Blacklisting the push token of device ID [" + leaving.id + "] before switching to a new user");
+        this.#asDeviceId(leaving, () => this.#sendPushToken(null));
+    };
+
+    /**
+     *  Run fn while this instance stands for another user's device ID and has no location fields,
+     *  to queue a request about that user. A batch of gathered log lines that fills meanwhile is
+     *  sent only after that, so it goes out under the current user's device ID.
+     *  @memberof Countly._internals
+     *  @param {Object} identity - { id, type } of the user the request is about
+     *  @param {Function} fn - queues the request
+     *  @returns {*} what fn returns
+     */
+    #asDeviceId = (identity, fn) => {
+        var current = { id: this.device_id, type: this.#deviceIdType, country_code: this.country_code, city: this.city, ip_address: this.ip_address };
+        this.#standingInForAnotherUser = true;
+        this.device_id = identity.id;
+        this.#deviceIdType = identity.type;
+        this.country_code = null;
+        this.city = null;
+        this.ip_address = null;
+        try {
+            return fn();
+        }
+        finally {
+            this.device_id = current.id;
+            this.#deviceIdType = current.type;
+            this.country_code = current.country_code;
+            this.city = current.city;
+            this.ip_address = current.ip_address;
+            this.#standingInForAnotherUser = false;
+        }
+    };
+
+    /**
+     *  Keep the push registration right after a device ID change. With a merge the user is the
+     *  same and the server moves the token to the new ID itself while handling /i/device_id, so
+     *  the page only remembers the merge for clicks the worker kept for the old ID. Without a merge
+     *  the new ID is a new user who does not own the browser's subscription yet: the record that
+     *  the previous user's token is registered and the remembered merges are dropped, and the new
+     *  user gets the same silent registration a fresh visitor gets, which waits for their consent
+     *  when consent is required. An explicit opt-out belongs to the person at the browser and stays
+     *  either way.
+     *  @memberof Countly._internals
+     *  @param {Boolean} merge - whether the old and new IDs were merged on the server
+     *  @param {string} [previousId] - the device ID before the change, needed with a merge
+     */
+    #handlePushOnDeviceIdChange = (merge, previousId) => {
+        var wasInUse = this.#isPushConfigured();
+        if (merge) {
+            this.#rememberPushMerge(previousId, this.device_id);
+        }
+        else {
+            this.#removePushRecord(pushStorageKeys.endpoint);
+            this.#forgetPushMerges();
+        }
+        this.#syncPushWorkerConfig(wasInUse);
+        if (!merge) {
+            this.#autoRegisterPush();
+        }
+    };
+
+    /**
+     *  Ask the service worker for push actions it kept while no tab was listening, and tell it
+     *  whether this page wants its debug log lines (the only way a host worker that imported
+     *  countly_sw.js, which this SDK did not register, learns that), what it needs to record a
+     *  click itself while no page is open, and who the current user is.
+     *  @memberof Countly._internals
+     */
+    #drainPendingPushActions = () => {
+        if (!this.#isPushConfigured()) {
+            return;
+        }
+        this.#postToPushWorker(this.#pushDetailsMessage({ type: pushMessageTypes.READY, debug: this.debug === true, config: this.#pushReportingConfig(), owner: this.#pushClickOwner() }));
+    };
+
+    /**
+     *  The current user, for the service worker to write down with every click.
+     *  @memberof Countly._internals
+     *  @returns {?Object} { device_id, t }; null while ignored by choice; undefined when unknown
+     */
+    #pushClickOwner = () => {
+        if (this.ignore_visitor) {
+            return this.#ignoredByChoice ? null : undefined;
+        }
+        if (!this.device_id) {
+            return undefined;
+        }
+        return { device_id: this.device_id, t: this.#deviceIdType };
+    };
+
+    /**
+     *  What the service worker needs to record a click itself when no page is open: the identity
+     *  fields of the request this page would have sent, and the VAPID key of the current user's
+     *  registered subscription. Null while this page would not send a click right away either (no
+     *  push consent, visitor opted out, tracking or networking off, offline mode), in which case
+     *  the worker keeps such clicks for a page to decide on.
+     *  @memberof Countly._internals
+     *  @returns {?Object} url, app_key, device_id, t, sdk_name, sdk_version, av, salt and vapid_key, or null
+     */
+    #pushReportingConfig = () => {
+        if (this.ignore_visitor || this.#offlineMode || !this.#SCTrackingAll || !this.#SCNetwork || !this.check_consent(featureEnums.PUSH) || !this.app_key || !this.device_id) {
+            return null;
+        }
+        var config = {
+            url: this.url + this.#apiPath,
+            app_key: this.app_key,
+            device_id: this.device_id,
+            t: this.#deviceIdType,
+            sdk_name: this.#sdkName,
+            sdk_version: this.#sdkVersion,
+            av: this.app_version
+        };
+        if (this.salt) {
+            config.salt = this.salt;
+        }
+        // only while a token is registered for this user: the stored key survives a switch to another user
+        var vapidKey = this.#getPushRecord(pushStorageKeys.endpoint) && this.#getPushRecord(pushStorageKeys.vapidKey);
+        if (vapidKey) {
+            config.vapid_key = vapidKey;
+        }
+        return config;
+    };
+
+    /**
+     *  Hand the worker the current server details, or withdraw them, along with the current user:
+     *  called whenever a token is registered or blacklisted, the device ID changes or something the
+     *  details depend on changes, so the worker records a click the way this page would have at
+     *  that moment.
+     *  @memberof Countly._internals
+     *  @param {Boolean} [wasInUse] - true when push was in use until a moment ago
+     */
+    #syncPushWorkerConfig = (wasInUse) => {
+        if (this.#isPushConfigured()) {
+            this.#postToPushWorker(this.#pushDetailsMessage({ type: pushMessageTypes.CONFIG, config: this.#pushReportingConfig(), owner: this.#pushClickOwner() }));
+        }
+        else if (wasInUse === true) {
+            this.#postToPushWorker(this.#pushDetailsMessage({ type: pushMessageTypes.CONFIG, config: null, owner: this.#pushClickOwner() }));
+        }
+    };
+
+    /**
+     *  Mark a message carrying the server details with persist false when storage is "none", so
+     *  the worker keeps them and its clicks in memory only.
+     *  @memberof Countly._internals
+     *  @param {Object} message - a countly_push_ready or countly_push_config message
+     *  @returns {Object} the same message
+     */
+    #pushDetailsMessage = (message) => {
+        if (this.storage === "none") {
+            message.persist = false;
+        }
+        return message;
+    };
+
+    /**
+     *  Send a message to Countly's service worker: the given one, else the active worker of the
+     *  registration push runs under (it need not control this page), else the one controlling
+     *  this page.
+     *  @memberof Countly._internals
+     *  @param {Object} message - message to post; a ready or config message also gets this app's `scope`
+     *  @param {?ServiceWorker} [worker] - the worker to address, typically the `source` of a message being replied to
+     */
+    #postToPushWorker = (message, worker) => {
+        // no service worker API at all (private windows, some webviews): there is nobody to talk to
+        if (!this.#isPushSupported(false)) {
+            return;
+        }
+        try {
+            if (message.type === pushMessageTypes.READY || message.type === pushMessageTypes.CONFIG) {
+                message.scope = this.#ownPushScope();
+            }
+            var registration = this.#pushRegistration || this.push_service_worker_registration;
+            var candidates = [worker, registration && registration.active, navigator.serviceWorker.controller];
+            for (var i = 0; i < candidates.length; i++) {
+                if (candidates[i] && typeof candidates[i].postMessage === "function") {
+                    candidates[i].postMessage(message);
+                    return;
+                }
+            }
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "postToPushWorker, Could not post [" + message.type + "] to the service worker: " + e);
+        }
+    };
+
+    /**
+     *  Look up the registration Countly push runs under, logging a failure instead of rejecting.
+     *  @memberof Countly._internals
+     *  @returns {Promise} settles once the lookup is done, never rejects
+     */
+    #findPushRegistration = () => {
+        return this.#lookUpPushRegistration().then(() => { }, (e) => {
+            this.#log(logLevelEnums.DEBUG, "findPushRegistration, Could not look up the service worker registration: " + e);
+        });
+    };
+
+    /**
+     *  The registration Countly push runs under, found by exact scope and kept for the rest of the page.
+     *  @memberof Countly._internals
+     *  @returns {Promise<?ServiceWorkerRegistration>} the registration or null; rejects when the browser refuses the lookup
+     */
+    #lookUpPushRegistration = () => {
+        if (this.#pushRegistration) {
+            return Promise.resolve(this.#pushRegistration);
+        }
+        if (this.push_service_worker_registration) {
+            var supplied = this.push_service_worker_registration;
+            return Promise.resolve(supplied).then((registration) => {
+                if (this.push_service_worker_registration === supplied) {
+                    this.push_service_worker_registration = registration;
+                }
+                if (registration && !this.#pushRegistration) {
+                    this.#pushRegistration = registration;
+                }
+                return this.#pushRegistration || null;
+            });
+        }
+        return this.#pushRegistrationAt(this.#pushScope()).then((registration) => {
+            if (registration && !this.#pushRegistration) {
+                this.#pushRegistration = registration;
+            }
+            return this.#pushRegistration || null;
+        });
+    };
+
+    /**
+     *  Look up the service worker registration of exactly the given scope, never the wider one
+     *  getRegistration may answer with.
+     *  @memberof Countly._internals
+     *  @param {string} scope - the scope, relative or absolute
+     *  @returns {Promise<?ServiceWorkerRegistration>} the registration, or null when there is none for that scope
+     */
+    #pushRegistrationAt = (scope) => {
+        return Promise.resolve().then(() => navigator.serviceWorker.getRegistration(scope)).then((registration) => {
+            return registration && this.#resolveUrl(registration.scope) === this.#resolveUrl(scope) ? registration : null;
+        });
+    };
+
+    /**
+     *  The scope Countly push runs under: the one given to this call, else the one this browser's
+     *  subscription was made under, else push_service_worker_scope, else the default.
+     *  @memberof Countly._internals
+     *  @param {Object} [opts] - per-call push_service_worker_scope and push_service_worker_path
+     *  @returns {string} the scope, relative or absolute
+     */
+    #pushScope = (opts) => {
+        var o = opts || {};
+        return o.push_service_worker_scope || this.#getPushRecord(pushStorageKeys.scope) || this.push_service_worker_scope || this.#defaultPushScope(o.push_service_worker_path || this.push_service_worker_path);
+    };
+
+    /**
+     *  The scope Countly's worker is registered under unless push_service_worker_scope says
+     *  otherwise: the folder countly-push/ next to the worker file.
+     *  @memberof Countly._internals
+     *  @param {string} swPath - path of the worker file
+     *  @returns {string} the scope as an absolute URL
+     */
+    #defaultPushScope = (swPath) => {
+        try {
+            return new URL(pushConstants.DEFAULT_SCOPE_FOLDER, new URL(swPath, location.href)).href;
+        } catch (e) {
+            return pushConstants.DEFAULT_SCOPE_FOLDER;
+        }
+    };
+
+    /**
+     *  Tell whether a registration is Countly's private one: registered by the SDK under the
+     *  default scope and running Countly's worker file.
+     *  @memberof Countly._internals
+     *  @param {?ServiceWorkerRegistration} registration - registration to inspect
+     *  @param {string} swPath - path of Countly's worker file
+     *  @returns {Boolean} true for Countly's private registration
+     */
+    #isPrivatePushRegistration = (registration, swPath) => {
+        if (!registration || registration === this.push_service_worker_registration || registration === this.#suppliedPushRegistration) {
+            return false;
+        }
+        var worker = registration.active || registration.waiting || registration.installing;
+        return !!worker && this.#resolveUrl(registration.scope) === this.#defaultPushScope(swPath) && this.#stripQuery(worker.scriptURL) === this.#stripQuery(this.#resolveUrl(swPath));
+    };
+
+    /**
+     *  Ask the browser, without waiting, to look for a newer worker file under Countly's private
+     *  scope, where no page loads that would make it look by itself.
+     *  @memberof Countly._internals
+     *  @param {ServiceWorkerRegistration} registration - Countly's private registration
+     */
+    #updatePushWorker = (registration) => {
+        Promise.resolve().then(() => registration.update()).catch((err) => {
+            this.#log(logLevelEnums.DEBUG, "updatePushWorker, Could not look for a newer version of the service worker: " + this.#pushErrorText(err));
+        });
+    };
+
+    /**
+     * Update consent status and sync with server
+     * Handles consent management and sends consent updates to server
+     * @private
+     */
     #updateConsent = () => {
         if (this.#consentTimer) {
             // delay syncing consents
@@ -644,6 +1829,7 @@ class CountlyClass {
      */
     halt = () => {
         this.#log(logLevelEnums.WARNING, "halt, Resetting Countly");
+        this.#halted = true;
         Countly.i = undefined;
         Countly.q = [];
         Countly.noHeartBeat = undefined;
@@ -652,7 +1838,7 @@ class CountlyClass {
         this.#apiPath = "/i";
         this.#readPath = "/o/sdk";
         this.#beatInterval = 500;
-        this.#queueSize = 1000;
+        this.#SCSizeReqQueue = 1000;
         this.#requestQueue = [];
         this.#eventQueue = [];
         this.#remoteConfigs = {};
@@ -667,11 +1853,15 @@ class CountlyClass {
         this.#lastViewStoredDuration = 0;
         this.#failTimeout = 0;
         this.#failTimeoutAmount = 60;
+        clearTimeout(this.#collectTimer);
+        clearTimeout(this.#pauseTimer);
+        this.#collectUntil = 0;
+        this.#pausedUntil = 0;
+        this.#deferredRequests = [];
         this.#inactivityTime = 20;
         this.#inactivityCounter = 0;
-        this.#sessionUpdate = 60;
-        this.#maxEventBatch = 100;
-        this.#maxCrashLogs = null;
+        this.#SCIntervalSessionUpdate = 60;
+        this.#SCSizeEventBatch = 100;
         this.#useSessionCookie = true;
         this.#sessionCookieTimeout = 30;
         this.#readyToProcess = true;
@@ -690,6 +1880,8 @@ class CountlyClass {
         this.#previousViewId = null;
         this.#freshUTMTags = null;
         this.#generatedRequests = [];
+        // decided, so nothing logged after halt is captured
+        this.#resetLogGathering(true);
 
         try {
             localStorage.setItem("cly_testLocal", true);
@@ -711,13 +1903,19 @@ class CountlyClass {
             localStorage.removeItem("cly_hc_warning_count");
             localStorage.removeItem("cly_hc_status_code");
             localStorage.removeItem("cly_hc_error_message");
+            localStorage.removeItem("cly_hc_backoff_count");
+            localStorage.removeItem("cly_hc_consecutive_backoff_count");
         }
         catch (e) {
             this.#log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
             this.#lsSupport = false;
         }
 
-        Countly.features = [featureEnums.SESSIONS, featureEnums.EVENTS, featureEnums.VIEWS, featureEnums.SCROLLS, featureEnums.CLICKS, featureEnums.FORMS, featureEnums.CRASHES, featureEnums.ATTRIBUTION, featureEnums.USERS, featureEnums.STAR_RATING, featureEnums.LOCATION, featureEnums.APM, featureEnums.FEEDBACK, featureEnums.REMOTE_CONFIG];
+        this.#removePushMessageListener();
+        // This has to happen while app_key is still set, hence before the reset block further down.
+        this.#clearStoredPushSubscription();
+
+        Countly.features = featureList.slice();
 
         // CONSENTS
         this.#consents = {};
@@ -746,17 +1944,68 @@ class CountlyClass {
         this.useExplicitRcApi = undefined;
         this.remote_config = undefined;
         this.ignore_visitor = undefined;
-        this.require_consent = undefined;
+        this.#SCEnableConsentRequired = undefined;
         this.track_domains = undefined;
         this.storage = undefined;
         this.enableOrientationTracking = undefined;
         this.salt = undefined;
-        this.maxKeyLength = undefined;
-        this.maxValueSize = undefined;
-        this.maxSegmentationValues = undefined;
-        this.maxBreadcrumbCount = undefined;
-        this.maxStackTraceLinesPerThread = undefined;
-        this.maxStackTraceLineLength = undefined;
+        this.push_vapid_public_key = undefined;
+        this.push_service_worker_path = undefined;
+        this.push_service_worker_scope = undefined;
+        this.push_service_worker_registration = undefined;
+        this.push_auto_register = undefined;
+        this.push_subscribe_timeout = undefined;
+        this.#pushNotificationListener = null;
+        this.#seenPushActionIds = null;
+        this.#pushEnableInFlight = null;
+        this.#lastPushToken = null;
+        this.#pushRegistration = null;
+        this.#suppliedPushRegistration = null;
+        this.#pushMergedIds = null;
+        // like a reload, halt() keeps a stored push opt-out and drops the one storage "none" keeps in memory
+        this.#pushRecordInMemory = {};
+        this.#pushWorkerVersionsWarned = [];
+        this.#globalContentSegmentation = {};
+        this.#contentTheme = null;
+        this.#idBeforeOfflineMode = null;
+        this.#SCLimitKeyLength = undefined;
+        this.#SCLimitValueSize  = undefined;
+        this.#SCLimitSegmentationValues = undefined;
+        this.#SCLimitBreadcrumbCount = undefined;
+        this.#SCLimitStackTraceLinesPerThread = undefined;
+        this.#SCLimitStackTraceLineLength = undefined;
+        this.#fakeRequestHandler = undefined;
+        this.#journeyTriggerInProgress = undefined;
+        this.#journeyTriggerPending = undefined;
+        this.#contentZoneWanted = undefined;
+        this.#contentZoneExited = false;
+        this.#journeyPendingEventIds = undefined;
+        if (this.#clientHintsBufferTimeoutId) {
+            clearTimeout(this.#clientHintsBufferTimeoutId);
+            this.#clientHintsBufferTimeoutId = null;
+        }
+        this.#serverConfigAfterMerge = false;
+        this.#remoteConfigAfterMerge = false;
+        this.#pendingRequestBuffer = null;
+        this.#clientHintsPromise = null;
+        this.#uaClientHints = null;
+        this.#uaClientHintsStatus = "not_started";
+    };
+
+    /**
+     * Returns the SDK version string currently in use
+     * @returns {string} sdk version
+     */
+    sdk_version = () => {
+        return this.#sdkVersion;
+    };
+
+    /**
+     * Returns the SDK name string currently in use
+     * @returns {string} sdk name
+     */
+    sdk_name = () => {
+        return this.#sdkName;
     };
 
     /**
@@ -806,7 +2055,7 @@ class CountlyClass {
     */
     check_consent = (feature) => {
         this.#log(logLevelEnums.INFO, "check_consent, Checking if consent is given for specific feature:[" + feature + "]");
-        if (!this.require_consent) {
+        if (!this.#SCEnableConsentRequired) {
             // we don't need to have specific consents
             this.#log(logLevelEnums.INFO, "check_consent, require_consent is off, no consent is necessary");
             return true;
@@ -858,7 +2107,7 @@ class CountlyClass {
     */
     check_any_consent = () => {
         this.#log(logLevelEnums.INFO, "check_any_consent, Checking if any consent is given");
-        if (!this.require_consent) {
+        if (!this.#SCEnableConsentRequired) {
             // we don't need to have consents
             this.#log(logLevelEnums.INFO, "check_any_consent, require_consent is off, no consent is necessary");
             return true;
@@ -893,6 +2142,7 @@ class CountlyClass {
                 // this is core feature
                 if (this.#consents[feature].optin !== true) {
                     this.#consents[feature].optin = true;
+                    this.#releaseHeldLogLines();
                     this.#updateConsent();
                     setTimeout(() => {
                         if (feature === featureEnums.SESSIONS && this.#lastParams.begin_session) {
@@ -903,6 +2153,15 @@ class CountlyClass {
                             this.#lastView = null;
                             this.track_pageview.apply(this, this.#lastParams.track_pageview);
                             this.#lastParams.track_pageview = null;
+                        }
+                        else if (feature === featureEnums.CONTENT && this.#contentZoneWanted) {
+                            this.#enterContentZoneInternal();
+                        }
+                        else if (feature === featureEnums.PUSH) {
+                            if (this.#isPushConfigured()) {
+                                this.#drainPendingPushActions();
+                            }
+                            this.#autoRegisterPush();
                         }
                     }, 1);
                 }
@@ -941,15 +2200,44 @@ class CountlyClass {
                 this.remove_consent_internal(this.#consents[feature].features, enforceConsentUpdate);
             }
             else {
+                var wasOptedIn = this.#consents[feature].optin === true;
                 this.#consents[feature].optin = false;
                 // this is core feature
-                if (enforceConsentUpdate && this.#consents[feature].optin !== false) {
+                if (enforceConsentUpdate && wasOptedIn) {
                     this.#updateConsent();
+                }
+                if (wasOptedIn && feature === featureEnums.CONTENT) {
+                    this.#exitContentZoneInternal();
+                    this.#closeContentFrame();
+                }
+                // leaving the browser subscribed after push consent is withdrawn would keep the
+                // server able to reach this user, so drop the subscription and blacklist the token
+                if (enforceConsentUpdate && wasOptedIn && feature === featureEnums.PUSH && this.#isPushSupported(false)) {
+                    this.#pushConsentWithdrawals++;
+                    this.#syncPushWorkerConfig();
+                    this.#unsubscribePush({});
                 }
             }
         }
         else {
             this.#log(logLevelEnums.WARNING, "remove_consent, No feature available for [" + feature + "]");
+        }
+    };
+
+    /**
+     *  Moves the requests queued under the temporary device ID to the current device ID
+     */
+    #giveTemporaryIdRequestsToCurrentId = () => {
+        var changed = false;
+        for (var i = 0; i < this.#requestQueue.length; i++) {
+            if (this.#requestQueue[i].device_id === "[CLY]_temp_id") {
+                this.#requestQueue[i].device_id = this.device_id;
+                this.#requestQueue[i].t = this.#deviceIdType;
+                changed = true;
+            }
+        }
+        if (changed) {
+            this.#saveRequestQueue();
         }
     };
 
@@ -962,8 +2250,12 @@ class CountlyClass {
         // clear consents
         this.remove_consent_internal(Countly.features, false);
         this.#offlineMode = true;
+        this.#exitContentZoneInternal();
+        this.#contentZoneWanted = false;
+        this.#idBeforeOfflineMode = { id: this.device_id, type: this.#deviceIdType };
         this.device_id = "[CLY]_temp_id";
         this.#deviceIdType = DeviceIdTypeInternalEnums.TEMPORARY_ID;
+        this.#syncPushWorkerConfig();
     };
 
     disable_offline_mode = (device_id) => {
@@ -973,6 +2265,11 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "disable_offline_mode, Disabling offline mode");
         this.#offlineMode = false;
+        var leavingUser = (device_id && this.#idBeforeOfflineMode && this.#idBeforeOfflineMode.id !== device_id) ? this.#idBeforeOfflineMode : null;
+        this.#idBeforeOfflineMode = null;
+        if (leavingUser) {
+            this.#releasePushTokenOfLeavingUser(leavingUser);
+        }
         if (device_id && this.device_id !== device_id) {
             this.device_id = device_id;
             this.#deviceIdType = DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED;
@@ -990,22 +2287,23 @@ class CountlyClass {
                 this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.SDK_GENERATED);
             }
         }
-        var needResync = false;
-        if (this.#requestQueue.length > 0) {
-            for (var i = 0; i < this.#requestQueue.length; i++) {
-                if (this.#requestQueue[i].device_id === "[CLY]_temp_id") {
-                    this.#requestQueue[i].device_id = this.device_id;
-                    this.#requestQueue[i].t = this.#deviceIdType;
-                    needResync = true;
-                }
-            }
+        this.#announceChange(this.device_id, this.#deviceIdType);
+        this.#takeBackWhenSendable(false);
+        this.#giveTemporaryIdRequestsToCurrentId();
+        if (leavingUser) {
+            this.#handlePushOnDeviceIdChange(false);
         }
-        if (needResync) {
-            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        else {
+            this.#syncPushWorkerConfig();
         }
         if (this.#shouldSendHC) {
             this.#HealthCheck.sendInstantHCRequest();
             this.#shouldSendHC = false;
+        }
+        this.#getAndSetServerConfig();
+        if (this.#SCEnableContent) {
+            this.#enterContentZoneInternal();
+            this.#initContentSent = true;
         }
     };
 
@@ -1015,6 +2313,10 @@ class CountlyClass {
     * @param {bool} force - force begin session request even if session cookie is enabled
     */
     begin_session = (noHeartBeat, force) => {
+        if (!this.#SCTrackingSession) {
+            this.#log(logLevelEnums.INFO, "begin_session, Session tracking is disabled by server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "begin_session, Starting the session. There was an ongoing session: [" + this.#sessionStarted + "]");
         if (noHeartBeat) {
             this.#log(logLevelEnums.INFO, "begin_session, Heartbeats are disabled");
@@ -1027,8 +2329,12 @@ class CountlyClass {
                 if (this.enableOrientationTracking) {
                     // report orientation
                     this.#report_orientation();
+                    let orientationTimeout;
                     add_event_listener(window, "resize", () => {
-                        this.#report_orientation();
+                        clearTimeout(orientationTimeout);
+                        orientationTimeout = setTimeout(() => {
+                            this.#report_orientation();
+                        }, 200);
                     });
                 }
                 this.#lastBeat = getTimestamp();
@@ -1044,7 +2350,9 @@ class CountlyClass {
                     var req = {};
                     req.begin_session = 1;
                     req.metrics = JSON.stringify(this.#getMetrics());
+                    this.userData.save(true); // ensure user data is saved before session start
                     this.#toRequestQueue(req);
+                    this.#renewPushTokenForSession();
                 }
                 this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
             }
@@ -1059,6 +2367,10 @@ class CountlyClass {
     * @param {int} sec - amount of seconds to report for current session
     */
     session_duration = (sec) => {
+        if (!this.#SCTrackingSession) {
+            this.#log(logLevelEnums.INFO, "session_duration, Session tracking is disabled by server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "session_duration, Reporting session duration: [" + sec + "]");
         if (!this.check_consent(featureEnums.SESSIONS)) {
             return;
@@ -1070,6 +2382,7 @@ class CountlyClass {
         }
 
         this.#log(logLevelEnums.INFO, "session_duration, Session extended: [" + sec + "]");
+        this.userData.save(true); // ensure user data is saved before session update
         this.#toRequestQueue({ session_duration: sec });
         this.#extendSession();
     };
@@ -1080,13 +2393,18 @@ class CountlyClass {
     * @param {bool} force - force end session request even if session cookie is enabled
     */
     end_session = (sec, force) => {
+        if (!this.#SCTrackingSession && !force) {
+            this.#log(logLevelEnums.INFO, "end_session, Session tracking is disabled by server config");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "end_session, Ending the current session. There was an on going session:[" + this.#sessionStarted + "]");
         if (this.check_consent(featureEnums.SESSIONS)) {
             if (this.#sessionStarted) {
-                sec = sec || getTimestamp() - this.#lastBeat;
+                sec = sec || (this.#trackTime ? getTimestamp() - this.#lastBeat : this.#storedDuration);
                 this.#reportViewDuration();
                 if (!this.#useSessionCookie || force) {
                     this.#log(logLevelEnums.INFO, "end_session, Session ended");
+                    this.userData.save(true); // ensure user data is saved before session end
                     this.#toRequestQueue({ end_session: 1, session_duration: sec });
                 }
                 else {
@@ -1107,8 +2425,8 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "set_id, The provided device is not a valid ID");
             return;
         }
-        if (this.#deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED) {
-            /*change ID without merge as current ID is Dev supplied, so not first login*/
+        if (this.#deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED || this.#deviceIdType === DeviceIdTypeInternalEnums.URL_PROVIDED) {
+            /*change ID without merge as current ID is Dev supplied (an ID from the page link is reported as such), so not first login*/
             this.change_id(newId, false);
         } else {
             /*change ID with merge as current ID is not Dev supplied*/
@@ -1138,17 +2456,33 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "change_id, Provided device ID is equal to the current device ID. Aborting.");
             return;
         }
+        this.#announceChange(newId, DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
         if (!merge) {
             // process async queue before sending events
             this.#processAsyncQueue();
+            // the last view's duration belongs to the previous user, so it goes out with their events, session or not
+            this.#reportViewDuration();
             // empty event queue
             this.#sendEventsForced();
+            // save the previous user's pending profile changes while the ID and consents are still theirs, and never give them to the next user
+            this.userData.save(true);
+            this.#customData = {};
             // end current session
             this.end_session(null, true);
+            // the previous user's session cookie must not let the next user continue that session
+            this.#removeValueFromStorage("cly_session");
             // clear timed events
             this.#timedEvents = {};
             // clear all consents
             this.remove_consent_internal(Countly.features, false);
+            // a content zone entered for the previous user is not entered again for the next one, and their content is closed
+            if (this.#contentZoneWanted) {
+                this.#contentZoneExited = true;
+            }
+            this.#contentZoneWanted = false;
+            this.#exitContentZoneInternal();
+            this.#closeContentFrame();
+            this.#releasePushTokenOfLeavingUser();
         }
         var oldId = this.device_id;
         this.device_id = newId;
@@ -1157,19 +2491,34 @@ class CountlyClass {
         this.#setValueInStorage("cly_id", this.device_id);
         this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
         this.#log(logLevelEnums.INFO, "change_id, Changing ID from:[" + oldId + "] to [" + newId + "]");
+        var mergeQueued = false;
         if (merge) {
             // no consent check here since 21.11.0
-            this.#toRequestQueue({ old_device_id: oldId });
+            mergeQueued = this.#toRequestQueue({ old_device_id: oldId });
+        }
+        else if (this.#autoSessionTracking) {
+            // only automatic session tracking starts a session for the new ID, manual sessions are left to the developer
+            this.begin_session(!this.#autoExtend, true);
+        }
+        this.#handlePushOnDeviceIdChange(merge, oldId);
+        // the behavior settings and remote config can differ for the new ID. A fetch creates the user of an ID the server has not seen,
+        // so after a merge they wait for the merge request to be sent, or the server would merge two users instead of renaming one
+        if (mergeQueued) {
+            this.#serverConfigAfterMerge = true;
         }
         else {
-            // start new session for new ID TODO: check this when no session tracking is enabled
-            this.begin_session(!this.#autoExtend, true);
+            this.#getAndSetServerConfig();
         }
         // if init time remote config was enabled with a callback function, remove currently stored remote configs and fetch remote config again
         if (this.remote_config) {
             this.#remoteConfigs = {};
             this.#setValueInStorage("cly_remote_configs", this.#remoteConfigs);
-            this.fetch_remote_config(this.remote_config);
+            if (mergeQueued) {
+                this.#remoteConfigAfterMerge = true;
+            }
+            else {
+                this.fetch_remote_config(this.remote_config);
+            }
         }
     };
 
@@ -1205,8 +2554,11 @@ class CountlyClass {
             case internalEventKeyEnums.ACTION:
                 respectiveConsent = this.check_consent(featureEnums.CLICKS) || this.check_consent(featureEnums.SCROLLS);
                 break;
+            case internalEventKeyEnums.PUSH_ACTION:
+                respectiveConsent = this.check_consent(featureEnums.PUSH);
+                break;
             default:
-                respectiveConsent = this.check_consent(featureEnums.EVENTS);
+                respectiveConsent = this.#SCTrackingEvents ? this.check_consent(featureEnums.EVENTS) : false;
         }
         // if consent is given adds event to the queue
         if (respectiveConsent) {
@@ -1215,15 +2567,513 @@ class CountlyClass {
     };
 
     /**
+    * Enable web push notifications. Registers the service worker, requests notification permission,
+    * subscribes via the Push API using the configured VAPID public key, and queues a token_session
+    * request mirroring the Android/iOS contract. A subscription already bound to the key is reused
+    * and its token sent again, unless this page sent it for the same device ID less than a minute
+    * ago. The worker is registered under the scope given to this call, else the one this browser's
+    * subscription was made under, else `push_service_worker_scope`, else the folder countly-push/
+    * next to its file. Another push provider's subscription is left alone.
+    * Lifts an earlier disable_push_notifications. Concurrent calls (a double click, or the silent
+    * registration racing an explicit call) share one run, so only one subscription is ever created.
+    * Gives up on an attempt after `push_subscribe_timeout` milliseconds (default 30 s) when the
+    * browser never finishes creating the subscription, as iOS 18.7 was seen doing; the next call
+    * then starts afresh instead of joining the stuck one.
+    * @param {Object} [opts] - per-call overrides for push_vapid_public_key / push_service_worker_path / push_service_worker_scope / push_service_worker_registration (a registration, or the promise register() returns for it)
+    * @returns {Promise<Object>} resolves to { subscribed: true, endpoint } on success, or { subscribed: false, reason } otherwise, with reason one of "unsupported", "no_consent", "missing_vapid_key", "invalid_vapid_key", "denied", "default", "service_worker_conflict", "service_worker_missing", "service_worker_redundant", "timeout", "subscription_conflict", "disabled" or "error" (which adds an `error` field)
+    */
+    enable_push_notifications = (opts) => {
+        this.#log(logLevelEnums.INFO, "enable_push_notifications, Enabling push notifications");
+        opts = opts || {};
+        if (!this.#isPushSupported(true)) {
+            this.#log(logLevelEnums.WARNING, "enable_push_notifications, Web push is not supported in this environment");
+            return Promise.resolve({ subscribed: false, reason: "unsupported" });
+        }
+        if (!this.check_consent(featureEnums.PUSH)) {
+            this.#log(logLevelEnums.WARNING, "enable_push_notifications, Consent for [push] is not given, aborting");
+            return Promise.resolve({ subscribed: false, reason: "no_consent" });
+        }
+        var vapidKey = opts.push_vapid_public_key || this.push_vapid_public_key;
+        if (!vapidKey) {
+            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is required");
+            return Promise.resolve({ subscribed: false, reason: "missing_vapid_key" });
+        }
+        var applicationServerKey = this.#urlBase64ToUint8Array(vapidKey);
+        if (!applicationServerKey || applicationServerKey.length !== pushConstants.VAPID_PUBLIC_KEY_BYTE_LENGTH || applicationServerKey[0] !== pushConstants.VAPID_PUBLIC_KEY_PREFIX) {
+            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is not a base64-url encoded uncompressed P-256 public key (got [" + vapidKey + "]). Generate one from your Countly application settings.");
+            return Promise.resolve({ subscribed: false, reason: "invalid_vapid_key" });
+        }
+        var swPath = opts.push_service_worker_path || this.push_service_worker_path;
+        var swScope = this.#pushScope(opts);
+        this.#removePushRecord(pushStorageKeys.optOut);
+        if (this.#pushEnableInFlight) {
+            this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Already in progress, joining that call");
+            return this.#pushEnableInFlight;
+        }
+        if (opts.push_service_worker_registration) {
+            this.#suppliedPushRegistration = opts.push_service_worker_registration;
+        }
+
+        var withdrawalsAtStart = this.#pushConsentWithdrawals;
+        // Ask before touching anything asynchronous. Browsers that require transient user
+        // activation for a notification prompt would refuse it once the service worker
+        // registration has resolved, which would make the first opt-in impossible.
+        this.#pushEnableInFlight = this.#requestNotificationPermission().then((permission) => {
+            this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Notification permission: [" + permission + "]");
+            if (permission !== "granted") {
+                return { subscribed: false, reason: permission || "denied" };
+            }
+            return this.#resolvePushRegistration(swPath, swScope, opts.push_service_worker_registration).then((registration) => {
+                if (!registration) {
+                    return { subscribed: false, reason: "service_worker_conflict" };
+                }
+                this.#pushRegistration = registration;
+                var privateRegistration = this.#isPrivatePushRegistration(registration, swPath);
+                if (privateRegistration) {
+                    this.#updatePushWorker(registration);
+                }
+                return this.#withPushTimeout(this.#subscribeAndRegisterToken(registration, vapidKey, applicationServerKey, withdrawalsAtStart, privateRegistration), this.push_subscribe_timeout);
+            });
+        }).catch((err) => {
+            var message = (err && err.message) ? err.message : String(err);
+            if (message === "service_worker_redundant" || message === "service_worker_missing") {
+                this.#log(logLevelEnums.ERROR, "enable_push_notifications, The service worker never became active: [" + message + "]");
+                return { subscribed: false, reason: message };
+            }
+            this.#log(logLevelEnums.ERROR, "enable_push_notifications, Failed to enable push notifications: " + err);
+            return { subscribed: false, reason: "error", error: this.#pushErrorText(err) };
+        }).then((result) => {
+            this.#pushEnableInFlight = null;
+            return result;
+        });
+        return this.#pushEnableInFlight;
+    };
+
+    /**
+     *  Get a service worker registration to subscribe through, without replacing one the host
+     *  application already owns. register() updates whatever is registered for the same scope, so
+     *  installing the reference worker at "/" on a PWA would silently drop its fetch and cache
+     *  handlers. When a foreign worker holds the scope the developer has to either import
+     *  countly_sw.js into it, pass its registration in, or leave push_service_worker_scope unset.
+     *  Script URLs are compared without their query string, where #pushWorkerUrl puts the debug and
+     *  storage flags, so toggling either is not mistaken for a foreign worker. Under Countly's own
+     *  default scope another file is Countly's worker under its earlier name, which is replaced.
+     *  @memberof Countly._internals
+     *  @param {string} swPath - path of the reference worker to install
+     *  @param {string} swScope - scope to register it under
+     *  @param {?(ServiceWorkerRegistration|Promise<ServiceWorkerRegistration>)} suppliedRegistration - registration to use instead, if any, or the promise register() returned for it
+     *  @returns {Promise<?ServiceWorkerRegistration>} the registration to use, or null when the scope is taken; rejects with "service_worker_missing" or "service_worker_redundant" when its worker never becomes active, and with the error of a supplied registration that could not be made
+     */
+    #resolvePushRegistration = (swPath, swScope, suppliedRegistration) => {
+        var provided = suppliedRegistration || this.push_service_worker_registration;
+        if (provided) {
+            return Promise.resolve(provided).then((registration) => {
+                if (!registration) {
+                    throw new Error("service_worker_missing");
+                }
+                if (provided === suppliedRegistration) {
+                    this.#suppliedPushRegistration = registration;
+                }
+                else if (this.push_service_worker_registration === provided) {
+                    this.push_service_worker_registration = registration;
+                }
+                this.#log(logLevelEnums.DEBUG, "resolvePushRegistration, Using the supplied service worker registration at scope: [" + registration.scope + "]");
+                return this.#waitForPushWorker(registration);
+            });
+        }
+        return navigator.serviceWorker.getRegistration(swScope).then((existing) => {
+            var existingWorker = existing && (existing.active || existing.waiting || existing.installing);
+            // getRegistration matches by longest scope prefix, so `existing` can belong to a wider
+            // scope than the one asked for. Registering a narrower scope leaves that one alone, so
+            // only an exact scope match can actually be replaced.
+            var ownsExactScope = existing && this.#resolveUrl(existing.scope) === this.#resolveUrl(swScope);
+            var countlyScope = this.#resolveUrl(swScope) === this.#defaultPushScope(swPath);
+            if (existingWorker && ownsExactScope && !countlyScope && this.#stripQuery(existingWorker.scriptURL) !== this.#stripQuery(this.#resolveUrl(swPath))) {
+                this.#log(logLevelEnums.ERROR, "resolvePushRegistration, A different service worker ([" + existingWorker.scriptURL + "]) already owns scope [" + existing.scope + "]. Registering [" + swPath + "] would replace it. Import countly_sw.js into that worker and pass its registration as push_service_worker_registration, or leave push_service_worker_scope unset so that Countly's worker gets a scope of its own.");
+                return null;
+            }
+            return navigator.serviceWorker.register(this.#pushWorkerUrl(swPath), { scope: swScope }).then((registration) => {
+                this.#log(logLevelEnums.DEBUG, "resolvePushRegistration, Service worker registered at scope: [" + registration.scope + "]");
+                return this.#waitForPushWorker(registration);
+            });
+        });
+    }
+
+    /**
+     *  Wait until the registration's worker is active, so its push manager can be used.
+     *  navigator.serviceWorker.ready is not usable for this: it only resolves once a registration
+     *  whose scope covers the current page is active, so a worker registered under a narrower
+     *  scope would leave the caller pending forever, with no error.
+     *  @memberof Countly._internals
+     *  @param {ServiceWorkerRegistration} registration - the registration just created or updated, or the one the application supplied
+     *  @returns {Promise<ServiceWorkerRegistration>} the same registration once active; rejects with "service_worker_missing" or "service_worker_redundant" otherwise
+     */
+    #waitForPushWorker = (registration) => {
+        if (registration.active) {
+            return Promise.resolve(registration);
+        }
+        var worker = registration.installing || registration.waiting;
+        if (!worker) {
+            return Promise.reject(new Error("service_worker_missing"));
+        }
+        return new Promise((resolve, reject) => {
+            var onStateChange = () => {
+                if (worker.state === "activated") {
+                    worker.removeEventListener("statechange", onStateChange);
+                    resolve(registration);
+                }
+                else if (worker.state === "redundant") {
+                    worker.removeEventListener("statechange", onStateChange);
+                    reject(new Error("service_worker_redundant"));
+                }
+            };
+            worker.addEventListener("statechange", onStateChange);
+            onStateChange();
+        });
+    }
+
+    /**
+     *  Resolve a possibly relative service worker path or scope against the page, so it can be
+     *  compared with the absolute values the browser reports.
+     *  @memberof Countly._internals
+     *  @param {string} value - path or scope, relative or absolute
+     *  @returns {string} absolute URL, or the input unchanged if it cannot be resolved
+     */
+    #resolveUrl = (value) => {
+        try {
+            return new URL(value, location.href).href;
+        } catch (e) {
+            return value;
+        }
+    }
+
+    /**
+     *  A URL without its query string and fragment.
+     *  @memberof Countly._internals
+     *  @param {string} value - URL to trim
+     *  @returns {string} the URL up to the first ? or #
+     */
+    #stripQuery = (value) => {
+        var parts = parseUrlParts(String(value || ""));
+        return parts.origin + parts.pathname;
+    }
+
+    /**
+     *  The URL to register the reference worker under. The worker cannot ask the page for its
+     *  configuration when a push wakes it up with no page open, so `cly_debug=1` travels in the
+     *  query string of its own URL while debug is on, and `cly_persist=0` with storage "none". A
+     *  different query string is a different script URL to the browser, so toggling either
+     *  re-installs the worker (the subscription belongs to the scope and survives that).
+     *  @memberof Countly._internals
+     *  @param {string} swPath - configured worker path
+     *  @returns {string} the path with the settings appended
+     */
+    #pushWorkerUrl = (swPath) => {
+        var params = [];
+        if (this.debug === true) {
+            params.push(pushWorkerParams.debug + "=1");
+        }
+        if (this.storage === "none") {
+            params.push(pushWorkerParams.persist + "=0");
+        }
+        if (!params.length) {
+            return swPath;
+        }
+        return swPath + (swPath.indexOf("?") === -1 ? "?" : "&") + params.join("&");
+    }
+
+    /**
+     *  Reuse or create a browser subscription for the given key and register its token. One bound
+     *  to another key is only replaced when it is Countly's own.
+     *  @memberof Countly._internals
+     *  @param {ServiceWorkerRegistration} swReg - registration to subscribe through
+     *  @param {string} vapidKey - configured VAPID public key, base64-url encoded
+     *  @param {Uint8Array} applicationServerKey - the same key decoded
+     *  @param {number} withdrawalsAtStart - push consent withdrawals when the enable call started
+     *  @param {Boolean} privateRegistration - true when swReg is Countly's private registration
+     *  @returns {Promise<Object>} resolves to { subscribed: true, endpoint }, or { subscribed: false, reason }
+     */
+    #subscribeAndRegisterToken = (swReg, vapidKey, applicationServerKey, withdrawalsAtStart, privateRegistration) => {
+        return swReg.pushManager.getSubscription().then((existing) => {
+            var savedVapidKey = this.#getPushRecord(pushStorageKeys.vapidKey);
+            if (existing && this.#pushSubscriptionUsesKey(existing, applicationServerKey, savedVapidKey, vapidKey)) {
+                this.#log(logLevelEnums.DEBUG, "subscribeAndRegisterToken, Reusing the existing subscription and registering its token");
+                return this.#registerPushSubscription(existing, vapidKey, swReg.scope, withdrawalsAtStart);
+            }
+            var unsubChain = Promise.resolve();
+            if (existing) {
+                if (!this.#isCountlyPushSubscription(existing, privateRegistration)) {
+                    if (privateRegistration) {
+                        this.#log(logLevelEnums.ERROR, "subscribeAndRegisterToken, Countly's own scope [" + swReg.scope + "] now holds a subscription another sender made after Countly registered there; give each Countly app or push provider a scope of its own");
+                    }
+                    else {
+                        this.#log(logLevelEnums.ERROR, "subscribeAndRegisterToken, The service worker at scope [" + swReg.scope + "] holds a push subscription Countly cannot recognise as its own (another push provider's, or one Countly made with an earlier VAPID key where nothing was stored or storage was cleared). A scope holds only one, so Countly leaves it alone; let Countly register its own worker under its default scope instead of sharing [" + swReg.scope + "]");
+                    }
+                    return { subscribed: false, reason: "subscription_conflict" };
+                }
+                this.#log(logLevelEnums.INFO, "subscribeAndRegisterToken, Replacing Countly's push subscription at scope [" + swReg.scope + "], which was made with another VAPID key");
+                // subscribe() with another key is refused (InvalidStateError) while this subscription exists
+                unsubChain = existing.unsubscribe().catch((err) => {
+                    this.#log(logLevelEnums.WARNING, "subscribeAndRegisterToken, unsubscribe failed, continuing: " + err);
+                });
+            }
+            return unsubChain.then(() => swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: applicationServerKey })).then((subscription) => {
+                return this.#registerPushSubscription(subscription, vapidKey, swReg.scope, withdrawalsAtStart);
+            });
+        });
+    }
+
+    /**
+     *  Register a subscription's token, or drop the subscription when push was disabled or its
+     *  consent withdrawn while enable_push_notifications was waiting on the browser.
+     *  @memberof Countly._internals
+     *  @param {PushSubscription} subscription - subscription to register
+     *  @param {string} vapidKey - VAPID public key it is bound to, base64-url encoded
+     *  @param {string} scope - scope of the service worker it belongs to
+     *  @param {number} withdrawalsAtStart - push consent withdrawals when the enable call started
+     *  @returns {Promise<Object>} { subscribed: true, endpoint }, or { subscribed: false, reason } with reason "disabled" or "no_consent"
+     */
+    #registerPushSubscription = (subscription, vapidKey, scope, withdrawalsAtStart) => {
+        var reason = null;
+        if (this.#getPushRecord(pushStorageKeys.optOut)) {
+            reason = "disabled";
+        }
+        else if (!this.check_consent(featureEnums.PUSH)) {
+            reason = "no_consent";
+        }
+        if (!reason) {
+            this.#sendPushToken(subscription, vapidKey, scope);
+            return Promise.resolve({ subscribed: true, endpoint: subscription.endpoint });
+        }
+        if (reason === "no_consent" && withdrawalsAtStart === this.#pushConsentWithdrawals) {
+            this.#log(logLevelEnums.DEBUG, "enable_push_notifications, Push consent was reset while subscribing, keeping the subscription unregistered until push consent is given");
+            return Promise.resolve({ subscribed: false, reason: reason });
+        }
+        this.#log(logLevelEnums.WARNING, "enable_push_notifications, " + (reason === "disabled" ? "Push was disabled" : "Push consent was withdrawn") + " while subscribing, dropping the subscription instead of registering it");
+        return Promise.resolve().then(() => subscription.unsubscribe()).catch((err) => {
+            this.#log(logLevelEnums.WARNING, "enable_push_notifications, Could not drop the subscription: " + err);
+        }).then(() => {
+            return { subscribed: false, reason: reason };
+        });
+    }
+
+    /**
+    * Disable web push notifications. Unsubscribes Countly's subscription from the browser push
+    * manager (another push provider's subscription is left alone) and queues a
+    * blacklist token_session request so the server clears the stored subscription. Deliberately
+    * not consent gated — opting out must stay possible after push consent is withdrawn. The
+    * opt-out is stored and survives reloads: notification permission stays granted after an
+    * unsubscribe, so otherwise the silent registration at the next init would subscribe again.
+    * Only an explicit enable_push_notifications lifts it. With `storage: "none"` the opt-out holds
+    * for the current page only.
+    * @param {Object} [opts] - per-call override for push_service_worker_scope
+    * @returns {Promise<Object>} resolves to { unsubscribed: true } when complete, or { unsubscribed: false, reason } with reason "unsupported" or "error"
+    */
+    disable_push_notifications = (opts) => {
+        this.#log(logLevelEnums.INFO, "disable_push_notifications, Disabling push notifications");
+        if (!this.#isPushSupported(false)) {
+            this.#log(logLevelEnums.WARNING, "disable_push_notifications, Web push is not supported in this environment");
+            return Promise.resolve({ unsubscribed: false, reason: "unsupported" });
+        }
+        this.#setPushRecord(pushStorageKeys.optOut, 1);
+        return this.#unsubscribePush(opts || {});
+    };
+
+    /**
+     *  Drop Countly's browser subscription and blacklist the token on the server. Shared by the
+     *  explicit disable and by push consent withdrawal, which must not count as an opt-out. Both
+     *  call it only where the push API is supported.
+     *  @memberof Countly._internals
+     *  @param {Object} opts - per-call override for push_service_worker_scope
+     *  @returns {Promise<Object>} resolves to { unsubscribed: true } when complete
+     */
+    #unsubscribePush = (opts) => {
+        // a token the server may still hold, even if the registration or subscription is already gone
+        var hadRegisteredToken = !!this.#getPushRecord(pushStorageKeys.endpoint) || !!this.#lastPushToken;
+        var wasInUse = this.#isPushConfigured();
+        var lookup = opts.push_service_worker_scope ? this.#pushRegistrationAt(opts.push_service_worker_scope) : this.#lookUpPushRegistration();
+        var swReg = null;
+
+        return lookup.then((registration) => {
+            swReg = registration;
+            return swReg ? swReg.pushManager.getSubscription() : null;
+        }).then((subscription) => {
+            if (subscription && !this.#isCountlyPushSubscription(subscription, this.#isPrivatePushRegistration(swReg, this.push_service_worker_path))) {
+                this.#log(logLevelEnums.DEBUG, "disable_push_notifications, The subscription at scope [" + swReg.scope + "] belongs to another push provider, leaving it alone");
+                return false;
+            }
+            return subscription ? subscription.unsubscribe().then(() => true) : false;
+        }).then((hadSubscription) => {
+            // a page that halted meanwhile leaves storage to the instance that came after it
+            if (this.#halted) {
+                return { unsubscribed: true };
+            }
+            // forgotten first, so the details the worker is handed below do not name this subscription's key
+            this.#clearStoredPushSubscription();
+            if ((hadSubscription || hadRegisteredToken) && this.ignore_visitor) {
+                this.#log(logLevelEnums.DEBUG, "disable_push_notifications, The visitor opted out, so no request is sent; the server drops the token the next time it sends to it");
+            }
+            else if (hadSubscription || hadRegisteredToken) {
+                this.#sendPushToken(null);
+            }
+            else {
+                this.#log(logLevelEnums.DEBUG, "disable_push_notifications, Nothing was registered, no blacklist request needed");
+            }
+            this.#syncPushWorkerConfig(wasInUse);
+            return { unsubscribed: true };
+        }).catch((err) => {
+            this.#log(logLevelEnums.ERROR, "disable_push_notifications, Failed to disable push notifications: " + err);
+            return { unsubscribed: false, reason: "error", error: this.#pushErrorText(err) };
+        });
+    };
+
+    /**
+     *  Describe a push failure as "name: message", the way the browser names it, for the `error`
+     *  field of a failed result.
+     *  @memberof Countly._internals
+     *  @param {*} err - what the failing call threw or rejected with
+     *  @returns {string} "name: message", or the error as text
+     */
+    #pushErrorText = (err) => {
+        if (err && err.message) {
+            return err.name ? err.name + ": " + err.message : String(err.message);
+        }
+        return String(err);
+    };
+
+    /**
+    * Record a push notification action event (body click or action button click).
+    * Mirrors the [CLY]_push_action event recorded by the iOS and Android SDKs. Sent right away
+    * rather than on the next heartbeat, as the page is usually about to navigate.
+    * @param {string} messageId - the ObjectId of the message that produced the notification
+    * @param {number} [buttonIndex=0] - 0 = body click, 1+ = action button index
+    */
+    record_push_action = (messageId, buttonIndex) => {
+        this.#recordPushAction(messageId, buttonIndex);
+    };
+
+    /**
+     *  Queue a [CLY]_push_action event when push consent allows it and send the event queue right away.
+     *  @memberof Countly._internals
+     *  @param {string} messageId - the ObjectId of the message that produced the notification
+     *  @param {number} [buttonIndex=0] - 0 = body click, 1+ = action button index
+     *  @param {number} [clickedAt] - when the click happened, in ms since epoch
+     *  @param {?Object} [owner] - { id, type } of the user the click belongs to, if not the current one
+     */
+    #recordPushAction = (messageId, buttonIndex, clickedAt, owner) => {
+        this.#log(logLevelEnums.INFO, "record_push_action, Recording push action for message:[" + messageId + "], button:[" + buttonIndex + "]" + (owner ? ", device ID:[" + owner.id + "]" : ""));
+        if (!messageId) {
+            this.#log(logLevelEnums.WARNING, "record_push_action, messageId is required");
+            return;
+        }
+        if (this.check_consent(featureEnums.PUSH)) {
+            var happenedAt = (typeof clickedAt === "number" && isFinite(clickedAt) && clickedAt > 0) ? clickedAt : undefined;
+            var outsideViews = !!owner || (!!happenedAt && happenedAt < this.#pushListeningSince);
+            this.#add_cly_events({
+                key: internalEventKeyEnums.PUSH_ACTION,
+                count: 1,
+                segmentation: {
+                    i: messageId,
+                    b: typeof buttonIndex === "number" ? buttonIndex : 0,
+                    p: "w"
+                }
+            }, undefined, happenedAt, outsideViews, owner || undefined);
+        }
+        this.#sendEventsForced();
+    };
+
+    /**
+    * Set a function that is told what happens to push notifications on this origin. It is called
+    * with one object: `{ type, messageId, title, message, url, buttons, payload, buttonIndex,
+    * buttonTitle }` where `type` is "received" (the worker got the push and showed the
+    * notification), "clicked" (body or a button; `buttonIndex` 0 = body, 1+ = button and
+    * `buttonTitle`/`url` describe it) or "closed" (dismissed without a click). `payload` is the
+    * whole message as sent by the server, including any custom key/values. Only pages that are
+    * open at the time hear about "received" and "closed"; a click that opened a new window is
+    * reported by that window, and a click made while no page was open (the worker recorded it
+    * itself) is reported to the next page that loads. A click the page still has to record is
+    * reported once push consent is given, and a click made for a user other than the one currently
+    * signed in is not reported to this page. "closed" is best effort: browsers only pass on the dismissals the OS
+    * tells them about, and that differs by browser and OS (on Windows the toast's X and Action
+    * Center removals mostly produce nothing; on macOS Chrome and Firefox report Notification Center
+    * removals, Safari does not). Firefox, and Safari for Notification Center clicks, also report a
+    * "closed" right after "clicked" because they fire the close event for the worker's own close()
+    * call. Safari shows no action buttons, and neither does desktop Firefox before version 152 (it
+    * shows them since, on macOS in the notification's Options list; Firefox for Android always
+    * did), so a click there is always the body (index 0).
+    * The [CLY]_push_action event is recorded regardless of the listener.
+    * Can also be given at init as `push_notification_listener`.
+    * @param {?Function} listener - the function to call, or null to remove the current one
+    */
+    set_push_notification_listener = (listener) => {
+        this.#log(logLevelEnums.INFO, "set_push_notification_listener, " + (typeof listener === "function" ? "Setting the push notification listener" : "Removing the push notification listener"));
+        this.#pushNotificationListener = typeof listener === "function" ? listener : null;
+    };
+
+    /**
+     *  Tell the push notification listener about an event the worker reported. The listener is
+     *  application code, so a throwing one must not break recording or acknowledging the action.
+     *  @memberof Countly._internals
+     *  @param {string} type - "received" | "clicked" | "closed"
+     *  @param {Object} data - message from the worker
+     */
+    #notifyPushListener = (type, data) => {
+        if (typeof this.#pushNotificationListener !== "function") {
+            return;
+        }
+        var event = {
+            type: type,
+            messageId: data.messageId || "",
+            title: data.title || "",
+            message: data.message || "",
+            url: data.url || "",
+            buttons: Array.isArray(data.buttons) ? data.buttons : [],
+            payload: data.payload || null
+        };
+        if (type === "clicked") {
+            event.buttonIndex = typeof data.buttonIndex === "number" ? data.buttonIndex : 0;
+            event.buttonTitle = data.buttonTitle || "";
+        }
+        try {
+            this.#pushNotificationListener(event);
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "notifyPushListener, The push notification listener threw on [" + type + "]: " + e);
+        }
+    };
+
+    /**
+     * Attempt to send stored requests
+     *
+     */
+    attempt_to_send_stored_requests = () => {
+        this.#log(logLevelEnums.INFO, "attemptToSendStoredRequests, Attempting to send stored requests");
+        this.#processAsyncQueue();
+        this.#sendEventsForced();
+    };
+
+    /**
+     * FOR TESTING PURPOSES ONLY
+     * Set test mode for request queue
+     * @param {Boolean} value 
+     */
+    test_mode_rq = (value) => {
+        this.#log(logLevelEnums.INFO, "test_mode_rq, Setting test mode to: [" + value + "]");
+        this.test_mode = value;
+    };
+
+    /**
      *  Add events to event queue
      *  @memberof Countly._internals
      *  @param {Event} event - countly event
      *  @param {String} eventIdOverride - countly event ID
+     *  @param {Number} [timestampOverride] - when the event happened, in ms since epoch; the current time when absent
+     *  @param {Boolean} [outsideViews] - true when the event belongs to none of this page's views
+     *  @param {Object} [owner] - { id, type } of another user, whose event goes out in a request of its own
      */
-    #add_cly_events = (event, eventIdOverride) => {
+    #add_cly_events = (event, eventIdOverride, timestampOverride, outsideViews, owner) => {
         // ignore bots
-        if (this.ignore_visitor) {
-            this.#log(logLevelEnums.ERROR, "Adding event failed. Possible bot or user opt out");
+        if (this.ignore_visitor || !this.#SCTrackingAll) {
+            this.#log(logLevelEnums.WARNING, "Not adding the event. Tracking is disabled by the server config:[" + !this.#SCTrackingAll + "] or ignore_visitor is:[" + this.ignore_visitor + "]");
             return;
         }
 
@@ -1232,19 +3082,34 @@ class CountlyClass {
             return;
         }
 
+        if (!this.#isProcessingAsyncFromUserDataSave) {
+            this.userData.save(true); // ensure cached user data is saved before adding event
+        }
+
         if (!event.count) {
             event.count = 1;
         }
+        
+        // the dashboard's event and segmentation filters are for the app's own events, as on Android and iOS; every "[CLY]_" event, also the ones content sends, is Countly's
+        var isInternalEvent = typeof event.key === "string" && event.key.indexOf("[CLY]_") === 0;
+        if (!isInternalEvent && !this.#isEventAllowedByBehaviorSettings(event.key)) {
+            this.#log(logLevelEnums.DEBUG, "add_cly_event, Event was filtered out by behavior settings: [" + event.key + "]");
+            return;
+        }
+        
+        const initialKey = event.key;
         // we omit the internal event keys from truncation. TODO: This is not perfect as it would omit a key that includes an internal event key and more too. But that possibility seems negligible. 
         if (!internalEventKeyEnumsArray.includes(event.key)) {
-            // truncate event name and segmentation to internal limits
-            event.key = truncateSingleValue(event.key, this.maxKeyLength, "add_cly_event", this.#log);
+            event.key = truncateSingleValue(event.key, this.#SCLimitKeyLength, "add_cly_event", this.#log);
         }
-        event.segmentation = truncateObject(event.segmentation, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "add_cly_event", this.#log);
+        if (!isInternalEvent) {
+            event.segmentation = this.#filterSegmentationByBehaviorSettings(event.key, event.segmentation);
+        }
+        event.segmentation = truncateObject(event.segmentation, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "add_cly_event", this.#log);
         var props = ["key", "count", "sum", "dur", "segmentation"];
         var e = createNewObjectFromProperties(event, props);
-        e.timestamp = getMsTimestamp();
-        var date = new Date();
+        e.timestamp = timestampOverride || getMsTimestamp();
+        var date = timestampOverride ? new Date(timestampOverride) : new Date();
         e.hour = date.getHours();
         e.dow = date.getDay();
         e.id = eventIdOverride || secureRandom();
@@ -1252,12 +3117,338 @@ class CountlyClass {
             e.pvid = this.#previousViewId || "";
         }
         else {
-            e.cvid = this.#currentViewId || "";
+            e.cvid = outsideViews ? "" : (this.#currentViewId || "");
+        }
+        if (owner) {
+            this.#asDeviceId(owner, () => this.#toRequestQueue({ events: JSON.stringify([e]) }));
+            this.#log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully queued the last event for device ID: [" + owner.id + "]", e);
+            return;
         }
         this.#eventQueue.push(e);
-        this.#setValueInStorage("cly_event", this.#eventQueue);
+        this.#saveEventQueue();
         this.#log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully adding the last event:", e);
+        this.#handleJourneyTrigger(initialKey, e.id);
     }
+
+    /**
+     * 
+     * @param {String} eventKey - Event key to filter for
+     * @returns {Boolean} true if event is allowed, false if it is blocked
+     */
+    #isEventAllowedByBehaviorSettings = (eventKey) => {
+        if (this.#SCEventBlacklist && this.#SCEventBlacklist.length > 0) {
+            return this.#SCEventBlacklist.indexOf(eventKey) === -1;
+        }
+        if (this.#SCEventWhitelist && this.#SCEventWhitelist.length > 0) {
+            return this.#SCEventWhitelist.indexOf(eventKey) !== -1;
+        }
+        return true;
+    }
+
+    /**
+     * Filter segmentation object by behavior settings
+     * 
+     * @param {String} eventKey - Event key to filter segmentation for
+     * @param {Object} segmentation - segmentation object to filter
+     * @returns {Object} filtered segmentation object
+     */
+    #filterSegmentationByBehaviorSettings = (eventKey, segmentation) => {
+        if (!segmentation || typeof segmentation !== "object") {
+            return segmentation;
+        }
+
+        var filteredSegmentation = {};
+        for (var key in segmentation) {
+            if (Object.prototype.hasOwnProperty.call(segmentation, key)) {
+                filteredSegmentation[key] = segmentation[key];
+            }
+        }
+
+        // global segmentation filtering
+        if (this.#SCSegmentationBlacklist && this.#SCSegmentationBlacklist.length > 0) {
+            this.#SCSegmentationBlacklist.forEach((blockedKey) => {
+                delete filteredSegmentation[blockedKey];
+            });
+        }
+        else if (this.#SCSegmentationWhitelist && this.#SCSegmentationWhitelist.length > 0) {
+            for (var segKey in filteredSegmentation) {
+                if (Object.prototype.hasOwnProperty.call(filteredSegmentation, segKey) && this.#SCSegmentationWhitelist.indexOf(segKey) === -1) {
+                    delete filteredSegmentation[segKey];
+                }
+            }
+        }
+
+        // specific event segmentation filtering
+        var specificBlacklist = this.#SCEventSegmentationBlacklist[eventKey];
+        if (Array.isArray(specificBlacklist) && specificBlacklist.length > 0) {
+            specificBlacklist.forEach((blockedSegKey) => {
+                delete filteredSegmentation[blockedSegKey];
+            });
+        }
+        else {
+            var specificWhitelist = this.#SCEventSegmentationWhitelist[eventKey];
+            if (Array.isArray(specificWhitelist) && specificWhitelist.length > 0) {
+                for (var specificSeg in filteredSegmentation) {
+                    if (Object.prototype.hasOwnProperty.call(filteredSegmentation, specificSeg) && specificWhitelist.indexOf(specificSeg) === -1) {
+                        delete filteredSegmentation[specificSeg];
+                    }
+                }
+            }
+        }
+
+        return filteredSegmentation;
+    }
+
+    /**
+     *
+     * @param {String} key - User property key to check
+     * @returns {Boolean} true if user property is allowed, false if it is blocked
+     */
+    #isUserPropertyAllowed = (key) => {
+        if (this.#SCUserPropertyBlacklist && this.#SCUserPropertyBlacklist.length > 0) {
+            return this.#SCUserPropertyBlacklist.indexOf(key) === -1;
+        }
+        if (this.#SCUserPropertyWhitelist && this.#SCUserPropertyWhitelist.length > 0) {
+            return this.#SCUserPropertyWhitelist.indexOf(key) !== -1;
+        }
+        return true;
+    }
+
+    /**
+     *
+     * @param {Object} customProps - Custom user properties to filter
+     * @returns {Object} filtered custom user properties
+     */
+    #filterUserCustomProperties = (customProps) => {
+        if (!customProps || typeof customProps !== "object") {
+            return customProps;
+        }
+        var filtered = {};
+        for (var key in customProps) {
+            if (!Object.prototype.hasOwnProperty.call(customProps, key)) {
+                continue;
+            }
+            if (!this.#isUserPropertyAllowed(key)) {
+                continue;
+            }
+            filtered[key] = customProps[key];
+        }
+        return filtered;
+    }
+
+    /**
+     * Handle journey trigger event
+     * @param {String} eventKey - Event key to check for journey trigger
+     */
+    #handleJourneyTrigger = (eventKey, eventId) => {
+        if (!Array.isArray(this.#SCJourneyTriggerEvents) || this.#SCJourneyTriggerEvents.length === 0) {
+            return;
+        }
+        if (this.#SCJourneyTriggerEvents.indexOf(eventKey) === -1) {
+            return;
+        }
+
+        this.#log(logLevelEnums.DEBUG, "journeyTrigger, Matched journey trigger event: [" + eventKey + "]");
+        this.#processAsyncQueue();
+        this.#sendEventsForced();
+        if (eventId) {
+            this.#journeyPendingEventIds.add(eventId);
+        }
+        
+        // If already processing, mark as pending to re-trigger after current processing completes
+        if (this.#journeyTriggerInProgress) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Already processing, marking as pending");
+            this.#journeyTriggerPending = true;
+            return;
+        }
+        
+        this.#processJourneyTriggerQueueAndContent();
+    }
+
+    /**
+     * Process journey trigger queue and content requests asynchronously
+     * Manages the journey trigger processing state and handles pending triggers
+     * @private
+     * @async
+     * @returns {Promise<void>}
+     */
+    #processJourneyTriggerQueueAndContent = async () => {
+        if (this.#journeyTriggerInProgress) {
+            return;
+        }
+        this.#journeyTriggerInProgress = true;
+        this.#journeyTriggerPending = false;
+        try {
+            var flushed = await this.#drainRequestQueueForJourney();
+            if (flushed) {
+                this.#triggerJourneyContentRequestWithRetries();
+            }
+            else {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, Could not flush request queue before content refresh");
+            }
+        }
+        finally {
+            this.#journeyTriggerInProgress = false;
+            
+            // If another journey trigger came in while we were processing, re-process
+            if (this.#journeyTriggerPending) {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, Processing pending journey trigger");
+                this.#journeyTriggerPending = false;
+                // Use setTimeout to avoid stack overflow and allow current call to complete
+                setTimeout(() => {
+                    this.#processAsyncQueue();
+                    this.#sendEventsForced();
+                    this.#processJourneyTriggerQueueAndContent();
+                }, 0);
+            }
+        }
+    }
+
+    /**
+     * Drain the request queue for journey trigger processing
+     * Attempts to send all pending requests in the queue
+     * @private
+     * @async
+     * @returns {Promise<boolean>} True if queue was successfully drained, false otherwise
+     */
+    #drainRequestQueueForJourney = async () => {
+        // Flush any buffered requests (e.g. held while client hints were resolving)
+        // into the real request queue so they can be sent before the content request.
+        if (this.#pendingRequestBuffer !== null) {
+            this.#flushPendingRequestBuffer();
+        }
+        this.#takeBackWhenSendable(false);
+
+        var initialQueueLength = this.#requestQueue.length;
+        if (initialQueueLength === 0) {
+            return true;
+        }
+
+        for (var i = 0; i < initialQueueLength; i++) {
+            var sent = await this.#sendNextRequestFromQueueForJourney();
+            if (!sent) {
+                return false;
+            }
+            if (this.#requestQueue.length === 0) {
+                return true;
+            }
+        }
+
+        return this.#requestQueue.length === 0;
+    }
+
+    /**
+     * Send the next request from queue specifically for journey trigger processing
+     * Waits for the SDK to be ready and handles backoff states
+     * @private
+     * @returns {Promise<boolean>} Promise that resolves to true if request was sent, false otherwise
+     */
+    #sendNextRequestFromQueueForJourney = () => {
+        return new Promise(async (resolve) => {
+            if (this.#offlineMode) {
+                resolve(false);
+                return;
+            }
+
+            if (this.#requestQueue.length === 0) {
+                resolve(true);
+                return;
+            }
+
+            var waitAttempts = 0;
+            while ((!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout || this.#holding()) && waitAttempts < 5) {
+                waitAttempts++;
+                await this.#delay(500);
+            }
+
+            if (!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout) {
+                resolve(false);
+                return;
+            }
+
+            this.#sendRequestFromQueue("journey_trigger_send_request", (parameters) => {
+                this.#markJourneyEventIfSent(parameters);
+            }).then((sent) => {
+                resolve(sent);
+            });
+        });
+    }
+
+    /**
+     * Mark journey events as sent based on the request parameters
+     * Removes event IDs from pending set when they are confirmed sent
+     * @private
+     * @param {Object} params - Request parameters containing events data
+     */
+    #markJourneyEventIfSent = (params) => {
+        if (!params || !params.events) {
+            return;
+        }
+        try {
+            var sentEvents = JSON.parse(params.events);
+            if (!Array.isArray(sentEvents)) {
+                return;
+            }
+            for (var i = 0; i < sentEvents.length; i++) {
+                var evt = sentEvents[i];
+                if (evt && evt.id && this.#journeyPendingEventIds.has(evt.id)) {
+                    this.#journeyPendingEventIds.delete(evt.id);
+                }
+            }
+        }
+        catch (e) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Could not parse events while marking sent ids");
+        }
+    }
+
+    /**
+     * Trigger journey content request with retry mechanism
+     * Waits up to 3 times for the journey events to be confirmed sent, then retries up to 3 times if the content request fails
+     * @private
+     * @param {number} [attempt=0] - Current attempt number for retry logic
+     * @param {number} [waits=0] - How many times the request already waited for the journey events
+     */
+    #triggerJourneyContentRequestWithRetries = (attempt, waits) => {
+        var currentAttempt = attempt || 0;
+        var currentWaits = waits || 0;
+        var maxAttempts = 3;
+
+        // Skip if content is already being displayed (iframe exists)
+        if (typeof document !== "undefined" && document.getElementById(this.#contentIframeID)) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Content is already being displayed, skipping content request");
+            return;
+        }
+
+        if (this.#journeyPendingEventIds && this.#journeyPendingEventIds.size > 0) {
+            if (currentWaits < maxAttempts) {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, Pending journey events not yet confirmed sent. Deferring content refresh.");
+                setTimeout(() => {
+                    this.#triggerJourneyContentRequestWithRetries(currentAttempt, currentWaits + 1);
+                }, 300);
+                return;
+            }
+            // events sent by the regular sending or by another tab are never confirmed here, so waiting longer would not help
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Journey events are still not confirmed sent, requesting the content anyway");
+            this.#journeyPendingEventIds.clear();
+        }
+
+        var handleResult = (success) => {
+            if (!success && currentAttempt + 1 < maxAttempts) {
+                setTimeout(() => {
+                    this.#triggerJourneyContentRequestWithRetries(currentAttempt + 1, currentWaits);
+                }, 1000);
+            }
+        };
+
+        this.#sendContentRequest(handleResult);
+    }
+
+    /**
+     * Delay execution for a specified number of milliseconds
+     * @param {number} ms - Number of milliseconds to delay
+     * @returns {Promise} Promise that resolves after the specified delay
+     */
+    #delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     /**
     * Start timed event, which will fill in duration property upon ending automatically
@@ -1271,7 +3462,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "start_event, Starting timed event with key: [" + key + "]");
         // truncate event name to internal limits
-        key = truncateSingleValue(key, this.maxKeyLength, "start_event", this.#log);
+        key = truncateSingleValue(key, this.#SCLimitKeyLength, "start_event", this.#log);
         if (this.#timedEvents[key]) {
             this.#log(logLevelEnums.WARNING, "start_event, Timed event with key: [" + key + "] already started");
             return;
@@ -1291,7 +3482,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "cancel_event, Canceling timed event with key: [" + key + "]");
         // truncate event name to internal limits. This is done incase start_event key was truncated.
-        key = truncateSingleValue(key, this.maxKeyLength, "cancel_event", this.#log);
+        key = truncateSingleValue(key, this.#SCLimitKeyLength, "cancel_event", this.#log);
         if (this.#timedEvents[key]) {
             delete this.#timedEvents[key];
             this.#log(logLevelEnums.INFO, "cancel_event, Timed event with key: [" + key + "] is canceled");
@@ -1313,7 +3504,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "end_event, Ending timed event");
         if (typeof event === "string") {
             // truncate event name to internal limits. This is done incase start_event key was truncated.
-            event = truncateSingleValue(event, this.maxKeyLength, "end_event", this.#log);
+            event = truncateSingleValue(event, this.#SCLimitKeyLength, "end_event", this.#log);
             event = { key: event };
         }
         if (!event.key) {
@@ -1397,17 +3588,27 @@ class CountlyClass {
             // flush events to event queue to prevent a drill issue
             this.#sendEventsForced();
             this.#log(logLevelEnums.INFO, "user_details, flushed the event queue");
+            for (var prop in user) {
+                if (prop !=="custom") {
+                    if (!this.#isUserPropertyAllowed(prop)) {
+                        this.#log(logLevelEnums.DEBUG, "user_details, User property filtered by behavior settings: [" + prop + "]");
+                        delete user[prop];
+                    }
+                }
+            }
             // truncating user values and custom object key value pairs
-            user.name = truncateSingleValue(user.name, this.maxValueSize, "user_details", this.#log);
-            user.username = truncateSingleValue(user.username, this.maxValueSize, "user_details", this.#log);
-            user.email = truncateSingleValue(user.email, this.maxValueSize, "user_details", this.#log);
-            user.organization = truncateSingleValue(user.organization, this.maxValueSize, "user_details", this.#log);
-            user.phone = truncateSingleValue(user.phone, this.maxValueSize, "user_details", this.#log);
+            user.name = truncateSingleValue(user.name, this.#SCLimitValueSize , "user_details", this.#log);
+            user.username = truncateSingleValue(user.username, this.#SCLimitValueSize , "user_details", this.#log);
+            user.email = truncateSingleValue(user.email, this.#SCLimitValueSize , "user_details", this.#log);
+            user.organization = truncateSingleValue(user.organization, this.#SCLimitValueSize , "user_details", this.#log);
+            user.phone = truncateSingleValue(user.phone, this.#SCLimitValueSize , "user_details", this.#log);
             user.picture = truncateSingleValue(user.picture, 4096, "user_details", this.#log);
-            user.gender = truncateSingleValue(user.gender, this.maxValueSize, "user_details", this.#log);
-            user.byear = truncateSingleValue(user.byear, this.maxValueSize, "user_details", this.#log);
-            user.custom = truncateObject(user.custom, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "user_details", this.#log);
+            user.gender = truncateSingleValue(user.gender, this.#SCLimitValueSize , "user_details", this.#log);
+            user.byear = truncateSingleValue(user.byear, this.#SCLimitValueSize , "user_details", this.#log);
+            user.custom = this.#filterUserCustomProperties(user.custom);
+            user.custom = truncateObject(user.custom, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "user_details", this.#log);
             var props = ["name", "username", "email", "organization", "phone", "picture", "gender", "byear", "custom"];
+            this.userData.save(); // ensure user data (and events) is saved before sending user details
             this.#toRequestQueue({ user_details: JSON.stringify(createNewObjectFromProperties(user, props)) });
         }
     };
@@ -1427,6 +3628,10 @@ class CountlyClass {
     #customData = {};
     #change_custom_property = (key, value, mod) => {
         if (this.check_consent(featureEnums.USERS)) {
+            if (!this.#isUserPropertyAllowed(key)) {
+                this.#log(logLevelEnums.DEBUG, "[userData] change_custom_property, User property filtered by behavior settings: [" + key + "]");
+                return;
+            }
             if (!this.#customData[key]) {
                 this.#customData[key] = {};
             }
@@ -1466,8 +3671,12 @@ class CountlyClass {
         set: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] set, Setting user's custom property value: [" + value + "] under the key: [" + key + "]");
             // truncate user's custom property value to internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData set", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData set", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set", this.#log);
+            if (!this.#isUserPropertyAllowed(key)) {
+                this.#log(logLevelEnums.DEBUG, "[userData] set, User property filtered by behavior settings: [" + key + "]");
+                return;
+            }
             this.#customData[key] = value;
         },
         /**
@@ -1477,6 +3686,10 @@ class CountlyClass {
         * */
         unset: (key) => {
             this.#log(logLevelEnums.INFO, "[userData] unset, Resetting user's custom property with key: [" + key + "] ");
+            if (!this.#isUserPropertyAllowed(key)) {
+                this.#log(logLevelEnums.DEBUG, "[userData] unset, User property filtered by behavior settings: [" + key + "]");
+                return;
+            }
             this.#customData[key] = "";
         },
         /**
@@ -1488,8 +3701,8 @@ class CountlyClass {
         set_once: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] set_once, Setting user's unique custom property value: [" + value + "] under the key: [" + key + "] ");
             // truncate user's custom property value to internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData set_once", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData set_once", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set_once", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set_once", this.#log);
             this.#change_custom_property(key, value, "$setOnce");
         },
         /**
@@ -1500,7 +3713,7 @@ class CountlyClass {
         increment: (key) => {
             this.#log(logLevelEnums.INFO, "[userData] increment, Increasing user's custom property value under the key: [" + key + "] by one");
             // truncate property name wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData increment", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment", this.#log);
             this.#change_custom_property(key, 1, "$inc");
         },
         /**
@@ -1512,8 +3725,8 @@ class CountlyClass {
         increment_by: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] increment_by, Increasing user's custom property value under the key: [" + key + "] by: [" + value + "]");
             // truncate property name and value wrt internal limits 
-            key = truncateSingleValue(key, this.maxKeyLength, "userData increment_by", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData increment_by", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment_by", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData increment_by", this.#log);
             this.#change_custom_property(key, value, "$inc");
         },
         /**
@@ -1525,8 +3738,8 @@ class CountlyClass {
         multiply: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] multiply, Multiplying user's custom property value under the key: [" + key + "] by: [" + value + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData multiply", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData multiply", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData multiply", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData multiply", this.#log);
             this.#change_custom_property(key, value, "$mul");
         },
         /**
@@ -1538,8 +3751,8 @@ class CountlyClass {
         max: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] max, Saving user's maximum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData max", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData max", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData max", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData max", this.#log);
             this.#change_custom_property(key, value, "$max");
         },
         /**
@@ -1551,8 +3764,8 @@ class CountlyClass {
         min: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] min, Saving user's minimum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData min", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData min", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData min", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData min", this.#log);
             this.#change_custom_property(key, value, "$min");
         },
         /**
@@ -1564,8 +3777,8 @@ class CountlyClass {
         push: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] push, Pushing a value: [" + value + "] under the key: [" + key + "] to user's custom property array");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData push", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData push", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push", this.#log);
             this.#change_custom_property(key, value, "$push");
         },
         /**
@@ -1577,8 +3790,8 @@ class CountlyClass {
         push_unique: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] push_unique, Pushing a unique value: [" + value + "] under the key: [" + key + "] to user's custom property array");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.maxKeyLength, "userData push_unique", this.#log);
-            value = truncateSingleValue(value, this.maxValueSize, "userData push_unique", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push_unique", this.#log);
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push_unique", this.#log);
             this.#change_custom_property(key, value, "$addToSet");
         },
         /**
@@ -1595,16 +3808,33 @@ class CountlyClass {
         * Save changes made to user's custom properties object and send them to server
         * @memberof Countly.userData
         * */
-        save: () => {
-            this.#log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property");
-            if (this.check_consent(featureEnums.USERS)) {
-                // process async queue before sending events
-                this.#processAsyncQueue();
-                // flush events to event queue to prevent a drill issue
-                this.#sendEventsForced();
-                this.#log(logLevelEnums.INFO, "user_details, flushed the event queue");
-                this.#toRequestQueue({ user_details: JSON.stringify({ custom: this.#customData }) });
+        save: (forEvents) => {
+            this.#log(logLevelEnums.INFO, "[userData] save, Saving changes to user's custom property. forEvents:[" + forEvents + "]");
+            if (!this.check_consent(featureEnums.USERS) || Object.keys(this.#customData).length === 0) { 
+                return;
             }
+
+            if (!forEvents) {
+                this.#log(logLevelEnums.DEBUG, "[userData] save, flushing async queue and event queue before sending custom user data");
+                this.#isProcessingAsyncFromUserDataSave = true;
+                try {
+                    // process async queue before sending events
+                    this.#processAsyncQueue();
+                }
+                finally {
+                    this.#isProcessingAsyncFromUserDataSave = false;
+                }
+
+                // flush events to request queue
+                this.#sendEventsForced();
+            }
+
+            this.#customData = this.#filterUserCustomProperties(this.#customData);
+            if (Object.keys(this.#customData).length === 0) {
+                return;
+            }
+            this.#log(logLevelEnums.INFO, "[userData] save, will send the following custom data to server: [" + JSON.stringify(this.#customData) + "]");
+            this.#toRequestQueue({ user_details: JSON.stringify({ custom: this.#customData }) });
             this.#customData = {};
         }
     };
@@ -1630,8 +3860,8 @@ class CountlyClass {
                 }
             }
             // truncate trace name and metrics wrt internal limits
-            trace.name = truncateSingleValue(trace.name, this.maxKeyLength, "report_trace", this.#log);
-            trace.app_metrics = truncateObject(trace.app_metrics, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "report_trace", this.#log);
+            trace.name = truncateSingleValue(trace.name, this.#SCLimitKeyLength, "report_trace", this.#log);
+            trace.app_metrics = truncateObject(trace.app_metrics, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "report_trace", this.#log);
             var e = createNewObjectFromProperties(trace, props);
             e.timestamp = trace.stz;
             var date = new Date();
@@ -1651,6 +3881,10 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "track_errors, window object is not available. Not tracking errors.");
             return;
         }
+        if (!this.#SCTrackingCrashes) {
+            this.#log(logLevelEnums.WARNING, "track_errors, Crash tracking is disabled by the server config. Not tracking errors.");
+            return
+        }
         this.#log(logLevelEnums.INFO, "track_errors, Started tracking errors");
         // Indicated that for this instance of the countly error tracking is enabled
         Countly.i[this.app_key].tracking_crashes = true;
@@ -1658,48 +3892,33 @@ class CountlyClass {
             window.cly_crashes = true;
             this.#crashSegments = segments;
             // override global 'uncaught error' handler
-            window.onerror = function errorBundler(msg, url, line, col, err) {
-                // old browsers like IE 10 and Safari 9 won't give this value 'err' to us, but if it is provided we can trigger error recording immediately
-                if (err !== undefined && err !== null) {
-                    // false indicates fatal error (as in non_fatal:false)
-                    dispatchErrors(err, false);
-                }
-                // fallback if no error object is present for older browsers, we create it instead
-                else {
-                    col = col || (window.event && window.event.errorCharacter);
-                    var error = "";
-                    if (typeof msg !== "undefined") {
-                        error += msg + "\n";
-                    }
-                    if (typeof url !== "undefined") {
-                        error += "at " + url;
-                    }
-                    if (typeof line !== "undefined") {
-                        error += ":" + line;
-                    }
-                    if (typeof col !== "undefined") {
-                        error += ":" + col;
-                    }
+            window.addEventListener("error", (event) => {
+                if (event.error) {
+                    dispatchErrors(event.error, false); // false indicates fatal error
+                } else {
+                    // For older browsers that don't provide error object, construct an error message
+                    var errorMsg = event.message || "Unknown error";
+                    var url = event.filename || "";
+                    var line = event.lineno || 0;
+                    var col = event.colno || 0;
+
+                    var error = errorMsg + "\n";
+                    if (url) error += "at " + url;
+                    if (line) error += ":" + line;
+                    if (col) error += ":" + col;
                     error += "\n";
 
                     try {
                         var stack = [];
-                        // deprecated, must be changed 
-                        // eslint-disable-next-line no-caller
-                        var f = errorBundler.caller;
-                        while (f) {
-                            stack.push(f.name);
-                            f = f.caller;
-                        }
+                        // We don't have caller info in this case, so we skip that part
                         error += stack.join("\n");
-                    }
-                    catch (ex) {
+                    } catch (ex) {
                         // silent error
                     }
                     // false indicates fatal error (as in non_fatal:false)
                     dispatchErrors(error, false);
                 }
-            };
+            });
 
             // error handling for 'uncaught rejections'
             window.addEventListener("unhandledrejection", (event) => {
@@ -1728,8 +3947,12 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "add_log, Adding a new log of breadcrumbs: [ " + record + " ]");
         if (this.check_consent(featureEnums.CRASHES)) {
             // truncate description wrt internal limits
-            record = truncateSingleValue(record, this.maxValueSize, "add_log", this.#log);
-            while (this.#crashLogs.length >= this.maxBreadcrumbCount) {
+            record = truncateSingleValue(record, this.#SCLimitValueSize , "add_log", this.#log);
+            if (!(this.#SCLimitBreadcrumbCount > 0)) {
+                this.#log(logLevelEnums.DEBUG, "add_log, The breadcrumb limit is [" + this.#SCLimitBreadcrumbCount + "], not keeping breadcrumbs");
+                return;
+            }
+            while (this.#crashLogs.length >= this.#SCLimitBreadcrumbCount) {
                 this.#crashLogs.shift();
                 this.#log(logLevelEnums.WARNING, "add_log, Reached maximum crashLogs size. Will erase the oldest one.");
             }
@@ -1829,12 +4052,23 @@ class CountlyClass {
             request.metrics = JSON.stringify(this.#getMetrics());
         }
         if (this.check_consent(featureEnums.REMOTE_CONFIG)) {
+            if (!this.#SCNetwork) {
+                this.#log(logLevelEnums.WARNING, "fetch_remote_config_explicit, Networking is disabled by the SDK behavior settings");
+                if (providedCall) {
+                    providedCall(new Error("Networking is disabled by the SDK behavior settings"), this.#remoteConfigs);
+                }
+                return;
+            }
             this.#prepareRequest(request);
             this.#makeNetworkRequest("fetch_remote_config_explicit", this.url + this.#readPath, request, (err, params, responseText) => {
                 if (err) {
                     // error has been logged by the request function
+                    if (providedCall) {
+                        providedCall(new Error("Remote config could not be fetched"), this.#remoteConfigs);
+                    }
                     return;
                 }
+                var parseError = false;
                 try {
                     var configs = JSON.parse(responseText);
                     if (request.keys || request.omit_keys) {
@@ -1851,10 +4085,11 @@ class CountlyClass {
                 }
                 catch (ex) {
                     this.#log(logLevelEnums.ERROR, "fetch_remote_config_explicit, Had an issue while parsing the response: " + ex);
+                    parseError = new Error("Remote config answer could not be read");
                 }
                 if (providedCall) {
                     this.#log(logLevelEnums.INFO, "fetch_remote_config_explicit, Callback function is provided");
-                    providedCall(err, this.#remoteConfigs);
+                    providedCall(parseError || err, this.#remoteConfigs);
                 }
                 // JSON array can pass    
             }, true);
@@ -1947,6 +4182,7 @@ class CountlyClass {
             return;
         }
         this.#log(logLevelEnums.INFO, "track_session, Starting tracking user session");
+        this.#autoSessionTracking = true;
         // start session
         this.begin_session();
         this.#start_time();
@@ -2037,7 +4273,11 @@ class CountlyClass {
     * */
     track_pageview = (page, ignoreList, viewSegments) => {
         if (!isBrowser && !page) {
-            this.#log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views is page is not provided.");
+            this.#log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views as page name is not provided.");
+            return;
+        }
+        if (!this.#SCTrackingViews) {
+            this.#log(logLevelEnums.WARNING, "track_pageview, View tracking is disabled by the server config. Not tracking page views.");
             return;
         }
         this.#log(logLevelEnums.INFO, "track_pageview, Tracking page views");
@@ -2052,7 +4292,7 @@ class CountlyClass {
         this.#previousViewId = this.#currentViewId;
         this.#currentViewId = secureRandom();
         // truncate page name and segmentation wrt internal limits
-        page = truncateSingleValue(page, this.maxKeyLength, "track_pageview", this.#log);
+        page = truncateSingleValue(page, this.#SCLimitKeyLength, "track_pageview", this.#log);
         // if the first parameter we got is an array we got the ignoreList first, assign it here
         if (page && Array.isArray(page)) {
             ignoreList = page;
@@ -2091,7 +4331,7 @@ class CountlyClass {
             view: this.getViewUrl()
         };
         // truncate new segment
-        segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "track_pageview", this.#log);
+        segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "track_pageview", this.#log);
         if (this.track_domains) {
             segments.domain = window.location.hostname;
         }
@@ -2140,7 +4380,7 @@ class CountlyClass {
         }
 
         if (viewSegments) {
-            viewSegments = truncateObject(viewSegments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "track_pageview", this.#log);
+            viewSegments = truncateObject(viewSegments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "track_pageview", this.#log);
 
             for (var key in viewSegments) {
                 if (typeof segments[key] === "undefined") {
@@ -2157,6 +4397,7 @@ class CountlyClass {
             }, this.#currentViewId);
             this.#lastView = page;
             this.#lastViewTime = getTimestamp();
+            this.#lastViewStoredDuration = 0;
             this.#log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + this.#lastView + "]");
         }
         else {
@@ -2215,7 +4456,7 @@ class CountlyClass {
                             view: this.getViewUrl()
                         };
                         // truncate new segment
-                        segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "processClick", this.#log);
+                        segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "processClick", this.#log);
                         if (this.track_domains) {
                             segments.domain = window.location.hostname;
                         }
@@ -2301,7 +4542,137 @@ class CountlyClass {
     };
 
     /**
-    * Generate custom event for all forms that were submitted on this page
+    * Upload user profile picture (image) to the server.
+    * @param {File|Blob} imageFile - The image file to upload
+    */
+    uploadUserProfilePicture = (imageFile) => {
+        if (!isBrowser) {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Browser environment required.");
+            return;
+        }
+        if (!this.check_consent(featureEnums.USERS)) {
+            return;
+        }
+        if (!imageFile || typeof imageFile !== "object" || !imageFile.type || imageFile.type.indexOf("image") !== 0) {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Provided file is not an image.");
+            return;
+        }
+        if (typeof FileReader === "undefined") {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: FileReader is not available in this environment.");
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onerror = () => {
+            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Failed to read the provided image file.");
+        };
+        reader.onload = () => {
+            const result = reader.result;
+            if (typeof result !== "string") {
+                this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Unable to process the selected image.");
+                return;
+            }
+            const commaIndex = result.indexOf(",");
+            const base64Data = commaIndex === -1 ? result : result.substring(commaIndex + 1);
+            if (!base64Data) {
+                this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Invalid image data received.");
+                return;
+            }
+
+            this.#toRequestQueue({
+                __imageUpload: true,
+                imageData: base64Data,
+                imageName: imageFile.name || "avatar",
+                imageType: imageFile.type || "application/octet-stream",
+                user_details: "{}"
+            });
+            this.#log(logLevelEnums.INFO, "uploadUserProfilePicture: Image upload request queued.");
+        };
+        reader.readAsDataURL(imageFile);
+    };
+
+    /**
+     * Remembers the password fields under a DOM root, so a password the visitor reveals as text is still never read
+     * @param {Object} root - DOM object whose password fields to remember
+     */
+    #watchPasswordFields = (root) => {
+        if (!root || typeof root.nodeType !== "number" || this.#passwordWatchRoots.has(root)) {
+            return;
+        }
+        this.#passwordWatchRoots.set(root, true);
+        var current = typeof root.querySelectorAll === "function" ? root.querySelectorAll("input[type=password]") : [];
+        for (var i = 0; i < current.length; i++) {
+            this.#passwordFields.set(current[i], true);
+        }
+        if (typeof MutationObserver === "function") {
+            new MutationObserver((records) => {
+                for (var j = 0; j < records.length; j++) {
+                    if (records[j].oldValue && records[j].oldValue.toLowerCase() === "password") {
+                        this.#passwordFields.set(records[j].target, true);
+                    }
+                }
+            }).observe(root, { attributes: true, attributeFilter: ["type"], attributeOldValue: true, subtree: true });
+        }
+    };
+
+    /**
+     * Gives the lowercased tokens of a form field's autocomplete attribute
+     * @param {HTMLElement} input - form field
+     * @returns {Array<String>} autocomplete tokens
+     */
+    #autocompleteTokens = (input) => {
+        var autocomplete = typeof input.getAttribute === "function" ? input.getAttribute("autocomplete") : null;
+        return autocomplete ? autocomplete.toLowerCase().split(/\s+/) : [];
+    };
+
+    /**
+     * Tells whether a form field must never be read: a password field, also one shown as text after it was one,
+     * a payment card field or a one-time code field
+     * @param {HTMLElement} input - form field
+     * @returns {Boolean} true when the field is never read
+     */
+    #neverReadField = (input) => {
+        if (input.type === "password" || this.#passwordFields.has(input)) {
+            return true;
+        }
+        return this.#autocompleteTokens(input).some((token) => token === "current-password" || token === "new-password" || token === "one-time-code" || token.indexOf("cc-") === 0);
+    };
+
+    /**
+     * Tells whether a form field or one of its ancestors has the cly_user_ignore class
+     * @param {HTMLElement} input - form field
+     * @returns {Boolean} true when the field is ignored
+     */
+    #ignoredByMarkup = (input) => {
+        for (var node = input; node && node.nodeType === 1; node = node.parentNode) {
+            if ((node.getAttribute("class") || "").indexOf("cly_user_ignore") !== -1) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    /**
+     * Tells whether a form field's name, id or labels mark it as holding a secret or payment, bank or identity data
+     * @param {HTMLElement} input - form field
+     * @param {String=} labelText - text of a label found for the field
+     * @returns {Boolean} true when the field looks sensitive
+     */
+    #hasSensitiveName = (input, labelText) => {
+        if (isSensitiveFieldName(input.name) || isSensitiveFieldName(input.id) || isSensitiveFieldName(labelText)) {
+            return true;
+        }
+        var labels = input.labels || [];
+        for (var i = 0; i < labels.length; i++) {
+            if (isSensitiveFieldName(labels[i].textContent)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    /**
+    * Generate custom event for all forms that were submitted on this page. With the track_form_values init option set to false, the event carries no field values. Password, payment card and one-time code fields and card numbers are never read. Fields named like secrets, bank or identity data and values shaped like a social security number are skipped unless the field has the cly_form_allow class. Add cly_user_ignore class to a field or to an element containing fields to skip them.
     * @param {Object=} parent - DOM object which children to track, by default it is document body
     * @param {boolean=} trackHidden - provide true to also track hidden inputs, default false
     * */
@@ -2310,8 +4681,9 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "track_forms, window object is not available. Not tracking forms.");
             return;
         }
-        this.#log(logLevelEnums.INFO, "track_forms, Starting to track form submissions. DOM object provided:[" + (!!parent) + "] Tracking hidden inputs :[" + (!!trackHidden) + "]");
+        this.#log(logLevelEnums.INFO, "track_forms, Starting to track form submissions. DOM object provided:[" + (!!parent) + "] Tracking hidden inputs :[" + (!!trackHidden) + "] Recording field values:[" + this.#trackFormValues + "]");
         parent = parent || document;
+        this.#watchPasswordFields(parent);
         /**
          *  Get name of the input
          *  @param {HTMLElement} input - HTML input from which to get name
@@ -2336,43 +4708,51 @@ class CountlyClass {
 
             // get input values
             var input;
-            if (typeof form.elements !== "undefined") {
+            if (this.#trackFormValues && typeof form.elements !== "undefined") {
                 for (var i = 0; i < form.elements.length; i++) {
                     input = form.elements[i];
-                    if (input && input.type !== "password" && input.className.indexOf("cly_user_ignore") === -1) {
-                        if (typeof segmentation["input:" + getInputName(input)] === "undefined") {
-                            segmentation["input:" + getInputName(input)] = [];
+                    if (!input || this.#neverReadField(input) || this.#ignoredByMarkup(input)) {
+                        continue;
+                    }
+                    var allowed = (" " + (input.getAttribute("class") || "") + " ").indexOf(" cly_form_allow ") !== -1;
+                    if (!allowed && this.#hasSensitiveName(input)) {
+                        continue;
+                    }
+                    var values = [];
+                    if (input.nodeName.toLowerCase() === "select") {
+                        if (typeof input.multiple !== "undefined") {
+                            values.push(getMultiSelectValues(input));
                         }
-                        if (input.nodeName.toLowerCase() === "select") {
-                            if (typeof input.multiple !== "undefined") {
-                                segmentation["input:" + getInputName(input)].push(getMultiSelectValues(input));
-                            }
-                            else {
-                                segmentation["input:" + getInputName(input)].push(input.options[input.selectedIndex].value);
-                            }
-                        }
-                        else if (input.nodeName.toLowerCase() === "input") {
-                            if (typeof input.type !== "undefined") {
-                                if (input.type.toLowerCase() === "checkbox" || input.type.toLowerCase() === "radio") {
-                                    if (input.checked) {
-                                        segmentation["input:" + getInputName(input)].push(input.value);
-                                    }
-                                }
-                                else if (input.type.toLowerCase() !== "hidden" || trackHidden) {
-                                    segmentation["input:" + getInputName(input)].push(input.value);
-                                }
-                            }
-                            else {
-                                segmentation["input:" + getInputName(input)].push(input.value);
-                            }
-                        }
-                        else if (input.nodeName.toLowerCase() === "textarea") {
-                            segmentation["input:" + getInputName(input)].push(input.value);
-                        }
-                        else if (typeof input.value !== "undefined") {
-                            segmentation["input:" + getInputName(input)].push(input.value);
+                        else {
+                            values.push(input.options[input.selectedIndex].value);
                         }
                     }
+                    else if (input.nodeName.toLowerCase() === "input") {
+                        if (typeof input.type !== "undefined") {
+                            if (input.type.toLowerCase() === "checkbox" || input.type.toLowerCase() === "radio") {
+                                if (input.checked) {
+                                    values.push(input.value);
+                                }
+                            }
+                            else if (input.type.toLowerCase() !== "hidden" || trackHidden) {
+                                values.push(input.value);
+                            }
+                        }
+                        else {
+                            values.push(input.value);
+                        }
+                    }
+                    else if (input.nodeName.toLowerCase() === "textarea") {
+                        values.push(input.value);
+                    }
+                    else if (typeof input.value !== "undefined") {
+                        values.push(input.value);
+                    }
+                    if (values.some((value) => looksLikeCardNumber(value) || (!allowed && looksLikeSsn(value)))) {
+                        continue;
+                    }
+                    var inputKey = "input:" + getInputName(input);
+                    segmentation[inputKey] = (segmentation[inputKey] || []).concat(values);
                 }
                 for (var key in segmentation) {
                     if (segmentation[key] && typeof segmentation[key].join === "function") {
@@ -2395,7 +4775,7 @@ class CountlyClass {
     };
 
     /**
-    * Collect possible user data from submitted forms. Add cly_user_ignore class to ignore inputs in forms or cly_user_{key} to collect data from this input as specified key, as cly_user_username to save collected value from this input as username property. If not class is provided, Countly SDK will try to determine type of information automatically.
+    * Collect possible user data from submitted forms. Add cly_user_ignore class to ignore inputs in forms, also to an element containing them, or cly_user_{key} to collect data from this input as specified key, as cly_user_username to save collected value from this input as username property. If not class is provided, Countly SDK will try to determine type of information automatically. Password, payment card and one-time code fields are never read. Hidden fields and fields named like secrets, bank or identity data are read only with a cly_user_{key} class.
     * @param {Object=} parent - DOM object which children to track, by default it is document body
     * @param {boolean} [useCustom=false] - submit collected data as custom user properties, by default collects as main user properties
     * */
@@ -2406,6 +4786,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "collect_from_forms, Starting to collect possible user data. DOM object provided:[" + (!!parent) + "] Submitting custom user property:[" + (!!useCustom) + "]");
         parent = parent || document;
+        this.#watchPasswordFields(parent);
         /**
          *  Process form data
          *  @param {Event} event - form submission event
@@ -2430,9 +4811,9 @@ class CountlyClass {
                 }
                 for (i = 0; i < form.elements.length; i++) {
                     input = form.elements[i];
-                    if (input && input.type !== "password") {
+                    if (input && !this.#neverReadField(input)) {
                         // check if element should be ignored
-                        if (input.className.indexOf("cly_user_ignore") === -1) {
+                        if (!this.#ignoredByMarkup(input)) {
                             var value = "";
                             // get value from input
                             if (input.nodeName.toLowerCase() === "select") {
@@ -2464,6 +4845,9 @@ class CountlyClass {
                             else if (typeof input.value !== "undefined") {
                                 value = input.value;
                             }
+                            if (looksLikeCardNumber(value)) {
+                                continue;
+                            }
                             // check if input was marked to be collected
                             if (input.className && input.className.indexOf("cly_user_") !== -1) {
                                 var classes = input.className.split(" ");
@@ -2475,16 +4859,19 @@ class CountlyClass {
                                     }
                                 }
                             }
+                            else if ((input.type && input.type.toLowerCase() === "hidden") || this.#hasSensitiveName(input, labelData[input.id])) {
+                                continue;
+                            }
                             // check for email
                             else if ((input.type && input.type.toLowerCase() === "email")
                                 || (input.name && input.name.toLowerCase().indexOf("email") !== -1)
                                 || (input.id && input.id.toLowerCase().indexOf("email") !== -1)
                                 || (input.id && labelData[input.id] && labelData[input.id].toLowerCase().indexOf("email") !== -1)
-                                || (/[^@\s]+@[^@\s]+\.[^@\s]+/).test(value)) {
-                                if (!userdata.email) {
+                                || (input.nodeName.toLowerCase() === "input" && isWholeEmail(value))) {
+                                if (!userdata.email && isWholeEmail(value)) {
                                     userdata.email = value;
+                                    hasUserInfo = true;
                                 }
-                                hasUserInfo = true;
                             }
                             else if ((input.name && input.name.toLowerCase().indexOf("username") !== -1)
                                 || (input.id && input.id.toLowerCase().indexOf("username") !== -1)
@@ -2494,13 +4881,15 @@ class CountlyClass {
                                 }
                                 hasUserInfo = true;
                             }
-                            else if ((input.name && (input.name.toLowerCase().indexOf("tel") !== -1 || input.name.toLowerCase().indexOf("phone") !== -1 || input.name.toLowerCase().indexOf("number") !== -1))
-                                || (input.id && (input.id.toLowerCase().indexOf("tel") !== -1 || input.id.toLowerCase().indexOf("phone") !== -1 || input.id.toLowerCase().indexOf("number") !== -1))
-                                || (input.id && labelData[input.id] && (labelData[input.id].toLowerCase().indexOf("tel") !== -1 || labelData[input.id].toLowerCase().indexOf("phone") !== -1 || labelData[input.id].toLowerCase().indexOf("number") !== -1))) {
-                                if (!userdata.phone) {
+                            else if ((input.type && input.type.toLowerCase() === "tel")
+                                || this.#autocompleteTokens(input).some((token) => token === "tel" || token.indexOf("tel-") === 0)
+                                || isPhoneFieldName(input.name)
+                                || isPhoneFieldName(input.id)
+                                || isPhoneFieldName(labelData[input.id])) {
+                                if (!userdata.phone && isPhoneShaped(value)) {
                                     userdata.phone = value;
+                                    hasUserInfo = true;
                                 }
-                                hasUserInfo = true;
                             }
                             else if ((input.name && (input.name.toLowerCase().indexOf("org") !== -1 || input.name.toLowerCase().indexOf("company") !== -1))
                                 || (input.id && (input.id.toLowerCase().indexOf("org") !== -1 || input.id.toLowerCase().indexOf("company") !== -1))
@@ -2599,12 +4988,30 @@ class CountlyClass {
         });
     };
     /**
-    * Opts out user of any metric tracking
+    * Opts out user of any metric tracking, and takes Countly's push subscription off the browser
     * */
     opt_out = () => {
         this.#log(logLevelEnums.WARNING, "opt_out, Opting out the user. Deprecated function call! Use 'consent' in place of this call.");
         this.ignore_visitor = true;
+        this.#ignoredByChoice = true;
         this.#setValueInStorage("cly_ignore", true);
+        this.#forgetPushMerges();
+        this.#syncPushWorkerConfig();
+        this.#unsubscribePushOnOptOut();
+    };
+
+    /**
+     *  Take Countly's push subscription off the browser when the visitor opts out, so no more
+     *  notifications arrive; the server drops the token the next time it sends to it. It stays a
+     *  push opt-out after opt_in, which only enable_push_notifications lifts.
+     *  @memberof Countly._internals
+     */
+    #unsubscribePushOnOptOut = () => {
+        if (!this.#isPushConfigured() || !this.#isPushSupported(false)) {
+            return;
+        }
+        this.#setPushRecord(pushStorageKeys.optOut, 1);
+        this.#unsubscribePush({});
     };
 
     /**
@@ -2614,7 +5021,9 @@ class CountlyClass {
         this.#log(logLevelEnums.WARNING, "opt_in, Opting in the user. Deprecated function call! Use 'consent' in place of this call.");
         this.#setValueInStorage("cly_ignore", false);
         this.ignore_visitor = false;
+        this.#ignoredByChoice = false;
         this.#checkIgnore();
+        this.#syncPushWorkerConfig();
         if (!this.ignore_visitor && !this.#hasPulse) {
             this.#heartBeat();
         }
@@ -2679,6 +5088,7 @@ class CountlyClass {
             this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating lower than 1. Changing it back to 1 now.");
             event.segmentation.rating = 1;
         }
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
         this.#log(logLevelEnums.INFO, "recordRatingWidgetWithID, Reporting Rating Widget: ", event);
         this.#add_cly_events(event);
     };
@@ -2734,11 +5144,12 @@ class CountlyClass {
         var eventKey;
         if (type === "nps") {
             if (widgetResult) {
-                if (!widgetResult.rating) {
+                var npsScore = parseFloat(widgetResult.rating);
+                if (isNaN(npsScore)) {
                     this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
                     return;
                 }
-                widgetResult.rating = Math.round(widgetResult.rating);
+                widgetResult.rating = Math.round(npsScore);
                 if (widgetResult.rating > 10) {
                     this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 10. Changing it back to 10 now.");
                     widgetResult.rating = 10;
@@ -2803,6 +5214,7 @@ class CountlyClass {
             // add response to the segmentation
             event.segmentation = addNewProperties(event.segmentation, widgetResult, props);
         }
+        event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
 
         // add event
         this.#log(logLevelEnums.INFO, "reportFeedbackWidgetManually, Reporting " + type + ": ", event);
@@ -2820,7 +5232,7 @@ class CountlyClass {
             return;
         }
         this.#log(logLevelEnums.WARNING, "show_feedback_popup, Deprecated function call! Use 'presentRatingWidgetWithID' in place of this call. Call will be redirected now!");
-        presentRatingWidgetWithID(id);
+        this.presentRatingWidgetWithID(id);
     };
     /**
     * Show specific widget popup by the widget id
@@ -3151,8 +5563,7 @@ class CountlyClass {
             return;
         }
 
-        this.#makeNetworkRequest("getFeedbackWidgetData,", url, data, responseCallback, true);
-
+        
         /**
          *  Server response would be evaluated here
          * @param {*} err - error object
@@ -3167,7 +5578,7 @@ class CountlyClass {
                 }
                 return;
             }
-
+            
             try {
                 var response = JSON.parse(responseText);
                 // return parsed response
@@ -3182,6 +5593,7 @@ class CountlyClass {
                 }
             }
         }
+        this.#makeNetworkRequest("getFeedbackWidgetData,", url, data, responseCallback, true);
     };
 
     /**
@@ -3189,7 +5601,7 @@ class CountlyClass {
     * @param {Object} presentableFeedback - Current presentable feedback
     * @param {String} [id] - DOM id to append the feedback widget (optional, in case not used pass undefined)
     * @param {String} [className] - Class name to append the feedback widget (optional, in case not used pass undefined)
-    * @param {Object} [feedbackWidgetSegmentation] - Segmentation object to be passed to the feedback widget (optional)
+    * @param {Object} [feedbackWidgetSegmentation] - Segmentation object to be passed to the feedback widget, which the global content segmentation is added behind (optional)
     * */
     present_feedback_widget = (presentableFeedback, id, className, feedbackWidgetSegmentation) => {
         if (!isBrowser) {
@@ -3254,23 +5666,40 @@ class CountlyClass {
                 feedbackWidgetFamily = "surveys";
             }
 
-            url += "?widget_id=" + presentableFeedback._id;
-            url += "&app_key=" + this.app_key;
-            url += "&device_id=" + this.device_id;
-            url += "&sdk_name=" + this.#sdkName;
-            url += "&platform=" + this.platform;
-            url += "&app_version=" + this.app_version;
-            url += "&sdk_version=" + this.#sdkVersion;
+            url += "?widget_id=" + encodeURIComponent(presentableFeedback._id);
+            url += "&app_key=" + encodeURIComponent(this.app_key);
+            url += "&device_id=" + encodeURIComponent(this.device_id);
+            url += "&sdk_name=" + encodeURIComponent(this.#sdkName);
+            // the widget pages take a missing platform as their web default, as they did with "undefined"
+            if (this.platform) {
+                url += "&platform=" + encodeURIComponent(this.platform);
+            }
+            url += "&app_version=" + encodeURIComponent(this.app_version);
+            url += "&sdk_version=" + encodeURIComponent(this.#sdkVersion);
             var customObjectToSendWithTheWidget = {};
             customObjectToSendWithTheWidget.tc = 1; // indicates SDK supports opening links from the widget in a new tab
-            if (feedbackWidgetSegmentation) {
-                customObjectToSendWithTheWidget.sg = feedbackWidgetSegmentation;
+            var widgetSegmentation = this.#withGlobalContentSegmentation(feedbackWidgetSegmentation);
+            if (Object.keys(widgetSegmentation).length) {
+                customObjectToSendWithTheWidget.sg = widgetSegmentation;
             }
-            url += "&custom=" + JSON.stringify(customObjectToSendWithTheWidget);
+            const resInfo = this.#getResolution(true);
+            customObjectToSendWithTheWidget.width = resInfo.width;
+            customObjectToSendWithTheWidget.height = resInfo.height;
+            url += "&custom=" + encodeURIComponent(JSON.stringify(customObjectToSendWithTheWidget));
             // Origin is passed to the popup so that it passes it back in the postMessage event
             // Only web SDK passes origin and web
-            url += "&origin=" + passedOrigin;
+            url += "&origin=" + encodeURIComponent(passedOrigin);
+            // Pass the path prefix (if any) for reverse proxy scenarios. The server only accepts a
+            // same-origin relative path, so we send just the pathname and omit it when there is none.
+            var providedPath = "";
+            if (this.url) {
+                providedPath = stripTrailingSlash(parseUrlParts(this.url).pathname);
+            }
+            if (providedPath) {
+                url += "&provided_url=" + encodeURIComponent(providedPath);
+            }
             url += "&widget_v=web";
+            url = this.#withContentTheme(url);
 
             var iframe = document.createElement("iframe");
             iframe.src = url;
@@ -3312,7 +5741,8 @@ class CountlyClass {
             }
 
             wrapper = document.createElement("div");
-            wrapper.className = "countly-" + feedbackWidgetFamily + "-wrapper";
+            var wrapperClass = "countly-" + feedbackWidgetFamily + "-wrapper";
+            wrapper.className = wrapperClass + " " + wrapperClass + "--" + presentableFeedback.type;
             wrapper.id = "countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id;
 
             if (presentableFeedback.type === "survey") {
@@ -3365,25 +5795,25 @@ class CountlyClass {
             wrapper.appendChild(iframe);
             this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Appended the iframe");
 
-            add_event_listener(window, "message", (e) => {
-                var data = {};
-                try {
-                    data = JSON.parse(e.data);
-                }
-                catch (ex) {
-                    this.#log(logLevelEnums.ERROR, "present_feedback_widget, Error while parsing message body " + ex);
-                }
+            add_event_listener(window, "message", (event) => {
+                this.#interpretFeedbackWidgetMessage(event, wrapper, iframe);
+            });
 
-                if (data.close !== true) { // to not mix with content we check against true value
-                    // this.#log(logLevelEnums.DEBUG, "present_feedback_widget, These are not the closing signals you are looking for");
-                    // silent ignore
-                    return;
-                }
-                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Received message from widget with origin: [" + e.origin + "] and data: [" + e.data + "]");
-
-                document.getElementById("countly-" + feedbackWidgetFamily + "-wrapper-" + presentableFeedback._id).style.display = "none";
-                document.getElementById("csbg").style.display = "none";
-                this.#log(logLevelEnums.DEBUG, "present_feedback_widget, Closed the widget");
+            let resizeTimeout;
+            add_event_listener(window,'resize', () => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    const width = window.innerWidth;
+                    const height = window.innerHeight;
+                    const feedbackWidgetIframe = document.getElementById("countly-" + feedbackWidgetFamily + "-iframe");
+                    if (!feedbackWidgetIframe) {
+                        return;
+                    }
+                    feedbackWidgetIframe.contentWindow.postMessage(
+                        { type: 'resize', width: width, height: height },
+                        '*'
+                    );
+                }, 200);
             });
             /**
              * Function to show survey popup
@@ -3545,6 +5975,61 @@ class CountlyClass {
 
     };
 
+    #interpretFeedbackWidgetMessage = (messageEvent, wrapper, iframe) => {
+        if(!iframe || messageEvent.source !== iframe.contentWindow){
+            //this.#log(logLevelEnums.WARNING, "interpretFeedbackWidgetMessage, Received message from an unknown source, ignoring.");
+            //silent ignore
+            return;
+        }
+        var data = {};
+        try {
+            if(typeof messageEvent.data === "object" && messageEvent.data !== null){
+                data = messageEvent.data;
+            }
+            else {
+                data = JSON.parse(messageEvent.data);
+            }
+        }
+        catch (ex) {
+            this.#log(logLevelEnums.ERROR, "interpretFeedbackWidgetMessage, Error while parsing message body " + ex);
+        }
+        this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Received message from widget with origin: [" + messageEvent.origin + "] and data: [" + JSON.stringify(data) + "]");
+        const {key, resize_me, close} = data; 
+        // use action when avaliable
+        
+        if(resize_me){
+            this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Resizing iframe to: [" + JSON.stringify(resize_me) + "]");
+
+            const resInfo = this.#getResolution(true);
+            if (!resize_me.l || !resize_me.p) {
+                this.#log(logLevelEnums.ERROR, "interpretFeedbackWidgetMessage, Invalid resize object");
+                return;
+            }
+            var dimensionToUse = resize_me.p;
+            if (resInfo.width >= resInfo.height) {
+                dimensionToUse = resize_me.l;
+            };
+
+            wrapper.style.height = dimensionToUse.h + "px";
+            wrapper.style.width = dimensionToUse.w + "px";
+            wrapper.style.top = dimensionToUse.y + "px";
+            wrapper.style.left = dimensionToUse.x + "px";
+
+            iframe.style.height = dimensionToUse.h + "px";
+            iframe.style.width = dimensionToUse.w + "px";
+            iframe.style.top = dimensionToUse.y + "px";
+            iframe.style.left = dimensionToUse.x + "px";
+            return;
+        }
+
+        if (close && (close === true || close === 1)) {
+             wrapper.style.display = "none";
+            iframe.style.display = "none";
+            document.getElementById("csbg").style.display = "none";
+            this.#log(logLevelEnums.DEBUG, "interpretFeedbackWidgetMessage, Closed the widget");
+        }
+    }
+
     /**
      *  Record and report error, this is were tracked errors are modified and send to the request queue
      *  @param {Error} err - Error object
@@ -3552,6 +6037,10 @@ class CountlyClass {
      *  @param {Object} segments - custom crash segments
      */
     recordError = (err, nonfatal, segments) => {
+        if (!this.#SCTrackingCrashes) {
+            this.#log(logLevelEnums.WARNING, "recordError, Crash tracking is disabled by the server config. Not tracking errors.");
+            return
+        }
         this.#log(logLevelEnums.INFO, "recordError, Recording error");
         if (this.check_consent(featureEnums.CRASHES) && err) {
             // crashSegments, if not null, was set while enabling error tracking
@@ -3583,18 +6072,18 @@ class CountlyClass {
                 error = err + "";
             }
             // character limit check
-            if (error.length > (this.maxStackTraceLineLength * this.maxStackTraceLinesPerThread)) {
+            if (error.length > (this.#SCLimitStackTraceLineLength * this.#SCLimitStackTraceLinesPerThread)) {
                 this.#log(logLevelEnums.DEBUG, "record_error, Error stack is too long will be truncated");
                 // convert error into an array split from each newline 
                 var splittedError = error.split("\n");
                 // trim the array if it is too long
-                if (splittedError.length > this.maxStackTraceLinesPerThread) {
-                    splittedError = splittedError.splice(0, this.maxStackTraceLinesPerThread);
+                if (splittedError.length > this.#SCLimitStackTraceLinesPerThread) {
+                    splittedError = splittedError.splice(0, this.#SCLimitStackTraceLinesPerThread);
                 }
                 // trim each line to a given limit
                 for (var i = 0, len = splittedError.length; i < len; i++) {
-                    if (splittedError[i].length > this.maxStackTraceLineLength) {
-                        splittedError[i] = splittedError[i].substring(0, this.maxStackTraceLineLength);
+                    if (splittedError[i].length > this.#SCLimitStackTraceLineLength) {
+                        splittedError[i] = splittedError[i].substring(0, this.#SCLimitStackTraceLineLength);
                     }
                 }
                 // turn modified array back into error string
@@ -3632,7 +6121,7 @@ class CountlyClass {
 
             if (typeof segments !== "undefined") {
                 // truncate custom crash segment's key value pairs
-                segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "record_error", this.#log);
+                segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "record_error", this.#log);
                 obj._custom = segments;
             }
 
@@ -3647,8 +6136,21 @@ class CountlyClass {
 
             // send userAgent string with the crash object incase it gets removed by a gateway
             var req = {};
-            req.crash = JSON.stringify(obj);
             req.metrics = JSON.stringify({ _ua: metrics._ua });
+            
+            if (this.#crashFilterCallback && typeof this.#crashFilterCallback === "function") {
+                this.#log(logLevelEnums.VERBOSE, "recordError, Applying crash filter to:[" + JSON.stringify(obj)+ "]");
+                obj = this.#crashFilterCallback(obj);
+                this.#log(logLevelEnums.VERBOSE, "recordError, Filtered crash object:[" + JSON.stringify(obj)+ "]");
+            }
+            
+            if (!obj) {
+                this.#log(logLevelEnums.DEBUG, "recordError, Crash object was filtered out");
+                return;
+            }
+
+            // error should be re-truncated incase it was modified by the filter
+            req.crash = JSON.stringify(obj);
 
             this.#toRequestQueue(req);
         }
@@ -3670,30 +6172,210 @@ class CountlyClass {
     }
 
     content = {
-        enterContentZone: () => {
-            this.#enterContentZoneInternal();
+        enterContentZone: (filter_callback) => {
+            this.#enterContentZoneInternal(undefined, filter_callback);
+        },
+        refreshContentZone: () => {
+            this.#refreshContentZoneInternal();
         },
         exitContentZone: () => {
-            if (!this.#inContentZone) {
-                this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
-                return;
-            }
-            this.#log(logLevelEnums.INFO, "content.exitContentZone, Exiting content zone");
-            this.#inContentZone = false;
-            if (this.#contentZoneTimer) {
-                clearInterval(this.#contentZoneTimer);
-                this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
-            }
+            this.#contentZoneWanted = false;
+            this.#contentZoneExited = true;
+            this.#exitContentZoneInternal();
+            this.#closeContentFrame();
+        },
+        setGlobalContentSegmentation: (segmentation) => {
+            this.#setGlobalContentSegmentation(segmentation, "content.setGlobalContentSegmentation");
+        },
+        setTheme: (theme) => {
+            this.#setContentTheme(theme, "content.setTheme");
         },
     };
 
-    #enterContentZoneInternal = (forced) => {
+    /**
+     * Keep the segmentation recorded with every content and feedback widget event, in place of the one kept before.
+     * Values other than strings, numbers, booleans and lists of those are left out, as are the keys the server and
+     * the widget and content pages read on these events, and what is kept is held to the SDK's limits.
+     * @param {?Object} segmentation - the segmentation; null or an empty object clears it
+     * @param {string} caller - name of the calling method, for the log
+     */
+    #setGlobalContentSegmentation = (segmentation, caller) => {
+        if (segmentation === null || segmentation === undefined || (typeof segmentation === "object" && !Array.isArray(segmentation) && !Object.keys(segmentation).length)) {
+            this.#globalContentSegmentation = {};
+            this.#log(logLevelEnums.DEBUG, caller + ", Cleared the global content segmentation");
+            return;
+        }
+        if (typeof segmentation !== "object" || Array.isArray(segmentation)) {
+            this.#globalContentSegmentation = {};
+            this.#log(logLevelEnums.WARNING, caller + ", The global content segmentation must be an object, cleared it instead");
+            return;
+        }
+        var isValue = (value) => typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && isFinite(value));
+        var isReserved = (key) => contentReservedSegmentationKeys.indexOf(key) !== -1 || key.indexOf(contentReservedSegmentationPrefix) === 0;
+        var kept = {};
+        var reserved = [];
+        var unsupported = [];
+        Object.keys(segmentation).forEach((key) => {
+            var value = segmentation[key];
+            // a key over the key length limit is sent cut, which can make it one the server reads
+            if (isReserved(key) || isReserved(key.slice(0, this.#SCLimitKeyLength))) {
+                reserved.push(key);
+            }
+            else if (isValue(value)) {
+                kept[key] = value;
+            }
+            else if (Array.isArray(value)) {
+                var items = value.filter(isValue);
+                if (items.length < value.length) {
+                    unsupported.push(key + " (some items)");
+                }
+                kept[key] = items.map((item) => truncateSingleValue(item, this.#SCLimitValueSize, caller, this.#log));
+            }
+            else {
+                unsupported.push(key);
+            }
+        });
+        if (reserved.length) {
+            this.#log(logLevelEnums.WARNING, caller + ", Left out keys the server and the widget and content pages read on these events: [" + reserved.join(", ") + "]");
+        }
+        if (unsupported.length) {
+            this.#log(logLevelEnums.WARNING, caller + ", Left out values that are not a string, number, boolean or a list of those: [" + unsupported.join(", ") + "]");
+        }
+        this.#globalContentSegmentation = truncateObject(kept, this.#SCLimitKeyLength, this.#SCLimitValueSize, this.#SCLimitSegmentationValues, caller, this.#log);
+        this.#log(logLevelEnums.DEBUG, caller + ", Global content segmentation set: [" + JSON.stringify(this.#globalContentSegmentation) + "]");
+    };
+
+    /**
+     * A segmentation with the global content segmentation added after its own keys, which win, so the SDK's
+     * segmentation limit drops global keys first.
+     * @param {?Object} segmentation - the event's own segmentation
+     * @returns {Object} the merged segmentation
+     */
+    #withGlobalContentSegmentation = (segmentation) => {
+        var merged = {};
+        if (segmentation && typeof segmentation === "object" && !Array.isArray(segmentation)) {
+            Object.keys(segmentation).forEach((key) => {
+                merged[key] = segmentation[key];
+            });
+        }
+        Object.keys(this.#globalContentSegmentation).forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(merged, key)) {
+                merged[key] = this.#globalContentSegmentation[key];
+            }
+        });
+        return merged;
+    };
+
+    /**
+     * Keep the theme content and feedback widgets are told to show: "dark" or "light", false to tell them none, or
+     * null to tell them the page's own.
+     * @param {?(string|boolean)} theme - the theme
+     * @param {string} caller - name of the calling method, for the log
+     */
+    #setContentTheme = (theme, caller) => {
+        if (theme === null || theme === undefined) {
+            this.#contentTheme = null;
+            this.#log(logLevelEnums.DEBUG, caller + ", Content and feedback widgets follow the page's theme");
+            return;
+        }
+        if (theme !== "dark" && theme !== "light" && theme !== false) {
+            this.#log(logLevelEnums.WARNING, caller + ", Unknown theme: [" + theme + "], expected \"dark\", \"light\", false or null; keeping " + (this.#contentTheme === null ? "the page's theme" : "[" + this.#contentTheme + "]"));
+            return;
+        }
+        this.#contentTheme = theme;
+        this.#log(logLevelEnums.DEBUG, caller + (theme === false ? ", Content and feedback widgets are told no theme" : ", Content and feedback widgets are shown in the [" + theme + "] theme"));
+    };
+
+    /**
+     * The theme content and feedback widgets are told to show, as their th parameter: the theme set for them, else
+     * the color-scheme the page declares, in its CSS or else in its color-scheme meta tag, when it names only one,
+     * else the browser's setting; none when it is turned off.
+     * @returns {?string} "d" or "l", or null when no theme is known or it is turned off
+     */
+    #currentContentTheme = () => {
+        if (this.#contentTheme === false) {
+            return null;
+        }
+        if (this.#contentTheme) {
+            return this.#contentTheme === "dark" ? "d" : "l";
+        }
+        try {
+            var schemes = (value) => (value || "").split(/[\s,]+/).filter((scheme) => scheme === "dark" || scheme === "light");
+            var declared = schemes(window.getComputedStyle(document.documentElement).colorScheme);
+            if (!declared.length) {
+                // the meta tag sets the color-scheme of a page whose CSS sets none, but does not show in the computed style
+                var meta = document.querySelector("meta[name='color-scheme']");
+                declared = schemes(meta && meta.getAttribute("content"));
+            }
+            if (declared.length === 1) {
+                return declared[0] === "dark" ? "d" : "l";
+            }
+            if (typeof window.matchMedia === "function") {
+                if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+                    return "d";
+                }
+                if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+                    return "l";
+                }
+            }
+        }
+        catch (e) {
+            this.#log(logLevelEnums.DEBUG, "currentContentTheme, Could not read the page's theme: " + e);
+        }
+        return null;
+    };
+
+    /**
+     * A content or widget page URL with the current theme added to its query, before any fragment.
+     * @param {string} url - the page URL
+     * @returns {string} the URL with th=d or th=l, unchanged when no theme is known
+     */
+    #withContentTheme = (url) => {
+        var theme = this.#currentContentTheme();
+        if (!theme || typeof url !== "string") {
+            return url;
+        }
+        var hashAt = url.indexOf("#");
+        var page = hashAt === -1 ? url : url.slice(0, hashAt);
+        var hash = hashAt === -1 ? "" : url.slice(hashAt);
+        return page + (page.indexOf("?") === -1 ? "?" : "&") + "th=" + theme + hash;
+    };
+
+    /**
+     * Internal method to enter content zone
+     * Initializes content zone tracking and content requests
+     * @private
+     * @param {boolean} [forced] - Whether to force enter even if already in content zone
+     * @param {function} [filter_callback] - Optional callback to filter content
+     */
+    #enterContentZoneInternal = (forced, filter_callback) => {
         if (!isBrowser) {
             this.#log(logLevelEnums.WARNING, "content.enterContentZone, window object is not available. Not entering content zone.");
             return;
         };
         if (this.#inContentZone && !forced) {
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Already in content zone");
+            return;
+        }
+        if (filter_callback && typeof filter_callback == "function") {
+            this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Content filter callback is provided");
+            this.#contentFilterCallback = filter_callback;
+        }
+        this.#contentZoneWanted = true;
+        this.#contentZoneExited = false;
+        if (!this.check_consent(featureEnums.CONTENT)) {
+            this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Content consent is not given, the zone is entered once it is");
+            return;
+        }
+
+        if (!this.#initTimestamp || (getMsTimestamp() - this.#initTimestamp) < 4000 ) {
+            // settimeout
+            this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Not enough time passed since initialization");
+            clearTimeout(this.#contentZoneEntryTimer);
+            this.#contentZoneEntryTimer = setTimeout(() => {
+                this.#contentZoneEntryTimer = null;
+                this.#enterContentZoneInternal();
+            }, 4001);
             return;
         }
         this.#log(logLevelEnums.INFO, "content.enterContentZone, Entering content zone");
@@ -3703,7 +6385,49 @@ class CountlyClass {
         }
         this.#contentZoneTimer = setInterval(() => {
             this.#sendContentRequest();
-        }, this.#contentTimeInterval);
+        }, this.#SCIntervalContent);
+    };
+
+    /**
+     * Internal method to refresh content zone
+     * Triggers a content refresh request while in content zone
+     * @private
+     */
+    #refreshContentZoneInternal = () => {
+        if (!this.#SCEnableRefreshContentZone) {
+            this.#log(logLevelEnums.DEBUG, "content.refreshContentZone, Refresh content zone is disabled");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "content.refreshContentZone, Refreshing content zone");
+        this.#exitContentZoneInternal();
+        this.#processAsyncQueue();
+        this.#sendEventsForced();
+        this.#contentZoneEntryTimer = setTimeout(() => {
+            this.#contentZoneEntryTimer = null;
+            this.#enterContentZoneInternal();
+        }, 1000);
+    };
+
+    /**
+     * Internal method to exit content zone
+     * Stops content zone tracking and cleans up timers
+     * @private
+     */
+    #exitContentZoneInternal = () => {
+        if (this.#contentZoneEntryTimer) {
+            clearTimeout(this.#contentZoneEntryTimer);
+            this.#contentZoneEntryTimer = null;
+        }
+        if (!this.#inContentZone) {
+            this.#log(logLevelEnums.DEBUG, "content.exitContentZone, Not in content zone");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "content.exitContentZone, Exiting content zone");
+        this.#inContentZone = false;
+        if (this.#contentZoneTimer) {
+            clearInterval(this.#contentZoneTimer);
+            this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
+        }
     };
 
     #prepareContentRequest = () => {
@@ -3725,21 +6449,38 @@ class CountlyClass {
             resolution: JSON.stringify(resToSend),
             cly_ws: 1,
             cly_origin: window.location.origin,
+            dt: userAgentDeviceDetection(),
         };
 
         this.#prepareRequest(params);
         return params;
     };
 
-    #sendContentRequest = () => {
+    #sendContentRequest = (callback) => {
         this.#log(logLevelEnums.DEBUG, "sendContentRequest, sending content request");
+        var finalizeContentRequest = (success) => {
+            if (typeof callback === "function") {
+                callback(success);
+            }
+        };
+        if (!this.check_consent(featureEnums.CONTENT)) {
+            finalizeContentRequest(false);
+            return;
+        }
+        if (this.#contentZoneExited) {
+            this.#log(logLevelEnums.DEBUG, "sendContentRequest, The content zone was exited, no content until it is entered again");
+            finalizeContentRequest(false);
+            return;
+        }
         var params = this.#prepareContentRequest();
         this.#makeNetworkRequest("sendContentRequest,", this.url + this.#contentEndPoint, params, (e, param, resp) => {
             if (e) {
+                finalizeContentRequest(false);
                 return;
             }
             if (!resp) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, no content to display");
+                finalizeContentRequest(false);
                 return;
             }
             try {
@@ -3747,21 +6488,53 @@ class CountlyClass {
             } catch (error) {
                 // verbose log
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, No content to display or an error while parsing content: " + error);
+                finalizeContentRequest(false);
                 return;
             }
 
             if (!response.html || !response.geo) {
                 this.#log(logLevelEnums.VERBOSE, "sendContentRequest, no html content or orientation to display");
+                finalizeContentRequest(false);
                 return;
             }
 
+            // Build query params
+            const queryParams = {};
+            const qIndex = response.html.indexOf("?");
+            if (qIndex !== -1) {
+                const search = response.html.slice(qIndex + 1);
+                new URLSearchParams(search).forEach((v, k) => {
+                    queryParams[k] = v;
+                });
+            }
+
+            // Filter check
+            if (this.#contentFilterCallback && this.#contentFilterCallback(queryParams) === false) {
+                this.#log(logLevelEnums.VERBOSE, "sendContentRequest, Content was filtered out by the content filter");
+                finalizeContentRequest(false);
+                return;
+            }
+
+            // consent can be removed, or the zone exited, while the request is on its way
+            if (!this.check_consent(featureEnums.CONTENT)) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, Content consent was removed, not showing the content");
+                finalizeContentRequest(false);
+                return;
+            }
+            if (this.#contentZoneExited) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, The content zone was exited, not showing the content");
+                finalizeContentRequest(false);
+                return;
+            }
             this.#displayContent(response);
             clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
-            window.addEventListener('message', (event) => {
+            this.#removeContentListeners();
+            this.#contentMessageListener = (event) => {
                 this.#interpretContentMessage(event);
-            });
+            };
+            window.addEventListener('message', this.#contentMessageListener);
             let resizeTimeout;
-            window.addEventListener('resize', () => {
+            this.#contentResizeListener = () => {
                 clearTimeout(resizeTimeout);
                 resizeTimeout = setTimeout(() => {
                     const width = window.innerWidth;
@@ -3775,16 +6548,41 @@ class CountlyClass {
                         '*'
                     );
                 }, 200);
-            });
+            };
+            window.addEventListener('resize', this.#contentResizeListener);
+            finalizeContentRequest(true);
         }, true);
     };
 
     #displayContent = (response) => {
         try {
+            //   1. rebase html onto dev provided url so the content page loads from the right path
+            //   2. pass the SDK path prefix as provided_url
+            var contentUrl = response.html;
+            if (typeof contentUrl === "string") {
+                var parts = parseUrlParts(contentUrl);
+                var base = parts.origin + parts.pathname;
+                if (this.url && contentUrl.indexOf(this.url) !== 0) {
+                    base = stripTrailingSlash(this.url) + parts.pathname;
+                }
+                var search = parts.search;
+                var providedPath = this.url ? stripTrailingSlash(parseUrlParts(this.url).pathname) : "";
+                if (providedPath) {
+                    // insert into the query (before any #hash); server ignores values with ':' or '//'
+                    search += (search ? "&" : "?") + "provided_url=" + encodeURIComponent(providedPath);
+                }
+                contentUrl = this.#withContentTheme(base + search + parts.hash);
+                this.#log(logLevelEnums.DEBUG, "displayContent, Content iframe URL:[" + contentUrl + "]");
+            }
             var iframe = document.createElement("iframe");
             iframe.id = this.#contentIframeID;
-            iframe.src = response.html;
+            // always https in the future
+            // response.html = response.html.replace(/http:\/\//g, "https://");
+            iframe.src = contentUrl;
             iframe.style.position = "absolute";
+            if (contentUrl.indexOf("feedback/survey") != -1) { // for surveys to scroll with the page (nps is not in journeys yet)
+                iframe.style.position = "fixed";
+            }
             var dimensionToUse = response.geo.p;
             const resInfo = this.#getResolution(true);
             if (resInfo.width >= resInfo.height) {
@@ -3803,11 +6601,31 @@ class CountlyClass {
     };
 
     #interpretContentMessage = (messageEvent) => {
-        if (messageEvent.origin !== this.url) {
+        // messageEvent.origin is always origin-only (scheme://host[:port]), while whitelist
+        // entries (including this.url) may carry a path prefix behind a reverse proxy. Compare
+        // by origin so proxied content (served from this.url's origin) is not rejected.
+        var isWhitelistedOrigin = Array.isArray(this.contentWhitelist) && this.contentWhitelist.some((entry) => {
+            return parseUrlParts(entry).origin === messageEvent.origin;
+        });
+        if (!isWhitelistedOrigin) {
             // this.#log(logLevelEnums.ERROR, "interpretContentMessage, Received message from invalid origin");
             // silent ignore
             return;
         }
+
+        if(messageEvent.data === null || typeof messageEvent.data !== "object") {
+            // silent ignore, we only accept object messages
+            // This prevents destructuring strings which would expose String.prototype methods
+            return;
+        }
+
+        const iframe = document.getElementById(this.#contentIframeID);
+        if(!iframe || messageEvent.source !== iframe.contentWindow){
+            //this.#log(logLevelEnums.WARNING, "interpretContentMessage, Received message from an unknown source, ignoring.");
+            //silent ignore
+            return;
+        }
+
         this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Received message from: [" + messageEvent.origin + "] with data: [" + JSON.stringify(messageEvent.data) + "]");
         const { close, link, event, resize_me } = messageEvent.data;
 
@@ -3817,33 +6635,44 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for event");
                 this.#closeContentFrame();
             }
-            if (!Array.isArray(event)) {
-                if (typeof event === "object") {
-                    event = [event];
+            var events = event;
+            if (!Array.isArray(events)) {
+                if (typeof events === "object") {
+                    events = [events];
                 } else {
-                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof event + "]");
+                    this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid event type: [" + typeof events + "]");
                     return;
                 }
             };
             // event is expected to be an array of events
-            for (var i = 0; i < event.length; i++) {
-                this.#add_cly_events(event[i]); // let this method handle the event
+            for (var i = 0; i < events.length; i++) {
+                var contentEvent = events[i];
+                if (contentEvent && typeof contentEvent === "object") {
+                    contentEvent.segmentation = this.#withGlobalContentSegmentation(contentEvent.segmentation);
+                }
+                this.#add_cly_events(contentEvent); // let this method handle the event
             }
         }
 
-        if (link) {
+        if (link && typeof link === "string") {
             if (close === 1) {
                 this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Closing content frame for link");
                 this.#closeContentFrame();
             }
-            window.open(link, "_blank");
-            this.#log(logLevelEnums.DEBUG, `interpretContentMessage, Opened link in new tab: [${link}]`);
+            if (!isSafeActionUrl(link)) {
+                this.#log(logLevelEnums.WARNING, "interpretContentMessage, Not opening a link with a scheme that is not allowed: [" + link + "]");
+            }
+            else {
+                // noopener keeps the opened page from controlling this one
+                window.open(link, "_blank", "noopener");
+                this.#log(logLevelEnums.DEBUG, `interpretContentMessage, Opened link in new tab: [${link}]`);
+            }
         }
 
         if (resize_me) {
             this.#log(logLevelEnums.DEBUG, "interpretContentMessage, Resizing iframe");
             const resInfo = this.#getResolution(true);
-            if (!resize_me.l || !resize_me.p || !resize_me.l.x || !resize_me.l.y || !resize_me.l.w || !resize_me.l.h || !resize_me.p.x || !resize_me.p.y || !resize_me.p.w || !resize_me.p.h) {
+            if (!resize_me.l || !resize_me.p) {
                 this.#log(logLevelEnums.ERROR, "interpretContentMessage, Invalid resize object");
                 return;
             }
@@ -3851,7 +6680,6 @@ class CountlyClass {
             if (resInfo.width >= resInfo.height) {
                 dimensionToUse = resize_me.l;
             };
-            const iframe = document.getElementById(this.#contentIframeID);
             iframe.style.left = dimensionToUse.x + "px";
             iframe.style.top = dimensionToUse.y + "px";
             iframe.style.width = dimensionToUse.w + "px";
@@ -3863,8 +6691,25 @@ class CountlyClass {
         }
     };
 
+    /**
+     *  Stops listening to the messages and the window size changes for the content that was shown
+     */
+    #removeContentListeners = () => {
+        if (this.#contentMessageListener) {
+            window.removeEventListener('message', this.#contentMessageListener);
+            this.#contentMessageListener = null;
+        }
+        if (this.#contentResizeListener) {
+            window.removeEventListener('resize', this.#contentResizeListener);
+            this.#contentResizeListener = null;
+        }
+    };
+
     #closeContentFrame = () => {
-        // we might want to remove event listeners here too but with the current implementation, it seems unnecessary
+        this.#removeContentListeners();
+        if (!isBrowser) {
+            return;
+        }
         const iframe = document.getElementById(this.#contentIframeID);
         if (iframe) {
             iframe.remove();
@@ -3883,7 +6728,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "Flushing events");
             this.#toRequestQueue({ events: JSON.stringify(this.#eventQueue) });
             this.#eventQueue = [];
-            this.#setValueInStorage("cly_event", this.#eventQueue);
+            this.#saveEventQueue();
         }
     }
 
@@ -3918,7 +6763,7 @@ class CountlyClass {
             var iframe = document.createElement("iframe");
             iframe.name = "countly-feedback-iframe";
             iframe.id = "countly-feedback-iframe";
-            iframe.src = this.url + "/feedback?widget_id=" + currentWidget._id + "&app_key=" + this.app_key + "&device_id=" + this.device_id + "&sdk_version=" + this.#sdkVersion;
+            iframe.src = this.#withContentTheme(this.url + "/feedback?widget_id=" + encodeURIComponent(currentWidget._id) + "&app_key=" + encodeURIComponent(this.app_key) + "&device_id=" + encodeURIComponent(this.device_id) + "&sdk_version=" + encodeURIComponent(this.#sdkVersion));
             // inject them to dom
             document.body.appendChild(wrapper);
             wrapper.appendChild(closeIcon);
@@ -4000,6 +6845,10 @@ class CountlyClass {
             this.#log(logLevelEnums.INFO, "reportViewDuration, No last view, will not report view duration");
             return;
         }
+        if (!this.#SCTrackingViews) {
+            this.#log(logLevelEnums.INFO, "reportViewDuration, View tracking is disabled by the server config. Not tracking view duration");
+            return;
+        }
         this.#log(logLevelEnums.INFO, "reportViewDuration, Reporting view duration for: [" + this.#lastView + "]");
         var segments = {
             name: this.#lastView
@@ -4069,7 +6918,7 @@ class CountlyClass {
             }
         }
 
-        if (this.check_consent(featureEnums.LOCATION)) {
+        if (this.check_consent(featureEnums.LOCATION) && this.#SCTrackingLocation) {
             if (this.country_code) {
                 request.country_code = this.country_code;
             }
@@ -4087,36 +6936,396 @@ class CountlyClass {
         }
 
         request.timestamp = getMsTimestamp();
+        if (this.#testModeTime) {
+            this.#log(logLevelEnums.DEBUG, "prepareRequest, testing timestamp is set to: " + this.#testModeTime);
+            request.timestamp = this.#testModeTime;
+        }
 
         var date = new Date();
         request.hour = date.getHours();
         request.dow = date.getDay();
+        request.tz = -date.getTimezoneOffset(); // to match android and iOS SDKs its negative value
+    }
+
+    /**
+     *  Report whether this environment can do web push at all.
+     *  @memberof Countly._internals
+     *  @param {Boolean} needsSubscribe - also require the APIs used to create a subscription
+     *  @returns {Boolean} true if web push is usable here
+     */
+    #isPushSupported = (needsSubscribe) => {
+        if (!isBrowser || typeof navigator === "undefined") {
+            return false;
+        }
+        try {
+            // in a sandboxed iframe the property exists, but reading it throws a SecurityError
+            if (!navigator.serviceWorker) {
+                return false;
+            }
+        } catch (e) {
+            return false;
+        }
+        if (!needsSubscribe) {
+            return true;
+        }
+        return typeof window !== "undefined" && "PushManager" in window && typeof Notification !== "undefined";
+    }
+
+    /**
+     *  Tell whether this app uses Countly push in this browser: a VAPID key was given at init, or
+     *  the SDK registered a token for this app here. The SDK sends messages to a service worker only
+     *  while this holds, or right after it stopped holding, to take back the details it handed over.
+     *  Withdrawing push consent is the exception: it also drops Countly's subscription under the
+     *  default scope for an app that does not use push.
+     *  @memberof Countly._internals
+     *  @returns {Boolean} true when push is in use for this app key
+     */
+    #isPushConfigured = () => {
+        return !!(this.push_vapid_public_key || this.#getPushRecord(pushStorageKeys.endpoint));
+    }
+
+    /**
+     *  Tell whether a scope a service worker put on its message is the one this app's push runs
+     *  under.
+     *  @memberof Countly._internals
+     *  @param {string} scope - the scope the worker sent, an absolute URL
+     *  @returns {Boolean} true when it is this app's scope
+     */
+    #isOwnPushScope = (scope) => {
+        return this.#resolveUrl(scope) === this.#ownPushScope();
+    }
+
+    /**
+     *  The scope this app's push runs under, as an absolute URL.
+     *  @memberof Countly._internals
+     *  @returns {string} the resolved scope
+     */
+    #ownPushScope = () => {
+        var registration = this.#pushRegistration || this.push_service_worker_registration;
+        var own = (registration && registration.scope) || this.#pushScope();
+        return this.#resolveUrl(own);
+    }
+
+    /**
+     *  Forget the last push subscription this SDK registered. The keys are namespaced by app key,
+     *  so they need the storage helper rather than a raw removeItem.
+     *  @memberof Countly._internals
+     */
+    #clearStoredPushSubscription = () => {
+        this.#removePushRecord(pushStorageKeys.endpoint);
+        this.#removePushRecord(pushStorageKeys.vapidKey);
+        this.#removePushRecord(pushStorageKeys.scope);
+        this.#removePushRecord(pushStorageKeys.sessionToken);
+    }
+
+    /**
+     *  Read one entry of what this SDK keeps about push, from storage, or with storage "none" from
+     *  this page's memory.
+     *  @memberof Countly._internals
+     *  @param {string} key - one of pushStorageKeys.endpoint, vapidKey, scope or optOut
+     *  @returns {?(string|number)} the value, if any
+     */
+    #getPushRecord = (key) => {
+        if (this.storage === "none") {
+            return this.#pushRecordInMemory[key];
+        }
+        return this.#getValueFromStorage(key);
+    }
+
+    /**
+     *  Write one entry of what this SDK keeps about push, to storage, or with storage "none" to this
+     *  page's memory.
+     *  @memberof Countly._internals
+     *  @param {string} key - one of pushStorageKeys.endpoint, vapidKey, scope or optOut
+     *  @param {string|number} value - the value to keep
+     */
+    #setPushRecord = (key, value) => {
+        if (this.storage === "none") {
+            this.#pushRecordInMemory[key] = value;
+            return;
+        }
+        this.#setValueInStorage(key, value);
+    }
+
+    /**
+     *  Drop one entry of what this SDK keeps about push, wherever it is kept.
+     *  @memberof Countly._internals
+     *  @param {string} key - one of pushStorageKeys.endpoint, vapidKey, scope or optOut
+     */
+    #removePushRecord = (key) => {
+        delete this.#pushRecordInMemory[key];
+        this.#removeValueFromStorage(key);
+    }
+
+    /**
+     *  Tell whether an existing browser subscription is bound to the given application server key.
+     *  Prefers the key the browser reports on the subscription itself and falls back to the last
+     *  key this SDK stored when the browser does not expose subscription options.
+     *  @memberof Countly._internals
+     *  @param {PushSubscription} subscription - subscription to inspect
+     *  @param {Uint8Array} keyBytes - decoded configured VAPID public key
+     *  @param {?string} savedVapidKey - last VAPID key this SDK registered, if any
+     *  @param {string} vapidKey - configured VAPID public key, base64-url encoded
+     *  @returns {Boolean} true when the subscription can keep being used
+     */
+    #pushSubscriptionUsesKey = (subscription, keyBytes, savedVapidKey, vapidKey) => {
+        var reported = subscription.options && subscription.options.applicationServerKey;
+        if (!reported) {
+            // no way to compare, so trust our own record and treat an unknown key as usable
+            return !savedVapidKey || savedVapidKey === vapidKey;
+        }
+        var reportedBytes = new Uint8Array(reported);
+        if (reportedBytes.length !== keyBytes.length) {
+            return false;
+        }
+        for (var i = 0; i < reportedBytes.length; i++) {
+            if (reportedBytes[i] !== keyBytes[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     *  Tell whether a browser subscription is Countly's own, judged by its endpoint, its VAPID key
+     *  or the private registration it is on.
+     *  @memberof Countly._internals
+     *  @param {PushSubscription} subscription - subscription to inspect
+     *  @param {Boolean} privateRegistration - true when the subscription is on Countly's private registration
+     *  @returns {Boolean} true when Countly may unsubscribe or replace it
+     */
+    #isCountlyPushSubscription = (subscription, privateRegistration) => {
+        var registeredEndpoint = this.#getPushRecord(pushStorageKeys.endpoint);
+        if (subscription.endpoint && subscription.endpoint === registeredEndpoint) {
+            return true;
+        }
+        if (subscription.options && subscription.options.applicationServerKey) {
+            var keys = [this.#getPushRecord(pushStorageKeys.vapidKey), this.push_vapid_public_key];
+            for (var i = 0; i < keys.length; i++) {
+                var keyBytes = keys[i] ? this.#urlBase64ToUint8Array(keys[i]) : null;
+                if (keyBytes && this.#pushSubscriptionUsesKey(subscription, keyBytes, null, keys[i])) {
+                    return true;
+                }
+            }
+        }
+        return privateRegistration === true && !registeredEndpoint;
+    }
+
+    /**
+     *  Give the browser's part of subscribing a deadline. pushManager.subscribe() has been seen never
+     *  settling (iOS 18.7); without a deadline #pushEnableInFlight would hold that dead promise and
+     *  hand it to every later enable_push_notifications call until the page is reloaded. On expiry
+     *  this attempt resolves with reason "timeout" and the guard is released; should the browser
+     *  answer late after all, the chain still registers the token it produced.
+     *  @memberof Countly._internals
+     *  @param {Promise<Object>} attempt - the subscribe-and-register chain
+     *  @param {number} ms - how long to wait
+     *  @returns {Promise<Object>} the attempt's result, or { subscribed: false, reason: "timeout" }
+     */
+    #withPushTimeout = (attempt, ms) => {
+        return new Promise((resolve, reject) => {
+            var timer = setTimeout(() => {
+                this.#log(logLevelEnums.ERROR, "enable_push_notifications, The browser did not finish subscribing within [" + ms + "] ms, giving up on this attempt");
+                resolve({ subscribed: false, reason: "timeout" });
+            }, ms);
+            attempt.then((result) => {
+                clearTimeout(timer);
+                resolve(result);
+            }, (err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+        });
+    };
+
+    /**
+     *  Ask for notification permission, tolerating the legacy callback-only form of
+     *  Notification.requestPermission still shipped by some browsers.
+     *  @memberof Countly._internals
+     *  @returns {Promise<string>} resolves to "granted", "denied" or "default"
+     */
+    #requestNotificationPermission = () => {
+        if (Notification.permission === "granted" || Notification.permission === "denied") {
+            return Promise.resolve(Notification.permission);
+        }
+        return new Promise((resolve) => {
+            var pending;
+            try {
+                pending = Notification.requestPermission(resolve);
+            } catch (e) {
+                this.#log(logLevelEnums.ERROR, "requestNotificationPermission, Failed to request notification permission: " + e);
+                resolve("denied");
+                return;
+            }
+            if (pending && typeof pending.then === "function") {
+                pending.then(resolve, () => resolve("denied"));
+            }
+        });
+    }
+
+    /**
+     *  Build and queue the web-push token_session request. Pass `null` to register the BLACKLISTED
+     *  sentinel (unsubscribe path). The same token is queued for the same device ID once per page
+     *  load, or once per session while sessions are tracked automatically.
+     *
+     *  Android delays this by 10 seconds so begin_session is processed before the token write, but
+     *  a page timer is not durable — navigating away inside the window would lose a live
+     *  subscription the server never heard about. It is not needed here either: the request queue
+     *  is FIFO and sends one request at a time, awaiting each response, so a begin_session queued
+     *  earlier is already processed server side before this request goes out.
+     *  @memberof Countly._internals
+     *  @param {?PushSubscription} subscription - subscription to register, or null to blacklist
+     *  @param {string} [vapidKey] - the VAPID public key used to create this subscription
+     *  @param {string} [scope] - the service worker scope the subscription was created under
+     */
+    #sendPushToken = (subscription, vapidKey, scope) => {
+        var tokenValue = pushConstants.BLACKLISTED_TOKEN;
+        if (subscription) {
+            try {
+                tokenValue = JSON.stringify(subscription.toJSON());
+            } catch (e) {
+                this.#log(logLevelEnums.ERROR, "sendPushToken, Failed to serialize subscription: " + e);
+                return;
+            }
+        }
+
+        if (subscription && this.#isPushTokenSent(tokenValue, subscription.endpoint)) {
+            this.#log(logLevelEnums.DEBUG, "sendPushToken, This token was already queued for this device ID " + (this.#autoSessionTracking ? "in this session" : "on this page") + ", not queueing it again");
+        }
+        else {
+            var req = {
+                token_session: 1,
+                web_token: tokenValue,
+                token_provider: pushConstants.TOKEN_PROVIDER
+            };
+            if (typeof navigator !== "undefined" && navigator.language) {
+                req.locale = navigator.language;
+            }
+            // a silent drop (opted out, tracking off by server config, no app key yet) must not count as registered
+            if (!this.#toRequestQueue(req)) {
+                this.#log(logLevelEnums.WARNING, "sendPushToken, The request queue rejected the token, not recording it as registered");
+                return;
+            }
+            this.#lastPushToken = subscription ? { token: tokenValue, deviceId: this.device_id } : null;
+            if (subscription) {
+                this.#setPushRecord(pushStorageKeys.sessionToken, { endpoint: subscription.endpoint, deviceId: this.device_id });
+            }
+            else {
+                this.#removePushRecord(pushStorageKeys.sessionToken);
+            }
+        }
+
+        if (subscription) {
+            var inUseBefore = this.#isPushConfigured();
+            this.#setPushRecord(pushStorageKeys.endpoint, subscription.endpoint);
+            if (vapidKey) {
+                this.#setPushRecord(pushStorageKeys.vapidKey, vapidKey);
+            }
+            if (scope) {
+                this.#setPushRecord(pushStorageKeys.scope, scope);
+            }
+            this.#syncPushWorkerConfig();
+            if (!inUseBefore) {
+                this.#announceToPushWorker();
+            }
+        }
+    }
+
+    /**
+     *  Whether a token was already queued for the current device ID: on this page, or while
+     *  sessions are tracked automatically, in the current session, which pages that continue it
+     *  share through storage.
+     *  @memberof Countly._internals
+     *  @param {string} tokenValue - the serialized subscription
+     *  @param {string} endpoint - the subscription's endpoint
+     *  @returns {Boolean} true when it need not be queued again
+     */
+    #isPushTokenSent = (tokenValue, endpoint) => {
+        if (this.#autoSessionTracking) {
+            var sent = this.#getPushRecord(pushStorageKeys.sessionToken);
+            return !!sent && sent.endpoint === endpoint && sent.deviceId === this.device_id;
+        }
+        var last = this.#lastPushToken;
+        return !!last && last.token === tokenValue && last.deviceId === this.device_id;
+    }
+
+    /**
+     *  Let a new session send the push token again. A page that already sent it registers it again
+     *  right away; a page that has not yet sends it with its own registration.
+     *  @memberof Countly._internals
+     */
+    #renewPushTokenForSession = () => {
+        this.#removePushRecord(pushStorageKeys.sessionToken);
+        if (this.#autoSessionTracking && this.#lastPushToken) {
+            this.#autoRegisterPush(true);
+        }
+    }
+
+    /**
+     *  Decode a base64-url VAPID public key into a Uint8Array, the format Push API expects.
+     *  @memberof Countly._internals
+     *  @param {string} base64String - base64-url encoded key; surrounding whitespace is ignored
+     *  @returns {?Uint8Array} decoded bytes, or null if the input is not valid base64-url
+     */
+    #urlBase64ToUint8Array = (base64String) => {
+        var trimmed = String(base64String).trim();
+        // atob skips inner whitespace but the padding counts it, so whitespace would decide whether a key decodes
+        if (/\s/.test(trimmed)) {
+            this.#log(logLevelEnums.ERROR, "urlBase64ToUint8Array, Value is not valid base64-url: it has whitespace inside the key");
+            return null;
+        }
+        var padding = "=".repeat((4 - trimmed.length % 4) % 4);
+        try {
+            return base64ToBytes((trimmed + padding).replace(/-/g, "+").replace(/_/g, "/"));
+        } catch (e) {
+            this.#log(logLevelEnums.ERROR, "urlBase64ToUint8Array, Value is not valid base64-url: " + e);
+            return null;
+        }
     }
 
     /**
      *  Add request to request queue
      *  @memberof Countly._internals
      *  @param {Object} request - object with request parameters
+     *  @returns {Boolean} true if the request was accepted, false if it was dropped. Callers that
+     *  record state about a request having been sent must check this, since a drop is otherwise silent.
      */
     #toRequestQueue = (request) => {
         if (this.ignore_visitor) {
-            this.#log(logLevelEnums.WARNING, "User is opt_out will ignore the request: " + request);
-            return;
+            this.#log(logLevelEnums.DEBUG, "User is opt_out will ignore the request: " + request);
+            return false;
+        }
+
+        if (!this.#SCTrackingAll) {
+            this.#log(logLevelEnums.DEBUG, "Tracking is disabled by server config, will not track the request: " + JSON.stringify(request));
+            return false;
         }
 
         if (!this.app_key || !this.device_id) {
             this.#log(logLevelEnums.ERROR, "app_key or device_id is missing ", this.app_key, this.device_id);
-            return;
+            return false;
         }
 
         this.#prepareRequest(request);
 
-        if (this.#requestQueue.length > this.#queueSize) {
+        // Buffer requests while client hints are still resolving. Counts as accepted: the buffer is
+        // flushed into the queue as soon as the hints land.
+        if (this.#pendingRequestBuffer !== null) {
+            this.#pendingRequestBuffer.push(request);
+            return true;
+        }
+
+        if (this.#requestQueue.length > this.#SCSizeReqQueue) {
             this.#requestQueue.shift();
         }
 
         this.#requestQueue.push(request);
-        this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        this.#saveRequestQueue();
+        if (this.#isOrderSensitive(request) && !request.old_device_id) {
+            this.#announceChange();
+        }
+        this.#noteOrderSensitive([request], true);
+        return true;
     }
 
     /**
@@ -4125,12 +7334,16 @@ class CountlyClass {
      *  @returns {void} void
      */
     #heartBeat = () => {
+        // a halted instance no longer counts as any instance, so it must not take Countly.q or send anything
+        if (this.#halted) {
+            return;
+        }
         this.#notifyLoaders();
 
         // ignore bots
         if (this.ignore_visitor) {
             this.#hasPulse = false;
-            this.#log(logLevelEnums.WARNING, "User opt_out, no heartbeat");
+            this.#log(logLevelEnums.WARNING, "User opt_out:[" + this.ignore_visitor + "], no heartbeat");
             return;
         }
 
@@ -4143,7 +7356,7 @@ class CountlyClass {
         // extend session if needed
         if (this.#sessionStarted && this.#autoExtend && this.#trackTime) {
             var last = getTimestamp();
-            if (last - this.#lastBeat > this.#sessionUpdate) {
+            if (last - this.#lastBeat > this.#SCIntervalSessionUpdate) {
                 this.session_duration(last - this.#lastBeat);
                 this.#lastBeat = last;
                 // save health check logging counters if there are any
@@ -4158,38 +7371,55 @@ class CountlyClass {
 
         // process event queue
         if (this.#eventQueue.length > 0 && !this.test_mode_eq) {
-            if (this.#eventQueue.length <= this.#maxEventBatch) {
+            if (this.#eventQueue.length <= this.#SCSizeEventBatch) {
                 this.#toRequestQueue({ events: JSON.stringify(this.#eventQueue) });
                 this.#eventQueue = [];
             }
             else {
-                var events = this.#eventQueue.splice(0, this.#maxEventBatch);
+                var events = this.#eventQueue.splice(0, this.#SCSizeEventBatch);
                 this.#toRequestQueue({ events: JSON.stringify(events) });
             }
-            this.#setValueInStorage("cly_event", this.#eventQueue);
+            this.#saveEventQueue();
         }
 
-        // process request queue with event queue
-        if (!this.#offlineMode && this.#requestQueue.length > 0 && this.#readyToProcess && getTimestamp() > this.#failTimeout) {
-            this.#readyToProcess = false;
-            var params = this.#requestQueue[0];
-            params.rr = this.#requestQueue.length; // added at 23.2.3. It would give the current length of the queue. That includes the current request.
-            this.#log(logLevelEnums.DEBUG, "Processing request", params);
-            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        // a quiet SDK that never fills a batch still reports what it gathered
+        if (this.#SCLogGathering.enabled && this.#logBuffer.length > 0 && Date.now() - this.#lastLogFlushTime >= logGatheringDefaultValues.FLUSH_INTERVAL) {
+            this.#flushLogBuffer();
+        }
+
+        // what this tab cannot send waits in the shared storage, where a crash does not take it, until it is in front and may send
+        if (this.#tabStore) {
+            this.#takeBackWhenSendable(true);
+            if (this.#cannotSendNow() && this.#requestQueue.length) {
+                this.#leaveUnsentRequests();
+            }
+        }
+        this.#flushDeferredRequests();
+
+        // Check if we're in back-off period and update status
+        var currentTime = getTimestamp();
+        var skipRequestProcessing = false;
+        
+        if (this.#isInBackoff && currentTime < this.#backoffEndTime) {
+            skipRequestProcessing = true;
+            if (!this.#backOffLogShown) {
+                this.#log(logLevelEnums.VERBOSE, "Request back-off active, suspending requests until: " + this.#backoffEndTime + ", current time: " + currentTime);
+                this.#backOffLogShown = true;
+            }
+        }
+        else if (this.#isInBackoff && currentTime >= this.#backoffEndTime) {
+            this.#log(logLevelEnums.INFO, "Request back-off period ended, resuming normal request processing");
+            this.#isInBackoff = false;
+            this.#backoffEndTime = 0;
+            skipRequestProcessing = false;
+            this.#backOffLogShown = false;
+        }
+
+        // process request queue with event queue (skip if in back-off)
+        if (!skipRequestProcessing && !this.#offlineMode && this.#requestQueue.length > 0 && this.#readyToProcess && getTimestamp() > this.#failTimeout) {
+            this.#forRequest(this.#requestQueue[0], () => this.#log(logLevelEnums.DEBUG, "Processing request", this.#requestQueue[0]));
             if (!this.test_mode) {
-                this.#makeNetworkRequest("send_request_queue", this.url + this.#apiPath, params, (err, parameters) => {
-                    if (err) {
-                        // error has been logged by the request function
-                        this.#failTimeout = getTimestamp() + this.#failTimeoutAmount;
-                    }
-                    else {
-                        // remove first item from queue
-                        this.#requestQueue.shift();
-                    }
-                    this.#setValueInStorage("cly_queue", this.#requestQueue, true);
-                    this.#readyToProcess = true;
-                    // expected response is only JSON object
-                }, false);
+                this.#sendRequestFromQueue("send_request_queue");
             }
         }
 
@@ -4199,12 +7429,222 @@ class CountlyClass {
     }
 
     /**
+     * Check if back-off conditions are met and activate back-off if necessary
+     * @param {Object} parameters - Request parameters to check timestamp
+     */
+    #checkBackoffConditions = (parameters) => {
+        if (!this.#SCBackoffMechanismEnabled) {
+            return; // Back-off is disabled, skip checks
+        }
+        if (this.#isInBackoff) {
+            return;
+        }
+
+        var responseTimeExceeded = this.#lastRequestDuration > this.#SCBackoffAcceptedTimeout;
+        if (!responseTimeExceeded) {
+            return; // No need to check further if response time is acceptable
+        }
+        
+        var queueNotHalfFull = this.#requestQueue.length < (this.#SCSizeReqQueue * this.#SCBackoffRQPercentage);
+        
+        var currentTime = getTimestamp();
+        var requestTimestamp = parameters && parameters.timestamp ? parameters.timestamp : currentTime;
+        var requestAge = currentTime - (requestTimestamp);
+        var requestIsYoung = requestAge < (this.#SCBackoffRequestAge * 60 * 60); // 24 hours in seconds
+        
+        if (responseTimeExceeded && queueNotHalfFull && requestIsYoung) {
+            this.#log(logLevelEnums.INFO, "Activating request back-off: response time [" + this.#lastRequestDuration + "s], queue size [" + this.#requestQueue.length + "/" + this.#SCSizeReqQueue + "], request age [" + requestAge + "s]");
+            
+            this.#isInBackoff = true;
+            this.#backoffEndTime = currentTime + this.#SCBackoffDuration; // 60 seconds from now
+            
+            this.#HealthCheck.incrementBackoffCount();
+            
+            this.#log(logLevelEnums.INFO, "Request back-off activated until: " + this.#backoffEndTime);
+        } else {
+            this.#log(logLevelEnums.DEBUG, "No back-off conditions met: response time [" + this.#lastRequestDuration + "s], queue size [" + this.#requestQueue.length + "/" + this.#SCSizeReqQueue + "], request age [" + requestAge + "s]");
+            this.#HealthCheck.resetLastRequestBackoffStatus();
+        }
+    };
+
+    /**
      * Returns generated requests for the instance for testing purposes
-     * @returns {Array} - Returns generated requests
+     * @returns {Array} - Returns generated requests array of objects { functionName: functionName, url: url, params: params }
      */
     #getGeneratedRequests = () => {
         return this.#generatedRequests;
     };
+
+    /**
+     *  Whether a merge request has not been sent yet, in the request queue or in the buffer requests wait in for the client hints
+     *  @memberof Countly._internals
+     *  @returns {Boolean} true while a request with old_device_id is waiting
+     */
+    #mergeRequestUnsent = () => {
+        return this.#requestQueue.concat(this.#pendingRequestBuffer || []).some((request) => request && request.old_device_id);
+    };
+
+    /**
+     *  Make the fetches a merged device ID change held back until its merge request was sent: the behavior settings, then remote config
+     *  @memberof Countly._internals
+     */
+    #fetchAfterMerge = () => {
+        if (this.#serverConfigAfterMerge) {
+            this.#serverConfigAfterMerge = false;
+            this.#getAndSetServerConfig();
+        }
+        if (this.#remoteConfigAfterMerge) {
+            this.#remoteConfigAfterMerge = false;
+            if (this.remote_config) {
+                this.fetch_remote_config(this.remote_config);
+            }
+        }
+    };
+
+    /**
+     *  Whether a request changes how the server treats the requests after it: a profile update, a device ID merge or a
+     *  consent change
+     *  @param {Object} request - request parameters
+     *  @returns {Boolean} true for such a request
+     */
+    #isOrderSensitive = (request) => {
+        return !!(request && (request.user_details || request.old_device_id || request.consent));
+    };
+
+    /**
+     *  Note the newest order-sensitive request among the given ones and start sending the queue up to it
+     *  @param {Array} requests - requests that just entered the queue
+     *  @param {Boolean} sendNow - false to leave the sending to the heartbeat, which continues it
+     */
+    #noteOrderSensitive = (requests, sendNow) => {
+        for (var i = requests.length - 1; i >= 0; i--) {
+            if (this.#isOrderSensitive(requests[i])) {
+                this.#sendUpTo(requests[i], sendNow);
+                return;
+            }
+        }
+    };
+
+    /**
+     *  Send the queue right away, without waiting for the heartbeat, until the given request is out
+     *  @param {Object} request - request in the queue to send up to
+     *  @param {Boolean} sendNow - false to leave the sending to the heartbeat, which continues it
+     */
+    #sendUpTo = (request, sendNow) => {
+        // the one further back in the queue is the one to send up to
+        if (this.#requestQueue.indexOf(request) > this.#requestQueue.indexOf(this.#sendingUpTo)) {
+            this.#sendingUpTo = request;
+        }
+        if (sendNow) {
+            this.#sendNextRightAway();
+        }
+    };
+
+    /**
+     *  Send the next request of the queue while it still holds the request noted to send up to, as other tabs send their own
+     *  requests meanwhile instead of waiting for this tab's heartbeat
+     */
+    #sendNextRightAway = () => {
+        if (this.#halted || this.test_mode || this.ignore_visitor) {
+            return;
+        }
+        if (this.#requestQueue.indexOf(this.#sendingUpTo) === -1) {
+            this.#sendingUpTo = null;
+            return;
+        }
+        this.#sendRequestFromQueue("send_request_queue");
+    };
+
+    /**
+     *  Remove a request from the queue once the server accepted it
+     *  @param {Object} sent - the request that was sent
+     */
+    #removeSentRequest = (sent) => {
+        if (!this.#tabStore) {
+            this.#requestQueue.shift();
+            return;
+        }
+        // requests taken over from other tabs go first, so the queue can change while this one is on its way
+        var index = this.#requestQueue.indexOf(sent);
+        if (index !== -1) {
+            this.#requestQueue.splice(index, 1);
+        }
+    };
+
+    #sendRequestFromQueue = (requestName, onSuccess) => {
+        return new Promise((resolve) => {
+            if (this.#offlineMode) {
+                resolve(false);
+                return;
+            }
+
+            if (this.#requestQueue.length === 0) {
+                resolve(false);
+                return;
+            }
+
+            if (!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout) {
+                resolve(false);
+                return;
+            }
+
+            // checked before the queue is marked busy: no answer comes back while networking is off
+            if (!this.#SCNetwork) {
+                resolve(false);
+                return;
+            }
+
+            if (this.#holding()) {
+                resolve(false);
+                return;
+            }
+
+            this.#takeBackWhenSendable(false);
+            if (this.#waitingToRetry) {
+                resolve(false);
+                return;
+            }
+
+            this.#readyToProcess = false;
+            var params = this.#requestQueue[0];
+            params.rr = this.#requestQueue.length;
+            this.#requestOnItsWay = params;
+            this.#saveRequestQueue();
+            this.#makeNetworkRequest(requestName, this.url + this.#apiPath, params, (err, parameters) => {
+                this.#requestOnItsWay = null;
+                if (err) {
+                    this.#failTimeout = getTimestamp() + this.#failTimeoutAmount;
+                }
+                else {
+                    this.#removeSentRequest(params);
+                    this.#checkBackoffConditions(parameters);
+                    if ((this.#serverConfigAfterMerge || this.#remoteConfigAfterMerge) && !this.#mergeRequestUnsent()) {
+                        this.#fetchAfterMerge();
+                    }
+                    this.#flushDeferredRequests();
+                    if (onSuccess) {
+                        try {
+                            onSuccess(parameters);
+                        }
+                        catch (e) {
+                            this.#log(logLevelEnums.DEBUG, "sendRequestFromQueue, onSuccess handler threw");
+                        }
+                    }
+                }
+                this.#saveRequestQueue();
+                this.#readyToProcess = true;
+                resolve(!err);
+                if (!err) {
+                    // a microtask, not a timer: background tabs slow timers down, and a fake handler answers synchronously
+                    Promise.resolve().then(this.#sendNextRightAway);
+                }
+                else if (this.#tabStore && document.hidden) {
+                    // a tab in the background can be closed without any further event, the shared storage keeps what it could not send
+                    this.#handOver();
+                }
+            }, false);
+        });
+    }
 
     /**
      * Process queued calls
@@ -4218,54 +7658,77 @@ class CountlyClass {
 
         const q = Countly.q;
         Countly.q = [];
+        // another instance leaves the main instance's calls, unaddressed ones included, for the main instance to run in their order
+        var forMainInstance = [];
         for (let i = 0; i < q.length; i++) {
             let req = q[i];
-            this.#log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
-            if (typeof req === "function") {
-                req();
+            if (!this.#global && !this.#isForSecondaryInstance(req)) {
+                forMainInstance.push(req);
+                continue;
             }
-            else if (Array.isArray(req) && req.length > 0) {
-                var inst = this;
-                var arg = 0;
-                // check if it is meant for other tracker
-                try {
-                    if (Countly.i[req[arg]]) {
-                        inst = Countly.i[req[arg]];
-                        arg++;
+            this.#log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
+            try {
+                if (typeof req === "function") {
+                    req();
+                }
+                else if (Array.isArray(req) && req.length > 0) {
+                    var inst = this;
+                    var arg = 0;
+                    // check if it is meant for other tracker
+                    try {
+                        if (Countly.i[req[arg]]) {
+                            inst = Countly.i[req[arg]];
+                            arg++;
+                        }
+                    } catch (error) {
+                        // possibly first init and no other instance
+                        this.#log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
+                        Countly.q.push(req); // return it back to queue and continue to the next one
+                        continue;
                     }
-                } catch (error) {
-                    // possibly first init and no other instance
-                    this.#log(logLevelEnums.DEBUG, "No instance found for the provided key while processing async queue");
-                    Countly.q.push(req); // return it back to queue and continue to the next one
-                    continue;
-                }
-                if (typeof inst[req[arg]] === "function") {
-                    inst[req[arg]].apply(inst, req.slice(arg + 1));
-                }
-                // Add interfaces you add to here for async queue to work
-                else if (req[arg].indexOf("userData.") === 0) {
-                    var userdata = req[arg].replace("userData.", "");
-                    if (typeof inst.userData[userdata] === "function") {
-                        inst.userData[userdata].apply(inst, req.slice(arg + 1));
+                    if (typeof inst[req[arg]] === "function") {
+                        inst[req[arg]].apply(inst, req.slice(arg + 1));
+                    }
+                    // Add interfaces you add to here for async queue to work
+                    else if (req[arg].indexOf("userData.") === 0) {
+                        var userdata = req[arg].replace("userData.", "");
+                        if (typeof inst.userData[userdata] === "function") {
+                            inst.userData[userdata].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (req[arg].indexOf("content.") === 0) {
+                        var contentMethod = req[arg].replace("content.", "");
+                        if (typeof inst.content[contentMethod] === "function") {
+                            inst.content[contentMethod].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (req[arg].indexOf("feedback.") === 0) {
+                        var feedbackMethod = req[arg].replace("feedback.", "");
+                        if (typeof inst.feedback[feedbackMethod] === "function") {
+                            inst.feedback[feedbackMethod].apply(inst, req.slice(arg + 1));
+                        }
+                    }
+                    else if (typeof Countly[req[arg]] === "function") {
+                        Countly[req[arg]].apply(Countly, req.slice(arg + 1));
                     }
                 }
-                else if (req[arg].indexOf("content.") === 0) {
-                    var contentMethod = req[arg].replace("content.", "");
-                    if (typeof inst.content[contentMethod] === "function") {
-                        inst.content[contentMethod].apply(inst, req.slice(arg + 1));
-                    }
-                }
-                else if (req[arg].indexOf("feedback.") === 0) {
-                    var feedbackMethod = req[arg].replace("feedback.", "");
-                    if (typeof inst.feedback[feedbackMethod] === "function") {
-                        inst.feedback[feedbackMethod].apply(inst, req.slice(arg + 1));
-                    }
-                }
-                else if (typeof Countly[req[arg]] === "function") {
-                    Countly[req[arg]].apply(Countly, req.slice(arg + 1));
-                }
+            }
+            catch (error) {
+                this.#log(logLevelEnums.ERROR, "processAsyncQueue, A queued call threw and was skipped: " + error);
             }
         }
+        if (forMainInstance.length > 0) {
+            Countly.q = forMainInstance.concat(Countly.q);
+        }
+    }
+
+    /**
+     * Tells whether a queued call is addressed by its app key to an instance other than the main one
+     * @param {*} req - queued call
+     * @returns {Boolean} true when the call names another instance's app key first
+     */
+    #isForSecondaryInstance = (req) => {
+        return Array.isArray(req) && typeof req[0] === "string" && req[0] !== Countly.app_key && !!Countly.i[req[0]];
     }
 
     /**
@@ -4298,7 +7761,39 @@ class CountlyClass {
      *  @returns {string} returns userAgent string
      */
     #getUA = () => {
-        return this.metrics._ua || currentUserAgentString();
+        if (this.metrics && this.metrics._ua) {
+            return this.metrics._ua;
+        }
+        return currentUserAgentString();
+    }
+
+    /**
+     * Basic browser name/version parsing fallback from UA string.
+     * @private
+     * @param {string} ua - raw user agent string
+     * @returns {{name: string|null, version: string|null}}
+     */
+    #getBrowserInfoFromUA = (ua) => {
+        if (!ua || typeof ua !== "string") {
+            return { name: null, version: null };
+        }
+
+        var patterns = [
+            { name: "Edge", regex: /Edg\/([\d\.]+)/ },
+            { name: "Opera", regex: /OPR\/([\d\.]+)/ },
+            { name: "Chrome", regex: /Chrome\/([\d\.]+)/ },
+            { name: "Firefox", regex: /Firefox\/([\d\.]+)/ },
+            { name: "Safari", regex: /Version\/([\d\.]+).*Safari/ }
+        ];
+
+        for (var i = 0; i < patterns.length; i++) {
+            var match = ua.match(patterns[i].regex);
+            if (match && match[1]) {
+                return { name: patterns[i].name, version: match[1] };
+            }
+        }
+
+        return { name: null, version: null };
     }
 
     /**
@@ -4329,6 +7824,67 @@ class CountlyClass {
         var locale = navigator.language || navigator.browserLanguage || navigator.systemLanguage || navigator.userLanguage;
         if (typeof locale !== "undefined") {
             metrics._locale = metrics._locale || locale;
+        }
+
+        if (isBrowser && navigator.userAgentData && navigator.userAgentData.platform) {
+            metrics._os = metrics._os || navigator.userAgentData.platform;
+        }
+
+        var detectedDeviceType = userAgentDeviceDetection();
+        if (detectedDeviceType === "phone") {
+            detectedDeviceType = "mobile";
+        }
+        metrics._device_type = metrics._device_type || detectedDeviceType;
+
+        if (this.#uaClientHints && typeof this.#uaClientHints === "object") {
+            if (this.#uaClientHints.platform) {
+                metrics._os = metrics._os || this.#uaClientHints.platform;
+            }
+
+            var osVersionFromHints = this.#uaClientHints.windowsVersion || this.#uaClientHints.platformVersion;
+            if (osVersionFromHints) {
+                metrics._os_version = metrics._os_version || osVersionFromHints;
+            }
+
+            if (this.#uaClientHints.model) {
+                metrics._device = metrics._device || this.#uaClientHints.model;
+            }
+
+            if (this.#uaClientHints.browserName) {
+                metrics._browser = metrics._browser || this.#uaClientHints.browserName;
+            }
+
+            if (this.#uaClientHints.browserVersion) {
+                metrics._browser_version = metrics._browser_version || this.#uaClientHints.browserVersion;
+            }
+
+            if (this.#uaClientHints.windowsVersion) {
+                metrics._os = metrics._os || "Windows";
+                metrics._os_version = metrics._os_version || this.#uaClientHints.windowsVersion;
+            }
+
+            this.#log(logLevelEnums.DEBUG, "ua_logic, metrics enriched from hints:[" + JSON.stringify({
+                _os: metrics._os,
+                _os_version: metrics._os_version,
+                _device: metrics._device,
+                _device_type: metrics._device_type,
+                _browser: metrics._browser,
+                _browser_version: metrics._browser_version
+            }) + "]");
+        }
+        else {
+            if (this.#uaClientHintsStatus === "pending") {
+                this.#log(logLevelEnums.DEBUG, "ua_logic, high-entropy hints are still pending, using fallback metrics for now");
+            }
+            else {
+                this.#log(logLevelEnums.DEBUG, "ua_logic, no high-entropy hints available, using UA fallback parsing");
+            }
+        }
+
+        if (!metrics._browser || !metrics._browser_version) {
+            var browserInfo = this.#getBrowserInfoFromUA(metrics._ua);
+            metrics._browser = metrics._browser || browserInfo.name;
+            metrics._browser_version = metrics._browser_version || browserInfo.version;
         }
 
         if (this.#isReferrerUsable()) {
@@ -4371,19 +7927,14 @@ class CountlyClass {
             return null;
         }
         var iOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
-        if (iOS && window.devicePixelRatio) {
+        // the resolution metric is in device pixels like the iOS SDK's; content is placed in CSS pixels
+        if (iOS && window.devicePixelRatio && !getViewPort) {
             this.#log(logLevelEnums.VERBOSE, "Mobile Mac device detected, adjusting resolution");
             // ios provides dips, need to multiply
             width = Math.round(width * window.devicePixelRatio);
             height = Math.round(height * window.devicePixelRatio);
         }
-        if (Math.abs(screen.orientation.angle) === 90) {
-            this.#log(logLevelEnums.VERBOSE, "Screen is in landscape mode, adjusting resolution");
-            var temp = width;
-            width = height;
-            height = temp;
-        }
-        return { width: width, height: height, orientation: screen.orientation.angle };
+        return { width: width, height: height };
     };
 
     /**
@@ -4440,32 +7991,44 @@ class CountlyClass {
     }
 
     /**
-     *  Logging stuff, works only when debug mode is true
+     *  Print a log line to the console when debug is on, and gather it when log gathering wants it and its consent is given
      * @param {string} level - log level (error, warning, info, debug, verbose)
      * @param {string} message - any string message
+     * @param {*} [third] - optional value appended to the message, serialized when it is an object
      * @memberof Countly._internals
      */
     #log = (level, message, third) => {
-        if (this.debug && typeof console !== "undefined") {
-            // parse the arguments into a string if it is an object
-            if (third && typeof third === "object") {
+        var shouldPrint = this.debug && typeof console !== "undefined";
+        var levelChar = logLevelToWireChar[level] || "d";
+        var shouldCapture = this.#logLineWanted(levelChar);
+        if (!shouldPrint && !shouldCapture) {
+            return;
+        }
+        // parse the arguments into a string if it is an object
+        if (third && typeof third === "object") {
+            try {
                 third = JSON.stringify(third);
             }
-            // append app_key to the start of the message if it is not the first instance (for multi instancing)
-            if (!this.#global) {
-                message = "[" + this.app_key + "] " + message;
+            catch (ex) {
+                third = "[unserializable]";
             }
-            // if the provided level is not a proper log level re-assign it as [DEBUG]
-            if (!level) {
-                level = logLevelEnums.DEBUG;
-            }
-            // append level, message and args
-            var extraArguments = "";
-            if (third) {
-                extraArguments = " " + third;
-            }
+        }
+        // append app_key to the start of the message if it is not the first instance (for multi instancing)
+        if (!this.#global) {
+            message = "[" + this.app_key + "] " + message;
+        }
+        // if the provided level is not a proper log level re-assign it as [DEBUG]
+        if (!level) {
+            level = logLevelEnums.DEBUG;
+        }
+        var body = "[Countly] " + message + (third ? " " + third : "");
+        // the gathered line carries its level in its own field, so the prefix is left off
+        if (shouldCapture) {
+            this.#captureLogLine(levelChar, body, this.#logLineConsent(message));
+        }
+        if (shouldPrint) {
             // eslint-disable-next-line no-shadow
-            var log = level + "[Countly] " + message + extraArguments;
+            var log = level + body;
             // decide on the console
             if (level === logLevelEnums.ERROR) {
                 // eslint-disable-next-line no-console
@@ -4494,6 +8057,299 @@ class CountlyClass {
     }
 
     /**
+     * Tells whether a log line of the given level would be gathered right now.
+     * Every level is wanted while the server has not decided yet, so the init lines exist when a
+     * directive adopts them; lines produced while a log batch is being enqueued or sent are never
+     * wanted, or every batch would describe the previous one.
+     * @param {String} levelChar - wire character of the line's level
+     * @returns {Boolean} true when the line should be captured
+     */
+    #logLineWanted = (levelChar) => {
+        if (this.#logCaptureInProgress || this.#logTransportInProgress) {
+            return false;
+        }
+        var state = this.#SCLogGathering;
+        if (!state.decided) {
+            return true;
+        }
+        return state.enabled && state.levels.indexOf(levelChar) !== -1;
+    }
+
+    /**
+     * The consent a log line needs to be gathered: that of the method it comes from (logLineConsent).
+     * @param {String} message - the message as passed to #log
+     * @returns {?String} the feature name, or null for a line of no known method, which needs both "events" and "users" consent
+     */
+    #logLineConsent = (message) => {
+        var text = message + "";
+        var end = text.charAt(0) === "[" ? text.indexOf("]") + 1 : text.indexOf(",");
+        var method = end > 0 ? text.substring(0, end) : "";
+        return Object.prototype.hasOwnProperty.call(logLineConsent, method) ? logLineConsent[method] : null;
+    }
+
+    /**
+     * Tells whether a log line needing the given consent may be gathered now.
+     * @param {?String} need - what #logLineConsent returned for the line
+     * @returns {Boolean} true when consent is not required or is given
+     */
+    #logConsentGiven = (need) => {
+        if (!this.#SCEnableConsentRequired) {
+            return true;
+        }
+        return need ? this.#hasConsent(need) : this.#hasConsent(featureEnums.EVENTS) && this.#hasConsent(featureEnums.USERS);
+    }
+
+    /**
+     * Tells whether consent is given for a feature, without the log line check_consent writes.
+     * @param {String} feature - name of the feature
+     * @returns {Boolean} true when consent is given
+     */
+    #hasConsent = (feature) => !!(this.#consents[feature] && this.#consents[feature].optin);
+
+    /**
+     * Runs fn with log capture paused when the request carries a log batch, so the lines that
+     * describe uploading gathered logs are never gathered themselves.
+     * @param {Object} params - request parameters
+     * @param {Function} fn - work to run
+     * @returns {*} whatever fn returns
+     */
+    #forRequest = (params, fn) => this.#withoutLogCapture(!!(params && params.sdk_logs), fn);
+
+    /**
+     * Runs fn without gathering the log lines it produces when pause is true.
+     * @param {Boolean} pause - true to pause log capture while fn runs
+     * @param {Function} fn - work to run
+     * @returns {*} whatever fn returns
+     */
+    #withoutLogCapture = (pause, fn) => {
+        if (!pause) {
+            return fn();
+        }
+        var paused = this.#logTransportInProgress;
+        this.#logTransportInProgress = true;
+        try {
+            return fn();
+        }
+        finally {
+            this.#logTransportInProgress = paused;
+        }
+    }
+
+    /**
+     * Puts log gathering back to its initial state and drops everything gathered.
+     * @param {Boolean} decided - true when no directive is expected any more, false to capture speculatively until the server answers
+     */
+    #resetLogGathering = (decided) => {
+        this.#SCLogGathering = {
+            enabled: false,
+            decided: decided,
+            gatherId: null,
+            levels: logGatheringDefaultValues.ALLOWED_LEVELS,
+            batchSize: logGatheringDefaultValues.BATCH_SIZE
+        };
+        this.#logBuffer = [];
+        this.#logHeld = [];
+        this.#logBufferDropped = 0;
+        this.#logCaptureInProgress = false;
+        this.#logTransportInProgress = false;
+        this.#lastLogFlushTime = Date.now();
+    }
+
+    /**
+     * Drops every gathered line, the lines held for consent and the drop count, logging how many went.
+     * @param {String} reason - why the lines are dropped, for the log line
+     */
+    #dropLogBuffer = (reason) => {
+        var count = this.#logBuffer.length + this.#logHeld.length;
+        this.#logBuffer = [];
+        this.#logHeld = [];
+        this.#logBufferDropped = 0;
+        if (count > 0) {
+            this.#log(logLevelEnums.DEBUG, "dropLogBuffer, " + reason + ", discarding [" + count + "] gathered lines");
+        }
+    }
+
+    /**
+     * Settles the provisional window as "not gathered" when it is certain no directive is coming.
+     * @param {String} reason - why the window closed, for the log line
+     */
+    #resolveProvisionalLogs = (reason) => {
+        if (this.#SCLogGathering.decided) {
+            return;
+        }
+        this.#SCLogGathering.decided = true;
+        this.#dropLogBuffer(reason);
+    }
+
+    /**
+     * Apply the operator driven internal log gathering configuration ('lg' key of a live server config response).
+     * Starts gathering, drops lines that belong to another gather id and flushes the tail once when gathering is switched off.
+     * @param {Object} lg - log gathering object of the server config, absent when the server is not gathering this device
+     */
+    #applyLogGatheringConfig = (lg) => {
+        var previousState = this.#SCLogGathering;
+        if (typeof lg === "undefined" || lg === null) {
+            lg = { e: false };
+        }
+        if (typeof lg !== "object" || Array.isArray(lg)) {
+            this.#log(logLevelEnums.WARNING, "applyLogGatheringConfig, Ignoring malformed log gathering configuration");
+            return;
+        }
+        var enabled = lg.e === true;
+        var receivedId = (typeof lg.i === "string" && lg.i.length > 0) ? lg.i : null;
+        var levels = logGatheringDefaultValues.ALLOWED_LEVELS;
+        if (typeof lg.l === "string") {
+            levels = "";
+            for (var lvl = 0; lvl < lg.l.length; lvl++) {
+                if (logGatheringDefaultValues.ALLOWED_LEVELS.indexOf(lg.l[lvl]) !== -1 && levels.indexOf(lg.l[lvl]) === -1) {
+                    levels += lg.l[lvl];
+                }
+            }
+            // a level string with nothing usable would arm a gather that captures nothing
+            if (levels.length === 0) {
+                levels = logGatheringDefaultValues.ALLOWED_LEVELS;
+            }
+        }
+        var batchSize = logGatheringDefaultValues.BATCH_SIZE;
+        if (typeof lg.b === "number" && isFinite(lg.b) && lg.b > 0) {
+            batchSize = Math.min(Math.max(Math.floor(lg.b), logGatheringDefaultValues.MIN_BATCH_SIZE), logGatheringDefaultValues.MAX_BUFFERED_LINES);
+        }
+        if (enabled && !receivedId) {
+            this.#log(logLevelEnums.WARNING, "applyLogGatheringConfig, Log gathering was enabled without a gather id, will not gather");
+            enabled = false;
+        }
+        var idChanged = !!receivedId && receivedId !== previousState.gatherId;
+        var wasUndecided = !previousState.decided;
+        this.#SCLogGathering = {
+            enabled: enabled,
+            decided: true,
+            // a stop carries no id, keep the old one so the tail can still be attributed
+            gatherId: receivedId || previousState.gatherId,
+            levels: levels,
+            batchSize: batchSize
+        };
+        if (wasUndecided) {
+            if (enabled) {
+                // provisional lines were captured at every level, apply the filter now that it is known
+                var kept = this.#logBuffer.filter((line) => levels.indexOf(line.l) !== -1);
+                this.#logBuffer = kept;
+                this.#logHeld = this.#logHeld.filter((held) => levels.indexOf(held.line.l) !== -1);
+                this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Adopting [" + kept.length + "] lines captured before the directive arrived, including init, and holding [" + this.#logHeld.length + "] until their consent is given");
+            }
+            else {
+                this.#dropLogBuffer("not gathered");
+            }
+        }
+        else if (idChanged) {
+            this.#dropLogBuffer("gathered for the previous gather id");
+        }
+        if (enabled && (!previousState.enabled || idChanged)) {
+            this.#lastLogFlushTime = Date.now();
+            this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Log gathering started for id:[" + this.#SCLogGathering.gatherId + "], levels:[" + levels + "], batch size:[" + batchSize + "]");
+        }
+        else if (!enabled && previousState.enabled) {
+            // the server accepts one tail batch after a stop
+            this.#log(logLevelEnums.INFO, "applyLogGatheringConfig, Log gathering stopped, flushing the gathered lines");
+            this.#logHeld = [];
+            this.#flushLogBuffer();
+        }
+    }
+
+    /**
+     * Buffer a single formatted log line for the ongoing gather, or hold it in memory until its consent is given.
+     * The caller has already checked that the line is wanted.
+     * @param {String} levelChar - wire character of the line's level
+     * @param {String} message - the fully formatted log line
+     * @param {?String} need - the consent the line needs, as #logLineConsent returns it
+     */
+    #captureLogLine = (levelChar, message, need) => {
+        var line = message;
+        if (message.length > logGatheringDefaultValues.MAX_MESSAGE_LENGTH) {
+            // a copy, so the buffered line does not keep the whole original string alive
+            line = (" " + message.substring(0, logGatheringDefaultValues.MAX_MESSAGE_LENGTH)).slice(1);
+        }
+        // not getMsTimestamp, it mutates the shared unique timestamp counter
+        var entry = { t: Date.now(), l: levelChar, m: line };
+        if (!this.#logConsentGiven(need)) {
+            this.#logHeld.push({ line: entry, need: need });
+            if (this.#logHeld.length > logGatheringDefaultValues.MAX_BUFFERED_LINES) {
+                this.#logHeld.shift();
+            }
+            return;
+        }
+        this.#logBuffer.push(entry);
+        this.#settleLogBuffer();
+    }
+
+    /**
+     * Gather the held lines whose consent is given by now, in time order with the lines already buffered.
+     */
+    #releaseHeldLogLines = () => {
+        if (!this.#logHeld || this.#logHeld.length === 0) {
+            return;
+        }
+        var released = [];
+        this.#logHeld = this.#logHeld.filter((held) => {
+            if (this.#logConsentGiven(held.need)) {
+                released.push(held.line);
+                return false;
+            }
+            return true;
+        });
+        if (released.length > 0) {
+            this.#logBuffer = this.#logBuffer.concat(released).sort((a, b) => a.t - b.t);
+            this.#settleLogBuffer();
+        }
+    }
+
+    /**
+     * Drop the oldest buffered lines beyond the buffer cap, counting the loss, and move full batches into the request queue.
+     */
+    #settleLogBuffer = () => {
+        var buffer = this.#logBuffer;
+        // the oldest lines go and the loss travels with the next batch as its drop count
+        if (buffer.length > logGatheringDefaultValues.MAX_BUFFERED_LINES) {
+            var overflow = buffer.length - logGatheringDefaultValues.MAX_BUFFERED_LINES;
+            buffer.splice(0, overflow);
+            this.#logBufferDropped += overflow;
+        }
+        // provisional lines have no gather id to be attributed to yet, so they wait, and so do lines while the SDK stands in for another user
+        while (!this.#standingInForAnotherUser && this.#SCLogGathering.decided && this.#logBuffer.length >= this.#SCLogGathering.batchSize) {
+            var before = this.#logBuffer.length;
+            this.#flushLogBuffer();
+            if (this.#logBuffer.length >= before) {
+                break;
+            }
+        }
+    }
+
+    /**
+     * Move one batch of gathered log lines into the request queue. A batch the queue refuses goes back to the front of the buffer.
+     */
+    #flushLogBuffer = () => {
+        var state = this.#SCLogGathering;
+        var buffer = this.#logBuffer;
+        if (!state.decided || !state.gatherId || buffer.length === 0) {
+            return;
+        }
+        this.#logCaptureInProgress = true;
+        try {
+            var batch = buffer.splice(0, state.batchSize);
+            var dropped = this.#logBufferDropped;
+            this.#logBufferDropped = 0;
+            this.#lastLogFlushTime = Date.now();
+            this.#log(logLevelEnums.INFO, "flushLogBuffer, Sending [" + batch.length + "] gathered log lines, [" + buffer.length + "] still buffered, [" + dropped + "] dropped");
+            if (!this.#toRequestQueue({ sdk_logs: JSON.stringify({ i: state.gatherId, d: dropped, l: batch }) })) {
+                buffer.unshift(...batch);
+                this.#logBufferDropped += dropped;
+            }
+        }
+        finally {
+            this.#logCaptureInProgress = false;
+        }
+    }
+
+    /**
      *  Decides to use which type of request method
      *  @memberof Countly._internals
      *  @param {String} functionName - Name of the function making the request for more detailed logging
@@ -4501,16 +8357,62 @@ class CountlyClass {
      *  @param {Object} params - key value object with URL params
      *  @param {Function} callback - callback when request finished or failed
      *  @param {Boolean} useBroadResponseValidator - if true that means the expected response is either a JSON object or a JSON array, if false only JSON 
+     *  @param {Boolean} forced - if true that means the request is forced and should be made regardless of the networking config
      */
-    #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator) => {
+    #makeNetworkRequest = (functionName, url, params, callback, useBroadResponseValidator, forced) => this.#forRequest(params, () => {
+        // a visitor ignored at init has no device ID, and the server would store "undefined" as a user
+        if (params && Object.prototype.hasOwnProperty.call(params, "device_id") && (typeof params.device_id === "undefined" || params.device_id === null || params.device_id === "")) {
+            this.#log(logLevelEnums.WARNING, functionName + " Not sending a request without a device ID");
+            if (typeof callback === "function") {
+                callback(true, params);
+            }
+            return;
+        }
+        if (!this.#SCNetwork && !forced) {
+            this.#log(logLevelEnums.DEBUG, "Network request is disabled by the SCNetwork");
+            return;
+        }
+        if (this.#mustWaitForQueue(functionName, params)) {
+            this.#log(logLevelEnums.DEBUG, functionName + " Waits until the device ID change is sent");
+            this.#deferredRequests.push([functionName, url, params, callback, useBroadResponseValidator, forced]);
+            return;
+        }
         this.#generatedRequests.push({ functionName: functionName, url: url, params: params });
+        
+        // Use fake request handler if provided (for testing)
+        if (this.#fakeRequestHandler) {
+            this.#log(logLevelEnums.DEBUG, functionName + " Using fake request handler");
+            try {
+                var response = this.#fakeRequestHandler({ functionName: functionName, url: url, params: params });
+                // Default to success response if handler returns nothing
+                if (response === undefined) {
+                    response = { status: 200, responseText: '{"result":"Success"}' };
+                }
+                // Allow handler to return false to skip callback entirely
+                if (response === false) {
+                    return;
+                }
+                var isError = response.status < 200 || response.status >= 300;
+                if (typeof callback === "function") {
+                    callback(isError, params, response.responseText);
+                }
+            }
+            catch (e) {
+                this.#log(logLevelEnums.ERROR, functionName + " Fake request handler error: " + e);
+                if (typeof callback === "function") {
+                    callback(true, params, "fake_handler_error");
+                }
+            }
+            return;
+        }
+        
         if (!isBrowser) {
             this.#sendFetchRequest(functionName, url, params, callback, useBroadResponseValidator);
         }
         else {
             this.#sendXmlHttpRequest(functionName, url, params, callback, useBroadResponseValidator);
         }
-    }
+    })
 
     /**
      *  Making xml HTTP request
@@ -4523,29 +8425,84 @@ class CountlyClass {
      */
     #sendXmlHttpRequest = (functionName, url, params, callback, useBroadResponseValidator) => {
         useBroadResponseValidator = useBroadResponseValidator || false;
+        // a browser reports a timed out request both as done and as timed out, the caller hears of it once
+        var answered = false;
+        var answer = (...args) => {
+            if (!answered && typeof callback === "function") {
+                answered = true;
+                callback(...args);
+            }
+        };
         try {
             this.#log(logLevelEnums.DEBUG, "Sending XML HTTP request");
             var xhr = new XMLHttpRequest();
+            xhr.ontimeout = () => this.#forRequest(params, () => {
+                this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
+                answer(true, params, 'timeout');
+            });
             params = params || {};
-            prepareParams(params, this.salt).then(saltedData => {
+            var isImage = params._forceImageUpload || (params.__imageUpload === true) || (params.imageData && (params.imageName || params.imageType));
+            var paramSource = params;
+            if (isImage) {
+                // filter out binary-only keys from salted params
+                var filtered = {};
+                for (var fk in params) {
+                    if (!Object.prototype.hasOwnProperty.call(params, fk)) {
+                        continue; 
+                    }
+                    if (fk === "__imageUpload" || fk === "imageData" || fk === "imageName" || fk === "imageType" || fk === "type") {
+                        continue; 
+                    }
+                    filtered[fk] = params[fk];
+                }
+                paramSource = filtered;
+            }
+            (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
                 var method = "POST";
                 if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
                 }
-                if (method === "GET") {
+                if (isImage) {
+                    xhr.open("POST", url, true);
+                }
+                else if (method === "GET") {
                     xhr.open("GET", url + "?" + saltedData, true);
                 }
                 else {
                     xhr.open("POST", url, true);
                     xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
                 }
+                try {
+                    if ('timeout' in xhr) {
+                        xhr.timeout = this.#requestTimeoutDuration;
+                    }
+                }
+                catch (ex) {
+                    // for IE11 InvalidStateError
+                    this.#log(logLevelEnums.DEBUG, functionName + " could not set xhr.timeout: " + ex);
+                }
                 for (var header in this.headers) {
+                    if (!Object.prototype.hasOwnProperty.call(this.headers, header)) {
+                        continue;
+                    }
+                    if (isImage && header.toLowerCase() === "content-type") {
+                        continue;
+                    }
                     xhr.setRequestHeader(header, this.headers[header]);
                 }
+                
+                // Track request start time for back-off mechanism
+                var requestStartTime = getTimestamp();
+                
                 // fallback on error
-                xhr.onreadystatechange = () => {
+                xhr.onreadystatechange = () => this.#forRequest(params, () => {
                     if (xhr.readyState === 4) {
-                        this.#log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + xhr.status + "] and response: [" + xhr.responseText + "]");
+                        // Calculate request duration for back-off mechanism
+                        var requestEndTime = getTimestamp();
+                        var requestDuration = requestEndTime - requestStartTime;
+                        this.#lastRequestDuration = requestDuration;
+
+                        this.#log(logLevelEnums.DEBUG, functionName + " HTTP request completed with status code: [" + xhr.status + "] and response: [" + xhr.responseText + "], duration: [" + requestDuration + "] seconds");
                         // response validation function will be selected to also accept JSON arrays if useBroadResponseValidator is true
                         var isResponseValidated;
                         if (useBroadResponseValidator) {
@@ -4557,36 +8514,83 @@ class CountlyClass {
                             isResponseValidated = this.#isResponseValid(xhr.status, xhr.responseText);
                         }
                         if (isResponseValidated) {
-                            if (typeof callback === "function") {
-                                callback(false, params, xhr.responseText);
-                            }
+                            answer(false, params, xhr.responseText);
                         }
                         else {
                             this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
                             if (functionName === "send_request_queue") {
                                 this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
                             }
-                            if (typeof callback === "function") {
-                                callback(true, params, xhr.status, xhr.responseText);
-                            }
+                            answer(true, params, xhr.status, xhr.responseText);
                         }
                     }
-                };
-                if (method === "GET") {
+                });
+                if (isImage) {
+                    var formData = this.#prepareImageUploadFormData(params, saltedData);
+                    if (!formData) {
+                        answer(true, params, 'invalid_formdata');
+                        return;
+                    }
+                    xhr.send(formData);
+                }
+                else if (method === "GET") {
                     xhr.send();
                 }
                 else {
                     xhr.send(saltedData);
                 }
-            });
+            }).catch((err) => this.#forRequest(params, () => {
+                this.#log(logLevelEnums.ERROR, functionName + " Could not make the XML HTTP request: " + err);
+                answer(true, params);
+            }));
         }
         catch (e) {
             // fallback
             this.#log(logLevelEnums.ERROR, functionName + " Something went wrong while making an XML HTTP request: " + e);
-            if (typeof callback === "function") {
-                callback(true, params);
+            answer(true, params);
+        }
+    }
+
+
+    #createBlobFromBase64 = (base64Data, mimeType) => {
+        if (!base64Data) {
+            return null;
+        }
+        try {
+            var bytes = base64ToBytes(base64Data);
+            if (typeof Blob !== "undefined") {
+                return new Blob([bytes], { type: mimeType || "application/octet-stream" });
+            }
+            if (typeof File !== "undefined") {
+                try {
+                    return new File([bytes], "avatar", { type: mimeType || "application/octet-stream" });
+                }
+                catch (fileError) {
+                    this.#log(logLevelEnums.DEBUG, "createBlobFromBase64: Unable to create File instance: " + fileError);
+                }
             }
         }
+        catch (error) {
+            this.#log(logLevelEnums.ERROR, "createBlobFromBase64 failed: " + error);
+        }
+        return null;
+    }
+    /**
+     *  Builds the multipart body of an image upload
+     *  @param {Object} params - request params holding the image
+     *  @param {Array} fields - [key, value] pairs of the other fields, from prepareFormFields
+     *  @returns {FormData|null} the body, or null when the image can not be read
+     */
+    #prepareImageUploadFormData = (params, fields) => {
+        if (!params || !params.imageData) { return null; }
+        var blob = this.#createBlobFromBase64(params.imageData, params.imageType);
+        if (!blob || typeof FormData === 'undefined') { return null; }
+        var fd = new FormData();
+        fd.append('user_details[picture]', blob, params.imageName || 'avatar');
+        for (var i = 0; i < (fields || []).length; i++) {
+            fd.append(fields[i][0], fields[i][1]);
+        }
+        return fd;
     }
 
     /**
@@ -4611,8 +8615,22 @@ class CountlyClass {
             var body = null;
 
             params = params || {};
-            prepareParams(params, this.salt).then(saltedData => {
-                if (this.force_post || saltedData.length >= 2000) {
+            var isImage = params._forceImageUpload || (params.__imageUpload === true) || (params.imageData && (params.imageName || params.imageType));
+            var paramSource = params;
+            if (isImage) {
+                var filtered = {};
+                for (var pk in params) {
+                    if (!Object.prototype.hasOwnProperty.call(params, pk)) { continue; }
+                    if (pk === '__imageUpload' || pk === 'imageData' || pk === 'imageName' || pk === 'imageType' || pk === 'type') { continue; }
+                    filtered[pk] = params[pk];
+                }
+                paramSource = filtered;
+            }
+            (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
+                if (isImage) {
+                    method = "POST";
+                }
+                else if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
                     body = saltedData;
                 }
@@ -4625,16 +8643,50 @@ class CountlyClass {
                     headers[header] = this.headers[header];
                 }
 
+                // Track request start time for back-off mechanism
+                var requestStartTime = getTimestamp();
+
+                const controller = new AbortController();
+                const signal = controller.signal;
+                const timeoutId = setTimeout(() => controller.abort(), this.#requestTimeoutDuration);
+
                 // Make the fetch request
-                fetch(url, {
+                var fetchBody = body;
+                var fetchUrl = url;
+                if (isImage) {
+                    var formData = this.#prepareImageUploadFormData(params, saltedData);
+                    if (!formData) {
+                        clearTimeout(timeoutId);
+                        if (typeof callback === 'function') { callback(true, params, 'invalid_formdata'); }
+                        return;
+                    }
+                    // remove explicit content-type so browser sets boundary
+                    if (headers['Content-type']) {
+                        delete headers['Content-type']; 
+                    }
+                    fetchBody = formData;
+                    fetchUrl = url.split('?')[0];
+                }
+                fetch(fetchUrl, {
                     method: method,
                     headers: headers,
-                    body: body,
+                    body: fetchBody,
+                    signal: signal
                 }).then((res) => {
+                    clearTimeout(timeoutId);
                     response = res;
                     return response.text();
-                }).then((data) => {
-                    this.#log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "]");
+                }).then((data) => this.#forRequest(params, () => {
+                    var requestEndTime = getTimestamp();
+                    var requestDuration = requestEndTime - requestStartTime;
+                    this.#lastRequestDuration = requestDuration;
+                    
+                    if (isImage) {
+                        this.#log(logLevelEnums.DEBUG, functionName + " image Fetch upload completed with status code: [" + response.status + "] and response: [" + data + "], duration: [" + requestDuration + "] seconds");
+                    }
+                    else {
+                        this.#log(logLevelEnums.DEBUG, functionName + " Fetch request completed wit status code: [" + response.status + "] and response: [" + data + "], duration: [" + requestDuration + "] seconds");
+                    }
                     var isResponseValidated;
                     if (useBroadResponseValidator) {
                         isResponseValidated = this.#isResponseValidBroad(response.status, data);
@@ -4657,12 +8709,21 @@ class CountlyClass {
                             callback(true, params, response.status, data);
                         }
                     }
-                }).catch((error) => {
-                    this.#log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
-                    if (typeof callback === "function") {
-                        callback(true, params);
+                })).catch((error) => this.#forRequest(params, () => {
+                    clearTimeout(timeoutId);
+                    if (error.name === 'AbortError') {
+                        this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
+                        if (typeof callback === "function") {
+                            callback(true, params, 'timeout');
+                        }
                     }
-                });
+                    else {
+                        this.#log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
+                        if (typeof callback === "function") {
+                            callback(true, params);
+                        }
+                    }
+                }));
             });
         }
         catch (e) {
@@ -4728,7 +8789,7 @@ class CountlyClass {
         try {
             var parsedResponse = JSON.parse(str);
             // check if parsed response is a JSON object or JSON array, if not it is not valid 
-            if ((Object.prototype.toString.call(parsedResponse) !== "[object Object]") && (!Array.isArray(parsedResponse))) {
+            if ((Object.prototype.toString.call(parsedResponse) !== "[object Object]") && (!Array.isArray(parsedResponse)) && parsedResponse !== "No content block found!") {
                 this.#log(logLevelEnums.ERROR, "Http response is not JSON Object nor JSON Array");
                 return false;
             }
@@ -4780,7 +8841,7 @@ class CountlyClass {
                     view: this.getViewUrl()
                 };
                 // truncate new segment
-                segments = truncateObject(segments, this.maxKeyLength, this.maxValueSize, this.maxSegmentationValues, "processScrollView", this.#log);
+                segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "processScrollView", this.#log);
                 if (this.track_domains) {
                     segments.domain = window.location.hostname;
                 }
@@ -4857,8 +8918,17 @@ class CountlyClass {
             }
             // return the cookie if it is the one we are looking for
             if (cookie.indexOf(cookieID) === 0) {
-                // just return the value part after '='
-                return cookie.substring(cookieID.length, cookie.length);
+                var raw = cookie.substring(cookieID.length, cookie.length);
+                // only values written with the prefix are encoded; any other value, also one written by an earlier version, is read as it is
+                if (raw.indexOf(this.#encodedCookiePrefix) !== 0) {
+                    return raw;
+                }
+                try {
+                    return decodeURIComponent(raw.substring(this.#encodedCookiePrefix.length));
+                }
+                catch (e) {
+                    return raw;
+                }
             }
         }
         return null;
@@ -4875,7 +8945,13 @@ class CountlyClass {
         date.setTime(date.getTime() + (exp * 24 * 60 * 60 * 1000));
         // TODO: If we offer the developer the ability to manipulate the expiration date in the future, this part must be reworked
         var expires = "; expires=" + date.toGMTString();
-        document.cookie = cookieKey + "=" + cookieVal + expires + "; path=/";
+        var value = String(cookieVal);
+        // a value is written as earlier versions wrote it, so they can still read it, unless a cookie cannot carry it as it is
+        // eslint-disable-next-line no-control-regex
+        if (/[;\u0000-\u001f\u007f]|^\s|\s$/.test(value) || value.indexOf(this.#encodedCookiePrefix) === 0) {
+            value = this.#encodedCookiePrefix + encodeURIComponent(value);
+        }
+        document.cookie = cookieKey + "=" + value + expires + "; path=/";
     }
 
     /**
@@ -4903,7 +8979,7 @@ class CountlyClass {
 
         var data;
         // use dev provided storage if available
-        if (typeof this.storage === "object" && typeof this.storage.getItem === "function") {
+        if (this.storage && typeof this.storage === "object" && typeof this.storage.getItem === "function") {
             data = this.storage.getItem(key);
             return key.endsWith("cly_id") ? data : this.deserialize(data);
         }
@@ -4913,20 +8989,24 @@ class CountlyClass {
             useLocalStorage = this.#lsSupport;
         }
 
-        // Get value
-        if (useLocalStorage) { // Native support
-            data = localStorage.getItem(key);
+        try {
+            // Get value
+            if (useLocalStorage) { // Native support
+                data = localStorage.getItem(key);
+            }
+            else if (this.storage !== "localstorage") { // Use cookie
+                data = this.#readCookie(key);
+            }
+            
+            // we return early without parsing if we are trying to get the device ID. This way we are keeping it as a string incase it was numerical.
+            if (key.endsWith("cly_id")) {
+                return data;
+            }
+            
+            return this.deserialize(data);
+        } catch (error) {
+            
         }
-        else if (this.storage !== "localstorage") { // Use cookie
-            data = this.#readCookie(key);
-        }
-
-        // we return early without parsing if we are trying to get the device ID. This way we are keeping it as a string incase it was numerical.
-        if (key.endsWith("cly_id")) {
-            return data;
-        }
-
-        return this.deserialize(data);
     }
 
     /**
@@ -4952,26 +9032,30 @@ class CountlyClass {
             }
         }
 
-        if (typeof value !== "undefined" && value !== null) {
-            // use dev provided storage if available
-            if (typeof this.storage === "object" && typeof this.storage.setItem === "function") {
-                this.storage.setItem(key, value);
-                return;
+        try {
+            if (typeof value !== "undefined" && value !== null) {
+                // use dev provided storage if available
+                if (typeof this.storage === "object" && typeof this.storage.setItem === "function") {
+                    this.storage.setItem(key, value);
+                    return;
+                }
+                
+                // developer set values takes priority
+                if (useLocalStorage === undefined) {
+                    useLocalStorage = this.#lsSupport;
+                }
+                
+                value = this.serialize(value);
+                // Set the store
+                if (useLocalStorage) { // Native support
+                    localStorage.setItem(key, value);
+                }
+                else if (this.storage !== "localstorage") { // Use Cookie
+                    this.#createCookie(key, value, 30);
+                }
             }
-
-            // developer set values takes priority
-            if (useLocalStorage === undefined) {
-                useLocalStorage = this.#lsSupport;
-            }
-
-            value = this.serialize(value);
-            // Set the store
-            if (useLocalStorage) { // Native support
-                localStorage.setItem(key, value);
-            }
-            else if (this.storage !== "localstorage") { // Use Cookie
-                this.#createCookie(key, value, 30);
-            }
+        } catch (error) {
+            // silent fail   
         }
     }
 
@@ -4997,22 +9081,26 @@ class CountlyClass {
             }
         }
 
-        // use dev provided storage if available
-        if (typeof this.storage === "object" && typeof this.storage.removeItem === "function") {
-            this.storage.removeItem(key);
-            return;
-        }
-
-        // developer set values takes priority
-        if (useLocalStorage === undefined) {
-            useLocalStorage = this.#lsSupport;
-        }
-
-        if (useLocalStorage) { // Native support
-            localStorage.removeItem(key);
-        }
-        else if (this.storage !== "localstorage") { // Use cookie
-            this.#createCookie(key, "", -1);
+        try {
+            // use dev provided storage if available
+            if (typeof this.storage === "object" && typeof this.storage.removeItem === "function") {
+                this.storage.removeItem(key);
+                return;
+            }
+            
+            // developer set values takes priority
+            if (useLocalStorage === undefined) {
+                useLocalStorage = this.#lsSupport;
+            }
+            
+            if (useLocalStorage) { // Native support
+                localStorage.removeItem(key);
+            }
+            else if (this.storage !== "localstorage") { // Use cookie
+                this.#createCookie(key, "", -1);
+            }
+        } catch (error) {
+            // silent fail   
         }
     }
 
@@ -5056,30 +9144,454 @@ class CountlyClass {
     }
 
     /**
+     *  The storage key of a value of this instance, with its app key and namespace
+     *  @param {String} key - key of the value
+     *  @returns {String} the prefixed key
+     */
+    #storageKey = (key) => {
+        var prefixed = this.app_key + "/" + key;
+        return this.namespace ? stripTrailingSlash(this.namespace) + "/" + prefixed : prefixed;
+    };
+
+    /**
+     *  Whether this page can keep its queues in its own tab's storage: a browser page with sessionStorage, neither with
+     *  storage "none" nor with a storage object of the developer's
+     *  @returns {Boolean} true when the queues can be kept per tab
+     */
+    #canUseTabStore = () => {
+        if (!isBrowser || this.storage === "none" || typeof this.storage === "object") {
+            return false;
+        }
+        try {
+            window.sessionStorage.setItem("cly_tab_check", "1");
+            window.sessionStorage.removeItem("cly_tab_check");
+            return true;
+        }
+        catch (e) {
+            return false;
+        }
+    };
+
+    /**
+     *  Read a value this tab keeps in its own storage
+     *  @param {String} key - key of the value
+     *  @returns {Varies} the stored value, or undefined
+     */
+    #getTabValue = (key) => {
+        try {
+            return this.deserialize(window.sessionStorage.getItem(this.#storageKey(key)));
+        }
+        catch (e) {
+            return undefined;
+        }
+    };
+
+    /**
+     *  Keep a value in this tab's own storage
+     *  @param {String} key - key of the value
+     *  @param {Varies} value - value to keep
+     */
+    #setTabValue = (key, value) => {
+        try {
+            window.sessionStorage.setItem(this.#storageKey(key), this.serialize(value));
+        }
+        catch (e) {
+            this.#log(logLevelEnums.WARNING, "setTabValue, Could not keep [" + key + "] in this tab's storage: " + e);
+        }
+    };
+
+    /**
+     *  Save the request queue: in this tab's own storage, or in localStorage where there is none
+     */
+    #saveRequestQueue = () => {
+        if (this.#tabStore) {
+            this.#setTabValue("cly_queue", this.#requestQueue);
+        }
+        else {
+            this.#setValueInStorage("cly_queue", this.#requestQueue, true);
+        }
+    };
+
+    /**
+     *  Save the event queue: in this tab's own storage, or where the storage setting puts it where there is none
+     */
+    #saveEventQueue = () => {
+        if (this.#tabStore) {
+            this.#setTabValue("cly_event", this.#eventQueue);
+        }
+        else {
+            this.#setValueInStorage("cly_event", this.#eventQueue);
+        }
+    };
+
+    /**
+     *  Leave this tab's unsent events and requests in the shared storage when its page is left, or when it cannot send
+     *  them while in the background, for the tab in front or the next page to send
+     */
+    #handOver = () => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        this.#flushPendingRequestBuffer();
+        this.#sendEventsForced();
+        this.#leaveUnsentRequests();
+    };
+
+    /**
+     *  Move this tab's unsent requests into the shared storage, where they outlast the tab, for the tab in front or the
+     *  next page to send; until this tab takes them back it sends nothing of its own, which would overtake them
+     *  @param {Boolean} [forChangingTab] - true when they are left for a tab changing the device ID or the profile, which
+     *  takes them, so this tab does not wait to take them back
+     */
+    #leaveUnsentRequests = (forChangingTab) => {
+        // a request on its way has almost always reached the server already, handing it over would send it twice
+        var unsent = this.#requestQueue.filter((request) => request !== this.#requestOnItsWay);
+        if (unsent.length) {
+            var waiting = this.#getValueFromStorage("cly_queue", true);
+            var list = (Array.isArray(waiting) ? waiting : []).concat(unsent);
+            if (list.length > this.#SCSizeReqQueue) {
+                list = list.slice(-this.#SCSizeReqQueue);
+            }
+            try {
+                window.localStorage.setItem(this.#storageKey("cly_queue"), this.serialize(list));
+                this.#log(logLevelEnums.DEBUG, "leaveUnsentRequests, Left [" + unsent.length + "] unsent request(s) for the tab in front or the next page");
+                unsent = [];
+                if (!forChangingTab) {
+                    this.#waitingToRetry = true;
+                }
+            }
+            catch (e) {
+                // with nowhere to leave them they stay in this tab's storage, for its next page
+                this.#log(logLevelEnums.WARNING, "leaveUnsentRequests, Could not leave the unsent requests for other tabs: " + e);
+            }
+        }
+        this.#requestQueue = unsent;
+        this.#saveRequestQueue();
+    };
+
+    /**
+     *  Send everything this tab holds when it is left for another tab or app: the browser slows a tab in the background
+     *  down, and a phone can close it without any further event
+     */
+    #sendWhenLeft = () => {
+        if (this.#halted) {
+            return;
+        }
+        if (this.#global && typeof Countly.q !== "undefined" && Countly.q.length > 0) {
+            this.#processAsyncQueue();
+        }
+        if (!this.test_mode_eq) {
+            this.#sendEventsForced();
+        }
+        if (!this.#requestQueue.length) {
+            return;
+        }
+        if (this.#cannotSendNow()) {
+            this.#handOver();
+            return;
+        }
+        this.#sendUpTo(this.#requestQueue[this.#requestQueue.length - 1], true);
+    };
+
+    /**
+     *  Whether this tab cannot send for now: its last send failed, as without a connection, it is in offline mode, or what
+     *  it left in the shared storage waits to be taken back first
+     *  @returns {Boolean} true while sending is held back for one of these reasons
+     */
+    #cannotSendNow = () => {
+        return this.#offlineMode || getTimestamp() <= this.#failTimeout || this.#waitingToRetry;
+    };
+
+    /**
+     *  Take back what this tab left in the shared storage while it could not send, once it is in front and may send again
+     *  @param {Boolean} sendNow - false to leave the sending to the caller or the heartbeat
+     */
+    #takeBackWhenSendable = (sendNow) => {
+        if (this.#waitingToRetry && !this.#offlineMode && getTimestamp() > this.#failTimeout && !document.hidden) {
+            this.#takeHandedOver(sendNow);
+        }
+    };
+
+    /**
+     *  Tell the site's other tabs that this tab is about to change the device ID or the profile, so they leave what they
+     *  have not sent in the shared storage, and collect that for a moment to send it before the change
+     *  @param {String} [newId] - the device ID after a device ID change
+     *  @param {Number} [newType] - the type of that device ID
+     */
+    #announceChange = (newId, newType) => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        var signal = { at: getMsTimestamp() };
+        if (typeof newId === "string") {
+            signal.id = newId;
+            signal.t = newType;
+        }
+        try {
+            window.localStorage.setItem(this.#storageKey("cly_handover"), JSON.stringify(signal));
+        }
+        catch (e) {
+            this.#log(logLevelEnums.WARNING, "announceChange, Could not tell the other tabs: " + e);
+            return;
+        }
+        this.#collectUntil = signal.at + tabHandoverTimes.COLLECT;
+        clearTimeout(this.#collectTimer);
+        this.#collectTimer = setTimeout(() => {
+            this.#collectTimer = null;
+            this.#collectUntil = 0;
+            if (this.#halted) {
+                return;
+            }
+            // a tab in the background takes nothing, it leaves its own requests behind those of the other tabs
+            if (document.hidden) {
+                this.#leaveUnsentRequests();
+                return;
+            }
+            this.#takeHandedOver(true);
+            this.#sendNextRightAway();
+        }, tabHandoverTimes.COLLECT);
+    };
+
+    /**
+     *  React to another tab that is about to change the device ID or the profile: leave what this tab has not sent for it,
+     *  and on a device ID change take the new ID and hold back for a moment, so the change reaches the server first
+     *  @param {String} value - the other tab's signal, with the new device ID and its type on a device ID change
+     */
+    #onOtherTabChange = (value) => {
+        if (!this.#tabStore || !value) {
+            return;
+        }
+        var signal = null;
+        try {
+            signal = JSON.parse(value);
+        }
+        catch (e) {
+            return;
+        }
+        this.#leaveForChangingTab();
+        if (signal && typeof signal.id === "string" && signal.id !== this.device_id) {
+            this.device_id = signal.id;
+            if (typeof signal.t === "number") {
+                this.#deviceIdType = signal.t;
+            }
+            this.#pauseForOtherTab();
+        }
+    };
+
+    /**
+     *  Leave what this tab has not sent in the shared storage, its pending events packed under its current device ID, for
+     *  the tab changing the device ID or the profile to send before its change
+     */
+    #leaveForChangingTab = () => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        this.#flushPendingRequestBuffer();
+        if (!this.test_mode_eq) {
+            this.#sendEventsForced();
+        }
+        this.#leaveUnsentRequests(true);
+    };
+
+    /**
+     *  Send nothing of this tab's own for a moment after another tab changed the device ID, so that tab's change goes out first
+     */
+    #pauseForOtherTab = () => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        this.#pausedUntil = getMsTimestamp() + tabHandoverTimes.PAUSE;
+        clearTimeout(this.#pauseTimer);
+        this.#pauseTimer = setTimeout(() => {
+            this.#pauseTimer = null;
+            this.#pausedUntil = 0;
+            if (this.#halted) {
+                return;
+            }
+            // what was held back goes out at once, one request per heartbeat would keep a busy background tab behind
+            if (this.#requestQueue.length) {
+                this.#sendUpTo(this.#requestQueue[this.#requestQueue.length - 1], true);
+            }
+            this.#flushDeferredRequests();
+        }, tabHandoverTimes.PAUSE);
+    };
+
+    /**
+     *  Whether this tab holds back its own sending around a device ID or profile change: while it collects what the other
+     *  tabs leave, or while another tab changes the device ID
+     *  @returns {Boolean} true while it holds back
+     */
+    #holding = () => {
+        var now = getMsTimestamp();
+        return now < this.#collectUntil || now < this.#pausedUntil;
+    };
+
+    /**
+     *  Whether a request outside the queue has to wait, as a request for a device ID the server has not seen creates that
+     *  user: while a merge into its device ID is unsent, here or in the shared storage, and while another tab changes the
+     *  device ID
+     *  @param {String} functionName - name of the request
+     *  @param {Object} params - request parameters
+     *  @returns {Boolean} true when it has to wait
+     */
+    #mustWaitForQueue = (functionName, params) => {
+        if (functionName === "send_request_queue" || functionName === "journey_trigger_send_request" || this.test_mode || !params) {
+            return false;
+        }
+        if (getMsTimestamp() < this.#pausedUntil) {
+            return true;
+        }
+        var shared = this.#waitingToRetry ? this.#getValueFromStorage("cly_queue", true) : null;
+        var unsent = this.#requestQueue.concat(this.#pendingRequestBuffer || [], Array.isArray(shared) ? shared : []);
+        return unsent.some((request) => request && request.old_device_id && request.device_id === params.device_id);
+    };
+
+    /**
+     *  Make the requests that waited for a device ID change to be sent, in the order they were made; any that still have to
+     *  wait go back to waiting
+     */
+    #flushDeferredRequests = () => {
+        if (!this.#deferredRequests.length) {
+            return;
+        }
+        var waiting = this.#deferredRequests;
+        this.#deferredRequests = [];
+        waiting.forEach((args) => this.#makeNetworkRequest(args[0], args[1], args[2], args[3], args[4], args[5]));
+    };
+
+    /**
+     *  Take over the requests and events other tabs left in the shared storage, to be sent before this tab's own
+     *  @param {Boolean} sendNow - false at start, where requests from a temporary device ID still get the real one
+     */
+    #takeHandedOver = (sendNow) => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        this.#waitingToRetry = false;
+        var requests = this.#getValueFromStorage("cly_queue", true);
+        if (Array.isArray(requests) && requests.length) {
+            this.#removeValueFromStorage("cly_queue", true);
+            this.#log(logLevelEnums.DEBUG, "takeHandedOver, Taking over [" + requests.length + "] request(s) other tabs left");
+            this.#requestQueue = requests.concat(this.#requestQueue);
+            if (this.#requestQueue.length > this.#SCSizeReqQueue) {
+                this.#requestQueue = this.#requestQueue.slice(-this.#SCSizeReqQueue);
+            }
+            // what a tab left in offline mode goes out with this tab's device ID, as at start, where it is not known yet
+            if (this.device_id && this.device_id !== "[CLY]_temp_id") {
+                this.#giveTemporaryIdRequestsToCurrentId();
+            }
+            this.#saveRequestQueue();
+            this.#noteOrderSensitive(requests, sendNow);
+        }
+        // events are only left there by SDK versions that shared the event queue between tabs
+        var events = this.#getValueFromStorage("cly_event");
+        if (Array.isArray(events) && events.length) {
+            this.#removeValueFromStorage("cly_event");
+            this.#eventQueue = events.concat(this.#eventQueue);
+            this.#saveEventQueue();
+        }
+    };
+
+    /**
+     *  Hand over what this tab has not sent when its page is left, and take over what other tabs left whenever this
+     *  tab comes to the front
+     */
+    #listenForTabChanges = () => {
+        add_event_listener(window, "onpagehide" in window ? "pagehide" : "unload", () => {
+            this.#handOver();
+        });
+        add_event_listener(window, "pageshow", (event) => {
+            if (event && event.persisted && !document.hidden) {
+                this.#takeHandedOver(true);
+            }
+        });
+        add_event_listener(document, "visibilitychange", () => {
+            if (document.hidden) {
+                this.#sendWhenLeft();
+            }
+            else {
+                this.#takeHandedOver(true);
+            }
+        });
+    };
+
+    /**
+     *  Whether what this tab's storage holds is a copy of the page that opened this tab: a tab opened by script starts with
+     *  a copy of its opener's storage, while the opener keeps and sends its own unsent data
+     *  @returns {Boolean} true on a new visit of a tab another page opened, false otherwise or when the browser cannot tell
+     */
+    #isOpenersCopy = () => {
+        try {
+            if (!window.opener) {
+                return false;
+            }
+            var entries = typeof performance.getEntriesByType === "function" ? performance.getEntriesByType("navigation") : [];
+            if (entries && entries.length) {
+                return entries[0].type === "navigate";
+            }
+            // older browsers number the type, 0 being a new visit
+            return !!(performance.navigation && performance.navigation.type === 0);
+        }
+        catch (e) {
+            return false;
+        }
+    };
+
+    /**
      *  Apply modified storage changes
      *  @param {String} key - key of storage modified
      *  @param {Varies} newValue - new value for storage
      */
     #onStorageChange = (key, newValue) => {
         this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for key:", key);
-        this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for value:", newValue);
+        // another tab's request queue can carry log batches, which must not be gathered a second time
+        this.#withoutLogCapture(key === "cly_queue", () => this.#log(logLevelEnums.DEBUG, "onStorageChange, Applying storage changes for value:", newValue));
         switch (key) {
             // queue of requests
             case "cly_queue":
-                this.#requestQueue = this.deserialize(newValue || "[]");
+                if (this.#tabStore) {
+                    // another tab left its unsent requests: the tab in front sends them, only one window has the focus
+                    if (newValue && !document.hidden && document.hasFocus()) {
+                        this.#takeHandedOver(true);
+                    }
+                }
+                else {
+                    var mirroredRequests = this.deserialize(newValue || "[]");
+                    this.#requestQueue = Array.isArray(mirroredRequests) ? mirroredRequests : [];
+                }
                 break;
             // queue of events
             case "cly_event":
-                this.#eventQueue = this.deserialize(newValue || "[]");
+                if (!this.#tabStore) {
+                    var mirroredEvents = this.deserialize(newValue || "[]");
+                    this.#eventQueue = Array.isArray(mirroredEvents) ? mirroredEvents : [];
+                }
                 break;
             case "cly_remote_configs":
                 this.#remoteConfigs = this.deserialize(newValue || "{}");
                 break;
             case "cly_ignore":
                 this.ignore_visitor = this.deserialize(newValue);
+                this.#ignoredByChoice = !!this.ignore_visitor;
+                break;
+            case "cly_config":
+                this.#serverConfigCache = this.deserialize(newValue || "{}");
+                this.#populateServerConfig(this.#serverConfigCache);
+                // a live server response always carries 'lg', so a mirrored config that has one came from another tab's fetch
+                if (this.#serverConfigCache && typeof this.#serverConfigCache.lg !== "undefined") {
+                    this.#applyLogGatheringConfig(this.#serverConfigCache.lg);
+                }
                 break;
             case "cly_id":
+                // another tab changed the device ID: what this tab has not sent goes out first, under the previous one
+                if (newValue !== this.device_id) {
+                    this.#leaveForChangingTab();
+                    this.#pauseForOtherTab();
+                }
                 this.device_id = newValue;
+                break;
+            case "cly_handover":
+                this.#onOtherTabChange(newValue);
                 break;
             case "cly_id_type":
                 this.#deviceIdType = this.deserialize(newValue);
@@ -5098,6 +9610,10 @@ class CountlyClass {
         this.#setValueInStorage("cly_queue", []);
         this.#eventQueue = [];
         this.#setValueInStorage("cly_event", []);
+        if (this.#tabStore) {
+            this.#saveRequestQueue();
+            this.#saveEventQueue();
+        }
     };
 
     /**
@@ -5128,6 +9644,7 @@ class CountlyClass {
         truncateObject: truncateObject,
         truncateSingleValue: truncateSingleValue,
         stripTrailingSlash: stripTrailingSlash,
+        parseUrlParts: parseUrlParts,
         prepareParams: prepareParams,
         sendXmlHttpRequest: this.#sendXmlHttpRequest,
         isResponseValid: this.#isResponseValid,
@@ -5176,15 +9693,27 @@ class CountlyClass {
         clearQueue: this.#clearQueue,
         getLocalQueues: this.#getLocalQueues,
         testingGetRequests: this.#getGeneratedRequests,
+        setFakeRequestHandler: (handler) => { this.#fakeRequestHandler = handler; },
+        getFakeRequestHandler: () => this.#fakeRequestHandler,
+        closeContent: () => this.#closeContentFrame(),
+        getLogBuffer: () => this.#logBuffer,
+        getLogGatheringState: () => this.#SCLogGathering,
+        getDroppedLogCount: () => this.#logBufferDropped,
+        flushLogBuffer: () => this.#flushLogBuffer(),
+        sendPushToken: this.#sendPushToken,
+        urlBase64ToUint8Array: this.#urlBase64ToUint8Array,
+        isPushSupported: this.#isPushSupported
     };
 
     /**
      * Health Check Interface:
      * {sendInstantHCRequest} Sends instant health check request
-     * {resetAndSaveCounters} Resets and saves health check counters
+     * {resetAndSaveCounters} Resets and saves health check counters (including backoff counters)
      * {incrementErrorCount} Increments health check error count
      * {incrementWarningCount} Increments health check warning count
-     * {resetCounters} Resets health check counters
+     * {incrementBackoffCount} Increments health check backoff count and consecutive backoff count
+     * {resetConsecutiveBackoffCount} Resets consecutive backoff tracking flag (not the counter value)
+     * {resetCounters} Resets health check counters (excluding backoff counters)
      * {saveRequestCounters} Saves health check request counters
      */
     #HealthCheck = {
@@ -5205,7 +9734,9 @@ class CountlyClass {
                 el: this.hcErrorCount,
                 wl: this.hcWarningCount,
                 sc: this.hcStatusCode,
-                em: curbedMessage
+                em: curbedMessage,
+                bom: this.hcBackoffCount,
+                cbom: this.hcConsecutiveBackoffCount
             };
             // prepare request
             var request = {
@@ -5229,6 +9760,8 @@ class CountlyClass {
             this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
             this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
             this.#setValueInStorage(healthCheckCounterEnum.errorMessage, this.hcErrorMessage);
+            this.#setValueInStorage(healthCheckCounterEnum.backoffCount, this.hcBackoffCount);
+            this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount);
         },
         incrementErrorCount: () => {
             this.hcErrorCount++;
@@ -5236,11 +9769,25 @@ class CountlyClass {
         incrementWarningCount: () => {
             this.hcWarningCount++;
         },
+        incrementBackoffCount: () => {
+            this.hcBackoffCount++;
+            if (this.#lastRequestWasBackoff) {
+                this.hcConsecutiveBackoffCount++;
+            }
+            this.#lastRequestWasBackoff = true;
+            this.#setValueInStorage(healthCheckCounterEnum.backoffCount, this.hcBackoffCount);
+            this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount);
+        },
+        resetLastRequestBackoffStatus: () => {
+            this.#lastRequestWasBackoff = false;
+        },
         resetCounters: () => {
             this.hcErrorCount = 0;
             this.hcWarningCount = 0;
             this.hcStatusCode = -1;
             this.hcErrorMessage = "";
+            this.hcBackoffCount = 0;
+            this.hcConsecutiveBackoffCount = 0;
         },
         saveRequestCounters: (status, responseText) => {
             this.hcStatusCode = status;

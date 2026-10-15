@@ -121,19 +121,16 @@ describe("Test Countly.q related methods and processes", () => {
                 // Check that the .q is empty
                 expect(Countly.q.length).to.equal(0);
                 cy.fetch_local_event_queue().then((eq) => {
-                    // Check that event queue has new device ID's orientation event
-                    expect(eq.length).to.equal(1);
-                    expect(eq[0].key).to.equal("[CLY]_orientation");
+                    // Check that the event queue was flushed for the previous device ID
+                    expect(eq.length).to.equal(0);
                     cy.fetch_local_request_queue().then((rq) => {
-                        // Check that events are now in request queue (second request is begin session for new device ID)
-                        expect(rq.length).to.equal(2);
+                        // Check that events are now in request queue (no session for the new device ID, as none was running)
+                        expect(rq.length).to.equal(1);
                         const eventsArray = JSON.parse(rq[0].events);
                         expect(eventsArray[0].key).to.equal("event_1");
                         expect(eventsArray[1].key).to.equal("event_2");
                         expect(eventsArray[2].key).to.equal("event_3");
                         expect(eventsArray[3].key).to.equal("event_4");
-                        // check begin session
-                        expect(rq[1].begin_session).to.equal(1);
                     });
                 });
             });
@@ -286,4 +283,45 @@ describe("Test Countly.q related methods and processes", () => {
             });
         });
     });
+
+    it("Runs a queued call meant for the main instance on the main instance, also when another instance works through Countly.q first", () => {
+        cy.visit("./cypress/fixtures/async_queue_instances.html");
+        cy.wait(2000).then(() => {
+            cy.fetch_local_request_queue("SECOND_APP_KEY").then((rq) => {
+                var secondKeys = rq.filter((r) => r.events).reduce((all, r) => all.concat(JSON.parse(r.events).map((e) => e.key)), []);
+                expect(secondKeys, "events recorded by the second instance").to.deep.equal(["for_second"]);
+                expect(rq.filter((r) => r.user_details).length, "the second instance's user details").to.equal(1);
+                cy.fetch_local_event_queue("MAIN_APP_KEY").then((eq) => {
+                    expect(eq.map((e) => e.key), "events recorded by the main instance, in their order").to.deep.equal(["for_main", "for_main_by_key"]);
+                });
+            });
+        });
+    });
+
+    it("Leaves Countly.q to the next instance once an instance is halted", () => {
+        hp.haltAndClearStorage(() => {
+            initMain();
+            Countly.halt();
+            // the next instance runs no heartbeat, so only a halted instance could take the queued call
+            Countly.noHeartBeat = true;
+            initMain();
+            Countly.q.push(["add_event", event(1)]);
+            cy.wait(1500).then(() => {
+                expect(Countly.q.length, "calls still waiting in Countly.q").to.equal(1);
+            });
+        });
+    });
+
+    it("Keeps processing Countly.q and the heartbeat after a queued call throws", () => {
+        // a halted instance of an earlier test keeps its heartbeat and can take the queued calls, so a fresh page is used
+        cy.visit("./cypress/fixtures/async_queue_throw.html");
+        cy.wait(3000).then(() => {
+            cy.fetch_local_request_queue().then((rq) => {
+                var keys = rq.filter((r) => r.events).reduce((all, r) => all.concat(JSON.parse(r.events).map((e) => e.key)), []);
+                expect(keys, "the call queued after the throwing ones still ran").to.include("event_1");
+                expect(keys, "the heartbeat kept moving events on").to.include("event_2");
+            });
+        });
+    });
+
 });

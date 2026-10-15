@@ -1,5 +1,7 @@
 # Countly JavaScript SDK
 
+[![Tests](https://github.com/Countly/countly-sdk-js/actions/workflows/main.yml/badge.svg?branch=staging)](https://github.com/Countly/countly-sdk-js/actions/workflows/main.yml)
+
 This repository contains the Countly JS SDK, which can be integrated into websites, web workers and web applications. The Countly JS SDK is intended to be used with [Countly Lite](https://countly.com/lite), [Countly Flex](https://countly.com/flex) [Countly Enterprise](https://countly.com/enterprise).
 
 ## What is Countly?

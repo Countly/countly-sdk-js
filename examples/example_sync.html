@@ -27,6 +27,17 @@
         Countly.track_pageview();
         Countly.track_errors();
 
+        //content filter example
+        function filter(params) {
+            var shouldContentBeShown = true;
+            console.log("Content filter called with params:", params);
+            // Add your content filtering logic here and determine whether to show content
+            return shouldContentBeShown;
+        }
+
+        //enter content zone with filter
+        Countly.content.enterContentZone(filter);
+
         document.getElementById("testButton").addEventListener("click", function() {
             Countly.add_event({
                 key: "buttonClick",
@@ -34,6 +45,16 @@
                     "id": "id"
                 }
             });
+        });
+
+        document.getElementById("uploadBtn").addEventListener("click", function() {
+            var fileInput = document.getElementById("profilePicInput");
+            var file = fileInput.files[0];
+            if (!file) {
+                alert("Please select an image file.");
+                return;
+            }
+            Countly.uploadUserProfilePicture(file);
         });
     </script>
 </head>
@@ -49,6 +70,10 @@
         <img src="./images/team_countly.jpg" id="wallpaper" />
         <br />
         <input type="button" id="testButton" onclick="clickEvent()" value="Test Button">
+        <br /><br />
+        <input type="file" id="profilePicInput" accept="image/*">
+        <br /><br />
+        <input type="button" id="uploadBtn" value="Upload Profile Picture">
         <p><a href='https://countly.com/'>Countly</a></p>
     </center>
 </body>
