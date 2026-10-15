@@ -79,6 +79,28 @@ describe("Leaving the content zone", () => {
             });
         });
     });
+
+    it("does not show content that arrives after the zone is left, until the zone is entered again", () => {
+        var leaveWhileOnItsWay = true;
+        hp.haltAndClearStorage(() => {
+            initWithContent(() => {
+                if (leaveWhileOnItsWay) {
+                    leaveWhileOnItsWay = false;
+                    // the visitor leaves the zone while this request is on its way
+                    Countly.content.exitContentZone();
+                }
+                return true;
+            });
+            Countly.content.enterContentZone();
+            cy.wait(5500).then(() => {
+                expect(contentFrame(), "content that arrived after leaving").to.not.exist;
+                Countly.content.enterContentZone();
+                cy.wait(500).then(() => {
+                    expect(contentFrame(), "content once the zone is entered again").to.exist;
+                });
+            });
+        });
+    });
 });
 
 describe("Device ID change without merge", () => {
@@ -97,6 +119,23 @@ describe("Device ID change without merge", () => {
                 cy.wait(1500).then(() => {
                     expect(counts.content, "content requests after the change").to.equal(1);
                 });
+            });
+        });
+    });
+
+    it("does not show the previous user's content that arrives after the change", () => {
+        var changeWhileOnItsWay = true;
+        hp.haltAndClearStorage(() => {
+            initWithContent(() => {
+                if (changeWhileOnItsWay) {
+                    changeWhileOnItsWay = false;
+                    Countly.change_id("next user", false);
+                }
+                return true;
+            });
+            Countly.content.enterContentZone();
+            cy.wait(5500).then(() => {
+                expect(contentFrame(), "the previous user's content").to.not.exist;
             });
         });
     });
@@ -145,6 +184,115 @@ describe("Messages from content", () => {
 });
 
 describe("Journey content", () => {
+    afterEach(() => {
+        document.querySelectorAll("#cly-content-iframe").forEach((frame) => frame.remove());
+    });
+
+    it("waits for enterContentZone once the zone was left", () => {
+        var counts = { content: 0 };
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                behavior_settings: { c: { jte: ["journey_start"] } },
+                disable_sdk_behavior_settings_updates: true,
+                fake_request_handler: (req) => {
+                    if (req.params && req.params.method === "queue") {
+                        counts.content++;
+                        return { status: 200, responseText: contentAnswer };
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.content.exitContentZone();
+            Countly.add_event({ key: "journey_start" });
+            cy.wait(2000).then(() => {
+                expect(counts.content, "journey content requests after leaving").to.equal(0);
+                expect(contentFrame(), "journey content after leaving").to.not.exist;
+                // the zone itself waits 4 s after init, so what comes next is the journey's
+                Countly.content.enterContentZone();
+                Countly.add_event({ key: "journey_start" });
+                cy.wait(1500).then(() => {
+                    expect(counts.content, "journey content requests after entering again").to.be.greaterThan(0);
+                    expect(contentFrame(), "journey content after entering again").to.exist;
+                });
+            });
+        });
+    });
+
+    it("keeps coming for the next user after a device ID change on a site that does not use the content zone", () => {
+        var counts = { content: 0 };
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                behavior_settings: { c: { jte: ["journey_start"] } },
+                disable_sdk_behavior_settings_updates: true,
+                fake_request_handler: (req) => {
+                    if (req.params && req.params.method === "queue") {
+                        counts.content++;
+                        return { status: 200, responseText: contentAnswer };
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.change_id("next user", false);
+            Countly.add_event({ key: "journey_start" });
+            cy.wait(1500).then(() => {
+                expect(counts.content, "journey content requests for the next user").to.be.greaterThan(0);
+                expect(contentFrame(), "journey content for the next user").to.exist;
+            });
+        });
+    });
+
+    it("is asked for once what waited in the shared storage since a failed send went out before the journey event", () => {
+        var counts = { content: 0 };
+        var failing = true;
+        var sentKeys = [];
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                interval: 10000,
+                fail_timeout: 1,
+                behavior_settings: { c: { jte: ["journey_start"] } },
+                disable_sdk_behavior_settings_updates: true,
+                fake_request_handler: (req) => {
+                    if (req.params && req.params.method === "queue") {
+                        counts.content++;
+                        return { status: 200, responseText: "{}" };
+                    }
+                    if (req.params && typeof req.params.events === "string") {
+                        if (failing) {
+                            return { status: 0, responseText: "" };
+                        }
+                        sentKeys.push(JSON.parse(req.params.events).map((e) => e.key).join(","));
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            cy.wait(1000).then(() => {
+                // leaving the tab sends what it holds, which fails, so it waits in the shared storage
+                Countly.add_event({ key: "before_the_journey" });
+                Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+                document.dispatchEvent(new Event("visibilitychange"));
+                // back in front without a visibility change, before the slow heartbeat comes
+                delete document.hidden;
+                failing = false;
+            });
+            cy.wait(2500).then(() => {
+                Countly.add_event({ key: "journey_start" });
+            });
+            cy.wait(2500).then(() => {
+                expect(sentKeys, "in the order they were recorded").to.deep.equal(["before_the_journey", "journey_start"]);
+                expect(counts.content, "journey content requests").to.be.greaterThan(0);
+            });
+        });
+    });
+
     it("is asked for even when an earlier journey event reached the server by the regular sending", () => {
         var counts = { content: 0 };
         var failedOnce = false;

@@ -25,6 +25,17 @@ function haltAndClearStorage(callback) {
 }
 
 /**
+ * what waits to be sent: the requests left in the shared storage, as while sending fails, then what the tab keeps
+ * @param {String} key - app key, the default test app key if not given
+ * @returns {Object} the tab's event queue and the waiting requests, in the order they would be sent
+ */
+function waitingQueues(key) {
+    var queues = Countly._internals.getLocalQueues();
+    var left = JSON.parse(window.localStorage.getItem((key || appKey) + "/cly_queue") || "[]");
+    return { eventQ: queues.eventQ, requestQ: (Array.isArray(left) ? left : []).concat(queues.requestQ) };
+}
+
+/**
  * user details object for user details tests (used in user_details.js and storage_change.js)
  * @type {Object}
  */
@@ -545,6 +556,7 @@ function createFakeRequestHandler(options = {}) {
 
 module.exports = {
     haltAndClearStorage,
+    waitingQueues,
     sWait,
     sWait2,
     mWait,
