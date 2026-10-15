@@ -1,14 +1,14 @@
 ## 26.8.0
 
-* ! Minor Breaking Change ! When consent is required, Content now needs the new `content` consent. If `enterContentZone` is called before the consent is given, it takes effect once the consent is given, and removing the consent closes the content zone.
-* ! Minor Breaking Change ! Event and segmentation filters of the server configuration now apply only to custom events.
 * ! Minor Breaking Change ! Form tracking (`track_forms`) and form data collection (`collect_from_forms`) now leave out sensitive data:
-  * password fields (also revealed ones), payment card fields, one-time code fields and card numbers are never read
-  * fields named like secrets, bank or identity data are read only with the new `cly_form_allow` class in `track_forms`, or with a `cly_user_{key}` class in `collect_from_forms`
+  * password fields (also ones revealed as text), fields whose `autocomplete` marks a payment card or one-time code, and card numbers are never recorded
+  * fields named or labelled like secrets, payment card, bank or identity data are read only with the new `cly_form_allow` class in `track_forms`, or with a `cly_user_{key}` class in `collect_from_forms`
   * `track_forms` skips values shaped like a social security number unless the field has the `cly_form_allow` class
-  * `collect_from_forms` reads hidden fields only with a `cly_user_{key}` class, and takes a phone number or an email only from a field holding one
+  * `collect_from_forms` reads hidden fields only with a `cly_user_{key}` class, takes an email or phone number only from a field holding one, and no longer takes a field named like `number` as the phone (use the `cly_user_phone` class)
   * the `cly_user_ignore` class now also works on an element containing fields
-* ! Minor Breaking Change ! `change_id` without merge now starts a session for the new device ID only with `track_sessions`; with manual session calls, begin the new user's session yourself. The new user's session is now always a new one, instead of a continuation of the previous user's.
+* ! Minor Breaking Change ! Added `content` consent for content zone. When consent is required, content now needs the new `content` consent; the content zone waits until it is given.
+* ! Minor Breaking Change ! `change_id` and `set_id` without merge now start a session for the new device ID only with `track_sessions`; with manual session calls, call `begin_session` for the new user yourself.
+* ! Minor Breaking Change ! While a page is open and sending works, its unsent events and requests are now kept in the tab's sessionStorage instead of localStorage (events instead of a cookie with `storage: "cookie"`). Requests that cannot be sent for now, such as in offline mode, and those of a page being left still wait in localStorage. This does not apply with `storage: "none"` or a custom storage object.
 
 * Added `track_form_values` init option for turning off the field values in the events of `track_forms` (default `true`).
 * Added web push notification support (requires a Countly server with web push support):
@@ -17,61 +17,63 @@
   * `disable_push_notifications` method for unsubscribing the visitor from push notifications
   * `set_push_notification_listener` method and `push_notification_listener` init option for getting notified when a notification is received, clicked or closed
   * `record_push_action` method for recording a notification click manually
-  * `push_vapid_public_key` init option for providing your application's VAPID public key
+  * `push_vapid_public_key` init option for providing your application's VAPID public key (required)
   * `push_service_worker_path` init option for providing the path of the service worker file (default `/countly_sw.js`)
   * `push_service_worker_scope` init option for registering the service worker under a different scope (default `countly-push/` next to the service worker file)
   * `push_service_worker_registration` init option for providing your own service worker registration that imports `countly_sw.js`, or the promise `register()` returns for it
-  * `push_auto_register` init option for turning off the automatic push registration on page load (default `true`)
+  * `push_auto_register` init option for turning off the silent registration of visitors who already allowed notifications (default `true`)
   * `push_subscribe_timeout` init option for setting how long `enable_push_notifications` waits for the browser, in milliseconds (default `30000`)
-  * `countly_sw.js` service worker (`lib/countly_sw.js`), to be served from your site's root or imported into your own service worker
-  * `opt_out` also takes Countly's push subscription off the browser; push then stays off after `opt_in` until `enable_push_notifications` is called
-* Added support for server-initiated connection tests. When the server asks for one, the SDK probes the endpoints it depends on and reports which of them are reachable.
-* Added support for server-requested SDK log gathering. When it is requested for a device, the SDK gathers its own internal log lines and uploads them in batches.
-* Added `content.setGlobalContentSegmentation` method and `global_content_segmentation` init option for adding a segmentation to every content and feedback widget event, including the answers sent by the feedback widgets the SDK shows. Keys the server reads on these events, such as `rating`, `closed`, `campaign_id` or keys starting with `answ`, are left out. Ratings given in the rating popups of `presentRatingWidgetWithID`, `initializeRatingWidgets` and `enableRatingWidgets` do not carry it.
-* Added support for showing content and feedback widgets in the site's light or dark theme. The SDK tells them the `color-scheme` your site declares in its CSS or `color-scheme` meta tag when it names only one, otherwise the visitor's browser setting. Content shows its dark version only when dark mode is enabled for it in the content builder.
-* Added `content.setTheme` method and `content_theme` init option for always showing content and feedback widgets in the `"dark"` or `"light"` theme, sending no theme with `false`, or following the site's theme again with `null`.
+  * `countly_sw.js` service worker file, to be served from your site or imported into your own service worker
+  * `opt_out` also unsubscribes the visitor from push notifications; after `opt_in`, call `enable_push_notifications` to subscribe them again
+* Added support for server-initiated connection tests, which report which Countly endpoints the browser can reach (requires a Countly server with connection test support).
+* Added support for server-requested SDK log gathering, which uploads the SDK's own log lines for the devices the server asks for (requires a Countly server with SDK log gathering support).
+* Added `content.setGlobalContentSegmentation` method and `global_content_segmentation` init option for adding a segmentation to every content and feedback widget event, apart from the rating popups of `presentRatingWidgetWithID`, `initializeRatingWidgets` and `enableRatingWidgets`. Keys the server reads on these events, such as `rating`, `closed` or `campaign_id`, are left out.
+* Added passing the site's light or dark theme (the `color-scheme` the page declares, otherwise the visitor's browser setting) to content and feedback widgets; content uses it when dark mode is enabled for it in the content builder:
+  * `content.setTheme` method and `content_theme` init option for setting the theme instead: `"dark"`, `"light"`, `false` for none, or `null` to follow the site (default `null`)
 * Added TypeScript definitions for `attempt_to_send_stored_requests`, `check_any_consent`, `opt_in`, `opt_out`, `recordError`, `recordRatingWidgetWithID` and `track_view`.
 
-* Mitigated an issue where a log line carrying an object that could not be serialized would throw while `debug` was enabled.
-* Mitigated an issue where withdrawing a consent was not reported to the server.
-* Mitigated an issue where content could open links that run code, such as `javascript:` links, and the opened page could control the page that opened it.
-* Mitigated an issue where content on iPhones and iPads was laid out for a screen two to three times its size.
-* Mitigated an issue where adding a breadcrumb froze the page when the server configuration set the breadcrumb limit to 0.
-* Mitigated an issue where a `device_id` given as `null` or an empty string left the SDK without a device ID, so nothing was sent.
-* Mitigated an issue where a device ID (`cly_device_id`) or UTM tag given in the page URL was not percent-decoded, so `john%40mail.com` was recorded instead of `john@mail.com`.
-* Mitigated an issue where a call in the `Countly.q` queue that threw an error stopped the SDK for the rest of the page.
+* Mitigated an issue where content could open links that run code on the site, such as `javascript:` links, and a page opened from content could redirect the site's tab. Content now opens only web, relative, contact (such as `mailto:` or `tel:`) and `scheme://` app links.
+* Mitigated an issue where, with `debug` enabled, methods such as `add_event` or `user_details` threw an error when given an object that cannot be turned into JSON.
 * Mitigated an issue where the deprecated `show_feedback_popup` method threw an error instead of showing the widget.
+* Mitigated an issue where withdrawing a consent with `remove_consent` was not reported to the server until another consent was given.
+* Mitigated an issue where event and segmentation filters of the server configuration could effect the internal events.
+* Mitigated an issue where content and feedback widgets on iPhones and iPads were laid out for a screen two to three times its size.
+* Mitigated an issue where `add_log` froze the page when the breadcrumb limit (`max_breadcrumb_count` or the server configuration) was 0.
+* Mitigated an issue where a `device_id` given as `null` or an empty string left the SDK without a device ID, so nothing was sent.
+* Mitigated an issue where a device ID (`cly_device_id`), campaign or UTM value given in the page URL was not percent-decoded or was cut at an `=`, so for example `john%40mail.com` was recorded instead of `john@mail.com`.
+* Mitigated an issue where a call in the `Countly.q` queue that threw an error stopped the SDK for the rest of the page.
 * Mitigated an issue where sending did not resume on the same page after networking was switched back on in the server configuration.
-* Mitigated an issue where a request that could not be made, for example because of an invalid custom header, stopped all sending for the rest of the page without an error.
-* Mitigated an issue where unsent requests were lost on every page change with cookie storage.
-* Mitigated an issue where an event value containing `;` could break event recording on the next page with cookie storage.
+* Mitigated an issue where a request that could not be made, for example because of an invalid custom header, was never treated as failed, so the callbacks waiting for it were not called and queued requests were not tried again for the rest of the page.
+* Mitigated an issue where, with `storage: "cookie"`, unsent requests were lost on every page change.
+* Mitigated an issue where, with `storage: "cookie"`, an event key or segmentation value containing `;` could break event recording on the next page.
 * Mitigated an issue where an NPS score of 0 reported with `reportFeedbackWidgetManually` was dropped.
 * Mitigated an issue where a device ID, app version or segmentation holding characters such as `+`, `&` or `#` reached feedback widgets altered, so answers could be stored for another user.
-* Mitigated an issue where a profile picture uploaded for a device ID holding special characters was stored for a different user.
+* Mitigated an issue where `uploadUserProfilePicture` stored the picture for a different user when the device ID held characters such as `@`.
 * Mitigated an issue where `uploadUserProfilePicture` uploaded the picture without the `users` consent when consent was required.
 * Mitigated an issue where a callback, such as the one of `get_available_feedback_widgets`, could be called twice when its request timed out.
 * Mitigated an issue where the remote config callback was not called when fetching failed. It now gets an error and the stored values.
-* Mitigated an issue where requests recorded while the SDK used a temporary device ID were sent with that temporary ID when a later page started with a real device ID.
-* Mitigated an issue where the saved server configuration was read and written outside the given `namespace` and storage, and was stored even with `storage: "none"`.
-* Mitigated an issue where time the page spent in the background was counted in the session when the page was closed in the background.
-* Mitigated an issue where a view that started while the page was in the background was given the duration of the previous view.
-* Mitigated an issue where leaving the content zone during its first seconds or right after a refresh was undone shortly after.
-* Mitigated an issue where `exitContentZone` left the content on screen.
+* Mitigated an issue where requests recorded in offline mode were sent with the temporary device ID instead of the real one when a later page, in the same tab or another one, started with a real device ID.
+* Mitigated an issue where, with `namespace`, `storage: "cookie"` or a custom `storage` object, the server configuration saved on an earlier page was not applied when the next page started, and with `storage: "none"` it was still saved in localStorage.
+* Mitigated an issue where, with `track_sessions`, time the page spent in the background, out of focus or inactive was counted in the session when the page was closed in that state.
+* Mitigated an issue where, with `track_sessions`, a view that started while the page was in the background was credited with the previous view's duration.
+* Mitigated an issue where `exitContentZone` called in the first seconds after init or right after `refreshContentZone` was undone shortly after.
+* Mitigated an issue where `exitContentZone` left the content on screen, or content that arrived after it was still shown. Content, journey content included, now waits for the next `enterContentZone`.
 * Mitigated an issue where content messages were handled once for every content shown before on the page, so a click could open a link or record an event several times.
 * Mitigated an issue where journey content could stop being requested for the rest of the page after a journey event was sent with the regular event requests.
-* Mitigated an issue where a call queued in `Countly.q` for the main instance could run on another instance, when that instance worked through the queue first, for example during its `user_details` call.
-* Mitigated an issue where a visitor ignored at init (`ignore_visitor` or a detected bot) still sent the health check, remote config and feedback widget requests with "undefined" as the device ID, which created such a user on the server. Their callbacks now get an error.
+* Mitigated an issue where a call queued in `Countly.q` for the main instance could run on another instance, for example during that instance's `user_details` call.
+* Mitigated an issue where a visitor ignored at init (`ignore_visitor`, an earlier `opt_out` or a detected bot) still sent the health check and remote config, feedback widget or content requests with "undefined" as the device ID, which created such a user on the server. Their callbacks now get an error.
 * Mitigated an issue where `set_id` merged a device ID given in the page URL (`cly_device_id`) into the new one, instead of changing it without merge as for any device ID set by the developer.
-* Mitigated an issue where user profile changes not saved yet when `change_id` was called without merge, such as those made with `userData.set`, were saved for the new device ID instead of the previous one.
-* Mitigated an issue where `change_id` without merge kept the content zone entered and the previous user's content on screen.
+* Mitigated an issue where, when no session was running, user profile changes not saved yet at a `change_id` without merge, such as those made with `userData.set`, were saved for the new device ID instead of the previous one.
+* Mitigated an issue where `change_id` without merge kept the content zone entered and the previous user's content on screen. Call `content.enterContentZone` again to show content to the new user.
+* Mitigated an issue where `change_id` without merge sent the duration of the page's last view for the new device ID instead of the previous one.
 * Mitigated an issue where a content message carrying a single event instead of a list threw an error, so the event was not recorded.
-* Mitigated an issue where the SDK behavior settings were not fetched again after a device ID change, so the settings for the new device ID applied only from the next page.
-* Mitigated an issue where, after `change_id` with merge, remote config could be fetched before the merge request was sent, returning the values of a new, empty user.
-* Mitigated an issue where, with `storage: "cookie"`, the health check did not report the errors and warnings counted on earlier pages.
-* Mitigated an issue where feedback widget links carried "undefined" as the platform when the SDK did not know it.
-* Mitigated an issue where, with several tabs of a site open, events and session updates could be sent more than once or lost. Each tab now sends what it recorded and sends what it holds as soon as it goes to the background; what it cannot send then, or has not sent when its page is closed, is left for the tab in front or the next visit to send.
+* Mitigated an issue where, after a device ID change with merge, the health check and the server configuration, remote config, A/B testing, feedback widget and content requests could reach the server under the new device ID before the merge request. The server then combined two users instead of moving the history to the new device ID, which lost some profile totals, and remote config could return the values of a new, empty user.
+* Mitigated an issue where, with `storage: "cookie"`, the health check did not report the errors, warnings and failed requests counted on earlier pages.
+* Mitigated an issue where, with `storage: "cookie"`, the site's other open tabs kept using the previous device ID after a device ID change until they were reloaded.
+* Mitigated an issue where, with several tabs of a site open, events and other requests could be sent more than once or lost.
+* Mitigated an issue where, with several tabs of a site open, events one tab recorded right before a device ID change without merge or a profile change in another tab could be sent for the new device ID or stored with the new profile.
 * Mitigated an issue where namespaces sharing an app key took over each other's device ID and queued data while open in several tabs.
-* Mitigated an issue where, on a page using the quick async loader, calling methods such as `add_consent`, `opt_out` or `track_view` before the SDK loaded threw an error.
+* Mitigated an issue where, on a page using the quick async loader, calling methods such as `add_consent`, `opt_out` or `track_view` before the SDK loaded threw an error. Replace the loader snippet on your pages to get the fix.
 
 ## 26.1.3
 

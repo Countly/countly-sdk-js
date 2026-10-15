@@ -75,6 +75,10 @@ describe("Session tests ", () => {
 });
 describe("Browser session tests, auto", () => {
     it("Single session test with auto sessions", () => {
+        // the instance the tests above used would hand its queue over when the page's own instance sets the device ID, as another tab does
+        if (Countly.halt !== undefined) {
+            Countly.halt();
+        }
         cy.visit("./cypress/fixtures/session_test_auto.html?use_session_cookie=true")
             .wait(waitTime);
         cy.contains("Event").click().wait(300);

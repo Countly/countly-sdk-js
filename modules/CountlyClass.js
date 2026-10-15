@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -72,6 +72,12 @@ class CountlyClass {
     #tabStore;
     #sendingUpTo;
     #requestOnItsWay;
+    #waitingToRetry;
+    #collectUntil;
+    #collectTimer;
+    #pausedUntil;
+    #pauseTimer;
+    #deferredRequests;
     #lastBeat;
     #storedDuration;
     #lastView;
@@ -106,6 +112,7 @@ class CountlyClass {
     #contentEndPoint;
     #inContentZone;
     #contentZoneWanted;
+    #contentZoneExited = false;
     #contentZoneTimer;
     #contentZoneEntryTimer;
     #contentMessageListener;
@@ -222,6 +229,12 @@ class CountlyClass {
         this.#tabStore = false;
         this.#sendingUpTo = null;
         this.#requestOnItsWay = null;
+        this.#waitingToRetry = false;
+        this.#collectUntil = 0;
+        this.#collectTimer = null;
+        this.#pausedUntil = 0;
+        this.#pauseTimer = null;
+        this.#deferredRequests = [];
         this.#lastBeat;
         this.#storedDuration = 0;
         this.#lastView = null;
@@ -1840,6 +1853,11 @@ class CountlyClass {
         this.#lastViewStoredDuration = 0;
         this.#failTimeout = 0;
         this.#failTimeoutAmount = 60;
+        clearTimeout(this.#collectTimer);
+        clearTimeout(this.#pauseTimer);
+        this.#collectUntil = 0;
+        this.#pausedUntil = 0;
+        this.#deferredRequests = [];
         this.#inactivityTime = 20;
         this.#inactivityCounter = 0;
         this.#SCIntervalSessionUpdate = 60;
@@ -1960,6 +1978,7 @@ class CountlyClass {
         this.#journeyTriggerInProgress = undefined;
         this.#journeyTriggerPending = undefined;
         this.#contentZoneWanted = undefined;
+        this.#contentZoneExited = false;
         this.#journeyPendingEventIds = undefined;
         if (this.#clientHintsBufferTimeoutId) {
             clearTimeout(this.#clientHintsBufferTimeoutId);
@@ -2268,6 +2287,8 @@ class CountlyClass {
                 this.#setValueInStorage("cly_id_type", DeviceIdTypeInternalEnums.SDK_GENERATED);
             }
         }
+        this.#announceChange(this.device_id, this.#deviceIdType);
+        this.#takeBackWhenSendable(false);
         this.#giveTemporaryIdRequestsToCurrentId();
         if (leavingUser) {
             this.#handlePushOnDeviceIdChange(false);
@@ -2435,9 +2456,12 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "change_id, Provided device ID is equal to the current device ID. Aborting.");
             return;
         }
+        this.#announceChange(newId, DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED);
         if (!merge) {
             // process async queue before sending events
             this.#processAsyncQueue();
+            // the last view's duration belongs to the previous user, so it goes out with their events, session or not
+            this.#reportViewDuration();
             // empty event queue
             this.#sendEventsForced();
             // save the previous user's pending profile changes while the ID and consents are still theirs, and never give them to the next user
@@ -2452,6 +2476,9 @@ class CountlyClass {
             // clear all consents
             this.remove_consent_internal(Countly.features, false);
             // a content zone entered for the previous user is not entered again for the next one, and their content is closed
+            if (this.#contentZoneWanted) {
+                this.#contentZoneExited = true;
+            }
             this.#contentZoneWanted = false;
             this.#exitContentZoneInternal();
             this.#closeContentFrame();
@@ -3063,8 +3090,8 @@ class CountlyClass {
             event.count = 1;
         }
         
-        // the dashboard's event and segmentation filters are for the app's own events, as on Android and iOS
-        var isInternalEvent = internalEventKeyEnumsArray.includes(event.key);
+        // the dashboard's event and segmentation filters are for the app's own events, as on Android and iOS; every "[CLY]_" event, also the ones content sends, is Countly's
+        var isInternalEvent = typeof event.key === "string" && event.key.indexOf("[CLY]_") === 0;
         if (!isInternalEvent && !this.#isEventAllowedByBehaviorSettings(event.key)) {
             this.#log(logLevelEnums.DEBUG, "add_cly_event, Event was filtered out by behavior settings: [" + event.key + "]");
             return;
@@ -3290,6 +3317,7 @@ class CountlyClass {
         if (this.#pendingRequestBuffer !== null) {
             this.#flushPendingRequestBuffer();
         }
+        this.#takeBackWhenSendable(false);
 
         var initialQueueLength = this.#requestQueue.length;
         if (initialQueueLength === 0) {
@@ -3328,7 +3356,7 @@ class CountlyClass {
             }
 
             var waitAttempts = 0;
-            while ((!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout) && waitAttempts < 5) {
+            while ((!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout || this.#holding()) && waitAttempts < 5) {
                 waitAttempts++;
                 await this.#delay(500);
             }
@@ -6152,6 +6180,7 @@ class CountlyClass {
         },
         exitContentZone: () => {
             this.#contentZoneWanted = false;
+            this.#contentZoneExited = true;
             this.#exitContentZoneInternal();
             this.#closeContentFrame();
         },
@@ -6333,6 +6362,7 @@ class CountlyClass {
             this.#contentFilterCallback = filter_callback;
         }
         this.#contentZoneWanted = true;
+        this.#contentZoneExited = false;
         if (!this.check_consent(featureEnums.CONTENT)) {
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Content consent is not given, the zone is entered once it is");
             return;
@@ -6437,6 +6467,11 @@ class CountlyClass {
             finalizeContentRequest(false);
             return;
         }
+        if (this.#contentZoneExited) {
+            this.#log(logLevelEnums.DEBUG, "sendContentRequest, The content zone was exited, no content until it is entered again");
+            finalizeContentRequest(false);
+            return;
+        }
         var params = this.#prepareContentRequest();
         this.#makeNetworkRequest("sendContentRequest,", this.url + this.#contentEndPoint, params, (e, param, resp) => {
             if (e) {
@@ -6480,9 +6515,14 @@ class CountlyClass {
                 return;
             }
 
-            // consent can be removed while the request is on its way
+            // consent can be removed, or the zone exited, while the request is on its way
             if (!this.check_consent(featureEnums.CONTENT)) {
                 this.#log(logLevelEnums.DEBUG, "sendContentRequest, Content consent was removed, not showing the content");
+                finalizeContentRequest(false);
+                return;
+            }
+            if (this.#contentZoneExited) {
+                this.#log(logLevelEnums.DEBUG, "sendContentRequest, The content zone was exited, not showing the content");
                 finalizeContentRequest(false);
                 return;
             }
@@ -7281,6 +7321,9 @@ class CountlyClass {
 
         this.#requestQueue.push(request);
         this.#saveRequestQueue();
+        if (this.#isOrderSensitive(request) && !request.old_device_id) {
+            this.#announceChange();
+        }
         this.#noteOrderSensitive([request], true);
         return true;
     }
@@ -7343,6 +7386,15 @@ class CountlyClass {
         if (this.#SCLogGathering.enabled && this.#logBuffer.length > 0 && Date.now() - this.#lastLogFlushTime >= logGatheringDefaultValues.FLUSH_INTERVAL) {
             this.#flushLogBuffer();
         }
+
+        // what this tab cannot send waits in the shared storage, where a crash does not take it, until it is in front and may send
+        if (this.#tabStore) {
+            this.#takeBackWhenSendable(true);
+            if (this.#cannotSendNow() && this.#requestQueue.length) {
+                this.#leaveUnsentRequests();
+            }
+        }
+        this.#flushDeferredRequests();
 
         // Check if we're in back-off period and update status
         var currentTime = getTimestamp();
@@ -7542,6 +7594,17 @@ class CountlyClass {
                 return;
             }
 
+            if (this.#holding()) {
+                resolve(false);
+                return;
+            }
+
+            this.#takeBackWhenSendable(false);
+            if (this.#waitingToRetry) {
+                resolve(false);
+                return;
+            }
+
             this.#readyToProcess = false;
             var params = this.#requestQueue[0];
             params.rr = this.#requestQueue.length;
@@ -7558,6 +7621,7 @@ class CountlyClass {
                     if ((this.#serverConfigAfterMerge || this.#remoteConfigAfterMerge) && !this.#mergeRequestUnsent()) {
                         this.#fetchAfterMerge();
                     }
+                    this.#flushDeferredRequests();
                     if (onSuccess) {
                         try {
                             onSuccess(parameters);
@@ -8306,6 +8370,11 @@ class CountlyClass {
         }
         if (!this.#SCNetwork && !forced) {
             this.#log(logLevelEnums.DEBUG, "Network request is disabled by the SCNetwork");
+            return;
+        }
+        if (this.#mustWaitForQueue(functionName, params)) {
+            this.#log(logLevelEnums.DEBUG, functionName + " Waits until the device ID change is sent");
+            this.#deferredRequests.push([functionName, url, params, callback, useBroadResponseValidator, forced]);
             return;
         }
         this.#generatedRequests.push({ functionName: functionName, url: url, params: params });
@@ -9165,19 +9234,35 @@ class CountlyClass {
         }
         this.#flushPendingRequestBuffer();
         this.#sendEventsForced();
+        this.#leaveUnsentRequests();
+    };
+
+    /**
+     *  Move this tab's unsent requests into the shared storage, where they outlast the tab, for the tab in front or the
+     *  next page to send; until this tab takes them back it sends nothing of its own, which would overtake them
+     *  @param {Boolean} [forChangingTab] - true when they are left for a tab changing the device ID or the profile, which
+     *  takes them, so this tab does not wait to take them back
+     */
+    #leaveUnsentRequests = (forChangingTab) => {
         // a request on its way has almost always reached the server already, handing it over would send it twice
         var unsent = this.#requestQueue.filter((request) => request !== this.#requestOnItsWay);
         if (unsent.length) {
             var waiting = this.#getValueFromStorage("cly_queue", true);
             var list = (Array.isArray(waiting) ? waiting : []).concat(unsent);
+            if (list.length > this.#SCSizeReqQueue) {
+                list = list.slice(-this.#SCSizeReqQueue);
+            }
             try {
                 window.localStorage.setItem(this.#storageKey("cly_queue"), this.serialize(list));
-                this.#log(logLevelEnums.DEBUG, "handOver, Left [" + unsent.length + "] unsent request(s) for the tab in front or the next page");
+                this.#log(logLevelEnums.DEBUG, "leaveUnsentRequests, Left [" + unsent.length + "] unsent request(s) for the tab in front or the next page");
                 unsent = [];
+                if (!forChangingTab) {
+                    this.#waitingToRetry = true;
+                }
             }
             catch (e) {
                 // with nowhere to leave them they stay in this tab's storage, for its next page
-                this.#log(logLevelEnums.WARNING, "handOver, Could not leave the unsent requests for other tabs: " + e);
+                this.#log(logLevelEnums.WARNING, "leaveUnsentRequests, Could not leave the unsent requests for other tabs: " + e);
             }
         }
         this.#requestQueue = unsent;
@@ -9209,11 +9294,169 @@ class CountlyClass {
     };
 
     /**
-     *  Whether this tab cannot send for now: its last send failed, as without a connection, or it is in offline mode
+     *  Whether this tab cannot send for now: its last send failed, as without a connection, it is in offline mode, or what
+     *  it left in the shared storage waits to be taken back first
      *  @returns {Boolean} true while sending is held back for one of these reasons
      */
     #cannotSendNow = () => {
-        return this.#offlineMode || getTimestamp() <= this.#failTimeout;
+        return this.#offlineMode || getTimestamp() <= this.#failTimeout || this.#waitingToRetry;
+    };
+
+    /**
+     *  Take back what this tab left in the shared storage while it could not send, once it is in front and may send again
+     *  @param {Boolean} sendNow - false to leave the sending to the caller or the heartbeat
+     */
+    #takeBackWhenSendable = (sendNow) => {
+        if (this.#waitingToRetry && !this.#offlineMode && getTimestamp() > this.#failTimeout && !document.hidden) {
+            this.#takeHandedOver(sendNow);
+        }
+    };
+
+    /**
+     *  Tell the site's other tabs that this tab is about to change the device ID or the profile, so they leave what they
+     *  have not sent in the shared storage, and collect that for a moment to send it before the change
+     *  @param {String} [newId] - the device ID after a device ID change
+     *  @param {Number} [newType] - the type of that device ID
+     */
+    #announceChange = (newId, newType) => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        var signal = { at: getMsTimestamp() };
+        if (typeof newId === "string") {
+            signal.id = newId;
+            signal.t = newType;
+        }
+        try {
+            window.localStorage.setItem(this.#storageKey("cly_handover"), JSON.stringify(signal));
+        }
+        catch (e) {
+            this.#log(logLevelEnums.WARNING, "announceChange, Could not tell the other tabs: " + e);
+            return;
+        }
+        this.#collectUntil = signal.at + tabHandoverTimes.COLLECT;
+        clearTimeout(this.#collectTimer);
+        this.#collectTimer = setTimeout(() => {
+            this.#collectTimer = null;
+            this.#collectUntil = 0;
+            if (this.#halted) {
+                return;
+            }
+            // a tab in the background takes nothing, it leaves its own requests behind those of the other tabs
+            if (document.hidden) {
+                this.#leaveUnsentRequests();
+                return;
+            }
+            this.#takeHandedOver(true);
+            this.#sendNextRightAway();
+        }, tabHandoverTimes.COLLECT);
+    };
+
+    /**
+     *  React to another tab that is about to change the device ID or the profile: leave what this tab has not sent for it,
+     *  and on a device ID change take the new ID and hold back for a moment, so the change reaches the server first
+     *  @param {String} value - the other tab's signal, with the new device ID and its type on a device ID change
+     */
+    #onOtherTabChange = (value) => {
+        if (!this.#tabStore || !value) {
+            return;
+        }
+        var signal = null;
+        try {
+            signal = JSON.parse(value);
+        }
+        catch (e) {
+            return;
+        }
+        this.#leaveForChangingTab();
+        if (signal && typeof signal.id === "string" && signal.id !== this.device_id) {
+            this.device_id = signal.id;
+            if (typeof signal.t === "number") {
+                this.#deviceIdType = signal.t;
+            }
+            this.#pauseForOtherTab();
+        }
+    };
+
+    /**
+     *  Leave what this tab has not sent in the shared storage, its pending events packed under its current device ID, for
+     *  the tab changing the device ID or the profile to send before its change
+     */
+    #leaveForChangingTab = () => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        this.#flushPendingRequestBuffer();
+        if (!this.test_mode_eq) {
+            this.#sendEventsForced();
+        }
+        this.#leaveUnsentRequests(true);
+    };
+
+    /**
+     *  Send nothing of this tab's own for a moment after another tab changed the device ID, so that tab's change goes out first
+     */
+    #pauseForOtherTab = () => {
+        if (!this.#tabStore || this.#halted) {
+            return;
+        }
+        this.#pausedUntil = getMsTimestamp() + tabHandoverTimes.PAUSE;
+        clearTimeout(this.#pauseTimer);
+        this.#pauseTimer = setTimeout(() => {
+            this.#pauseTimer = null;
+            this.#pausedUntil = 0;
+            if (this.#halted) {
+                return;
+            }
+            // what was held back goes out at once, one request per heartbeat would keep a busy background tab behind
+            if (this.#requestQueue.length) {
+                this.#sendUpTo(this.#requestQueue[this.#requestQueue.length - 1], true);
+            }
+            this.#flushDeferredRequests();
+        }, tabHandoverTimes.PAUSE);
+    };
+
+    /**
+     *  Whether this tab holds back its own sending around a device ID or profile change: while it collects what the other
+     *  tabs leave, or while another tab changes the device ID
+     *  @returns {Boolean} true while it holds back
+     */
+    #holding = () => {
+        var now = getMsTimestamp();
+        return now < this.#collectUntil || now < this.#pausedUntil;
+    };
+
+    /**
+     *  Whether a request outside the queue has to wait, as a request for a device ID the server has not seen creates that
+     *  user: while a merge into its device ID is unsent, here or in the shared storage, and while another tab changes the
+     *  device ID
+     *  @param {String} functionName - name of the request
+     *  @param {Object} params - request parameters
+     *  @returns {Boolean} true when it has to wait
+     */
+    #mustWaitForQueue = (functionName, params) => {
+        if (functionName === "send_request_queue" || functionName === "journey_trigger_send_request" || this.test_mode || !params) {
+            return false;
+        }
+        if (getMsTimestamp() < this.#pausedUntil) {
+            return true;
+        }
+        var shared = this.#waitingToRetry ? this.#getValueFromStorage("cly_queue", true) : null;
+        var unsent = this.#requestQueue.concat(this.#pendingRequestBuffer || [], Array.isArray(shared) ? shared : []);
+        return unsent.some((request) => request && request.old_device_id && request.device_id === params.device_id);
+    };
+
+    /**
+     *  Make the requests that waited for a device ID change to be sent, in the order they were made; any that still have to
+     *  wait go back to waiting
+     */
+    #flushDeferredRequests = () => {
+        if (!this.#deferredRequests.length) {
+            return;
+        }
+        var waiting = this.#deferredRequests;
+        this.#deferredRequests = [];
+        waiting.forEach((args) => this.#makeNetworkRequest(args[0], args[1], args[2], args[3], args[4], args[5]));
     };
 
     /**
@@ -9224,6 +9467,7 @@ class CountlyClass {
         if (!this.#tabStore || this.#halted) {
             return;
         }
+        this.#waitingToRetry = false;
         var requests = this.#getValueFromStorage("cly_queue", true);
         if (Array.isArray(requests) && requests.length) {
             this.#removeValueFromStorage("cly_queue", true);
@@ -9231,6 +9475,10 @@ class CountlyClass {
             this.#requestQueue = requests.concat(this.#requestQueue);
             if (this.#requestQueue.length > this.#SCSizeReqQueue) {
                 this.#requestQueue = this.#requestQueue.slice(-this.#SCSizeReqQueue);
+            }
+            // what a tab left in offline mode goes out with this tab's device ID, as at start, where it is not known yet
+            if (this.device_id && this.device_id !== "[CLY]_temp_id") {
+                this.#giveTemporaryIdRequestsToCurrentId();
             }
             this.#saveRequestQueue();
             this.#noteOrderSensitive(requests, sendNow);
@@ -9335,7 +9583,15 @@ class CountlyClass {
                 }
                 break;
             case "cly_id":
+                // another tab changed the device ID: what this tab has not sent goes out first, under the previous one
+                if (newValue !== this.device_id) {
+                    this.#leaveForChangingTab();
+                    this.#pauseForOtherTab();
+                }
                 this.device_id = newValue;
+                break;
+            case "cly_handover":
+                this.#onOtherTabChange(newValue);
                 break;
             case "cly_id_type":
                 this.#deviceIdType = this.deserialize(newValue);

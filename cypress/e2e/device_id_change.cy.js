@@ -551,3 +551,152 @@ describe("Device ID change details", () => {
         });
     });
 });
+
+describe("Request order around a device ID change", () => {
+    // what reached the server, in order: which request and the device ID it was made for
+    function describeRequest(path, params) {
+        var what = params.get("old_device_id") ? "merge" : params.get("method") || (path.indexOf("/content") !== -1 ? "content" : null) || (params.get("user_details") ? "profile" : params.get("events") ? "events" : params.get("hc") ? "health check" : path);
+        return what + " for " + params.get("device_id");
+    }
+
+    function viewEndsIn(params, viewEnds) {
+        if (typeof params.events === "string") {
+            JSON.parse(params.events).forEach((e) => {
+                if (e.key === "[CLY]_view" && typeof e.dur !== "undefined") {
+                    viewEnds.push(e.segmentation.name + " for " + params.device_id);
+                }
+            });
+        }
+    }
+
+    it("sends the duration of the last view for the previous device ID at a change without merge", () => {
+        var viewEnds = [];
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                device_id: "previous user",
+                getSearchQuery: () => "",
+                fake_request_handler: (req) => {
+                    viewEndsIn(req.params || {}, viewEnds);
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.track_sessions();
+            Countly.track_view("page of the previous user");
+            cy.wait(2500).then(() => {
+                Countly.change_id("next user", false);
+            });
+            cy.wait(2000).then(() => {
+                expect(viewEnds).to.deep.equal(["page of the previous user for previous user"]);
+            });
+        });
+    });
+
+    it("sends the duration of the last view for the previous device ID at a change without merge, also without a session", () => {
+        var viewEnds = [];
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                device_id: "previous user",
+                getSearchQuery: () => "",
+                fake_request_handler: (req) => {
+                    viewEndsIn(req.params || {}, viewEnds);
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.track_view("page of the previous user");
+            cy.wait(2500).then(() => {
+                Countly.change_id("next user", false);
+                Countly.track_view("page of the next user");
+            });
+            cy.wait(2000).then(() => {
+                expect(viewEnds).to.deep.equal(["page of the previous user for previous user"]);
+            });
+        });
+    });
+
+    it("sends a merge request left by the previous page before anything for the merged device ID", () => {
+        var order = [];
+        hp.haltAndClearStorage(() => {
+            localStorage.setItem("YOUR_APP_KEY/cly_id", "new ID");
+            localStorage.setItem("YOUR_APP_KEY/cly_id_type", "0");
+            localStorage.setItem("YOUR_APP_KEY/cly_queue", JSON.stringify([{ app_key: "YOUR_APP_KEY", device_id: "new ID", t: 0, timestamp: 1700000000000, old_device_id: "old ID" }]));
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                getSearchQuery: () => "",
+                fake_request_handler: (req) => {
+                    var p = req.params || {};
+                    order.push(p.old_device_id ? "merge" : req.functionName === "server_config" ? "settings" : req.functionName === "[healthCheck]" ? "health check" : req.functionName);
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            cy.wait(1500).then(() => {
+                expect(order[0], JSON.stringify(order)).to.equal("merge");
+                expect(order).to.include.members(["settings", "health check"]);
+            });
+        });
+    });
+
+    it("sends what waited for a merge right after the merge request, not with the next heartbeat", () => {
+        var order = [];
+        hp.haltAndClearStorage(() => {
+            Countly.init({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                debug: true,
+                device_id: "old ID",
+                interval: 10000,
+                getSearchQuery: () => "",
+                fake_request_handler: (req) => {
+                    order.push(req.params && req.params.old_device_id ? "merge" : req.functionName);
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            cy.wait(1500).then(() => {
+                order.length = 0;
+                Countly.change_id("new ID", true);
+                Countly.get_available_feedback_widgets(() => {});
+            });
+            cy.wait(1500).then(() => {
+                expect(order.indexOf("merge"), JSON.stringify(order)).to.be.greaterThan(-1);
+                expect(order.indexOf("get_available_feedback_widgets,"), JSON.stringify(order)).to.be.greaterThan(order.indexOf("merge"));
+            });
+        });
+    });
+
+    it("sends nothing for a merged device ID before its merge request, also what the site asks for right after the change", () => {
+        var arrived = [];
+        cy.intercept("https://your.domain.count.ly/**", (req) => {
+            var params = new URLSearchParams((req.url.split("?")[1] || "") + "&" + (typeof req.body === "string" ? req.body : ""));
+            arrived.push(describeRequest(req.url.split("?")[0], params));
+            // the server answers the request on its way at the change slowly
+            var slow = (params.get("events") || "").indexOf("before_the_change") !== -1;
+            req.reply({ delay: slow ? 2000 : 0, statusCode: 200, body: { result: "Success" } });
+        });
+        hp.haltAndClearStorage(() => {
+            Countly.init({ app_key: "YOUR_APP_KEY", url: "https://your.domain.count.ly", debug: true, device_id: "old ID", getSearchQuery: () => "" });
+            cy.wait(1200).then(() => {
+                Countly.add_event({ key: "before_the_change", count: 1 });
+            });
+            cy.wait(1000).then(() => {
+                arrived.length = 0;
+                Countly.change_id("new ID", true);
+                Countly.fetch_remote_config();
+                Countly.get_available_feedback_widgets(() => {});
+                Countly.content.enterContentZone();
+            });
+            cy.wait(4000).then(() => {
+                var merge = arrived.indexOf("merge for new ID");
+                expect(merge, JSON.stringify(arrived)).to.be.greaterThan(-1);
+                expect(arrived.slice(0, merge).filter((a) => / for new ID$/.test(a)), "before the merge: " + JSON.stringify(arrived)).to.deep.equal([]);
+                expect(arrived.slice(merge + 1).filter((a) => / for new ID$/.test(a)).length, "after the merge: " + JSON.stringify(arrived)).to.be.greaterThan(2);
+            });
+        });
+    });
+});

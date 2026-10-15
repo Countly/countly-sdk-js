@@ -33,7 +33,7 @@ function sentReqList(size, expectedKeywords, nonexistingKeywords) {
     }
 }
 function queues(eqsize, rqsize, expectedKeywords, nonexistingKeywords) {
-    var queues = Countly._internals.getLocalQueues(); // get local queues
+    var queues = hp.waitingQueues("spp"); // get what waits to be sent
     const allKeysE = queues.eventQ.flatMap(item => Object.keys(item));
     const allKeysQ = queues.requestQ.flatMap(item => Object.keys(item));
     const uniqueKeys = [...new Set(allKeysE), ...new Set(allKeysQ)];

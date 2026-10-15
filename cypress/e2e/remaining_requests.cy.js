@@ -20,7 +20,7 @@ describe("Remaining requests tests ", () => {
             Countly.end_session(undefined, true);
 
             cy.wait(1000).then(() => {
-                var queues = Countly._internals.getLocalQueues();
+                var queues = hp.waitingQueues();
                 expect(queues.eventQ.length).to.equal(0);
                 expect(queues.requestQ.length).to.equal(3);
                 expect(queues.requestQ[0]["begin_session"]).to.equal(1);

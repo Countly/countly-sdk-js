@@ -129,6 +129,21 @@ describe("Several tabs of one site", () => {
         });
     });
 
+    it("sends what another tab left under the temporary device ID with its own device ID", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            initRecording(sent);
+            cy.wait(500).then(() => {
+                triggerStorageChange(hp.appKey + "/cly_queue", JSON.stringify([{ app_key: hp.appKey, device_id: "[CLY]_temp_id", t: 2, timestamp: 1700000000000, events: JSON.stringify([{ key: "left_offline", count: 1 }]) }]));
+                document.dispatchEvent(new Event("visibilitychange"));
+            });
+            cy.wait(2000).then(() => {
+                var carrying = sent.filter((p) => requestsWithEvent([p], "left_offline"));
+                expect(carrying.map((p) => p.device_id + ", type " + p.t)).to.deep.equal(["this tab, type 0"]);
+            });
+        });
+    });
+
     it("ignores another frame of the same tab writing its own queue", () => {
         hp.haltAndClearStorage(() => {
             initRecording([], { test_mode: true });
@@ -356,13 +371,220 @@ describe("Leaving a tab", () => {
         });
     });
 
-    it("keeps what it could not send while it is in front, to try again", () => {
+    it("leaves what it could not send in the shared list while it is in front, where a crash does not take it", () => {
         hp.haltAndClearStorage(() => {
             initFailing();
             Countly.add_event({ key: "failed_in_front", count: 1 });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "failed_in_front"), "waiting in the shared list").to.equal(1);
+            }).then(() => {
+                expect(requestsWithEvent(ownStored("cly_queue"), "failed_in_front"), "not in the tab's own storage").to.equal(0);
+                Countly.add_event({ key: "recorded_while_waiting", count: 1 });
+            });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "recorded_while_waiting"), "recorded meanwhile, waiting there too").to.equal(1);
+            }).then(() => {
+                expect(Countly._internals.getLocalQueues().requestQ.length, "nothing kept in the tab").to.equal(0);
+            });
+        });
+    });
+
+    it("leaves what it could not send in front in the shared list once it is in the background, also when it may send again", () => {
+        var sent = [];
+        var failing = true;
+        hp.haltAndClearStorage(() => {
+            initFailing({
+                fail_timeout: 1,
+                fake_request_handler: (req) => {
+                    if (req.functionName === "send_request_queue") {
+                        if (failing) {
+                            return { status: 0, responseText: "" };
+                        }
+                        sent.push(req.params);
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.add_event({ key: "left_for_the_front", count: 1 });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "left_for_the_front"), "failed while in front").to.equal(1);
+            }).then(() => {
+                // the person switches to another tab
+                hideTab();
+                failing = false;
+            });
+            cy.wait(3000).then(() => {
+                expect(eventsSent(sent, "left_for_the_front"), "not sent by the tab in the background").to.equal(0);
+                expect(requestsWithEvent(shared("cly_queue"), "left_for_the_front"), "left for the tab in front").to.equal(1);
+            });
+        });
+    });
+
+    it("takes back what waits in the shared list and sends it once sending works again", () => {
+        var sent = [];
+        var failing = true;
+        hp.haltAndClearStorage(() => {
+            initFailing({
+                fail_timeout: 1,
+                fake_request_handler: (req) => {
+                    if (req.functionName === "send_request_queue") {
+                        if (failing) {
+                            return { status: 0, responseText: "" };
+                        }
+                        sent.push(req.params);
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.add_event({ key: "retried", count: 1 });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "retried"), "waiting while sends fail").to.equal(1);
+            }).then(() => {
+                failing = false;
+            });
+            cy.window({ timeout: 6000 }).should(() => {
+                expect(eventsSent(sent, "retried"), "sent once sending works").to.equal(1);
+            });
+            cy.wait(1000).then(() => {
+                expect(eventsSent(sent, "retried"), "and only once").to.equal(1);
+                expect(shared("cly_queue") || [], "taken from the shared list").to.deep.equal([]);
+                expect(Countly._internals.getLocalQueues().requestQ.length, "nothing left").to.equal(0);
+            });
+        });
+    });
+
+    it("keeps what it records in the background behind what waits in the shared list, also once it may send again", () => {
+        var sent = [];
+        var failing = true;
+        hp.haltAndClearStorage(() => {
+            initFailing({
+                fail_timeout: 1,
+                fake_request_handler: (req) => {
+                    if (req.functionName === "send_request_queue") {
+                        if (failing) {
+                            return { status: 0, responseText: "" };
+                        }
+                        sent.push(req.params);
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
+            Countly.add_event({ key: "before_the_outage_ended", count: 1 });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "before_the_outage_ended"), "waiting while sends fail").to.equal(1);
+            }).then(() => {
+                hideTab();
+                failing = false;
+            });
+            cy.wait(2500).then(() => {
+                Countly.user_details({ custom: { plan: "pro" } });
+            });
+            cy.wait(1000).then(() => {
+                expect(sent.length, "nothing sent from the background ahead of what waits").to.equal(0);
+                var left = shared("cly_queue") || [];
+                expect(left.map((r) => (r.user_details ? "profile" : "events")), "waiting in order").to.deep.equal(["events", "profile"]);
+                // the person comes back to the tab
+                delete document.hidden;
+                document.dispatchEvent(new Event("visibilitychange"));
+            });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(sent.map((p) => (p.user_details ? "profile" : "events"))).to.deep.equal(["events", "profile"]);
+            });
+        });
+    });
+
+    it("sends nothing for a merged device ID while its merge request waits in the shared list", () => {
+        var sent = [];
+        var failing = true;
+        hp.haltAndClearStorage(() => {
+            initFailing({
+                device_id: "anonymous",
+                fail_timeout: 1,
+                fake_request_handler: (req) => {
+                    if (req.functionName === "send_request_queue" && failing) {
+                        return { status: 0, responseText: "" };
+                    }
+                    sent.push((req.params.old_device_id ? "merge" : req.functionName) + " for " + req.params.device_id);
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            });
             cy.wait(1500).then(() => {
-                expect(shared("cly_queue"), "nothing left for other tabs").to.equal(null);
-                expect(requestsWithEvent(Countly._internals.getLocalQueues().requestQ, "failed_in_front")).to.equal(1);
+                Countly.change_id("signed in user", true);
+            });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect((shared("cly_queue") || []).filter((r) => r.old_device_id).length, "the merge waits in the shared list").to.equal(1);
+            }).then(() => {
+                sent.length = 0;
+                Countly.fetch_remote_config();
+                expect(sent, "nothing for the new ID before its merge").to.deep.equal([]);
+                failing = false;
+            });
+            cy.window({ timeout: 6000 }).should(() => {
+                expect(sent[0], JSON.stringify(sent)).to.equal("merge for signed in user");
+                expect(sent, "after the merge").to.include("fetch_remote_config_explicit for signed in user");
+            });
+        });
+    });
+
+    it("keeps no more waiting in the shared list than the request queue holds", () => {
+        hp.haltAndClearStorage(() => {
+            initFailing({ queue_size: 3 });
+            for (let i = 0; i < 5; i++) {
+                cy.window().then(() => {
+                    Countly.add_event({ key: "outage_" + i, count: 1 });
+                });
+                cy.window({ timeout: 5000 }).should(() => {
+                    expect(requestsWithEvent(shared("cly_queue"), "outage_" + i), "outage_" + i + " waiting").to.equal(1);
+                });
+            }
+            cy.window().then(() => {
+                var left = shared("cly_queue");
+                expect(left.length, "within the request queue size").to.equal(3);
+                expect(requestsWithEvent(left, "outage_0"), "the oldest dropped").to.equal(0);
+            });
+        });
+    });
+
+    it("leaves what it records in offline mode in the shared list while it is in front, where a crash does not take it", () => {
+        hp.haltAndClearStorage(() => {
+            initRecording([], { device_id: undefined, offline_mode: true });
+            Countly.add_event({ key: "recorded_offline", count: 1 });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "recorded_offline"), "waiting in the shared list").to.equal(1);
+            }).then(() => {
+                expect(Countly._internals.getLocalQueues().requestQ.length, "nothing kept in the tab").to.equal(0);
+            });
+        });
+    });
+
+    it("gives what it recorded in offline mode the device ID as soon as offline mode ends", () => {
+        hp.haltAndClearStorage(() => {
+            initRecording([], { device_id: undefined, offline_mode: true, test_mode: true });
+            Countly.add_event({ key: "recorded_offline", count: 1 });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "recorded_offline"), "waiting in the shared list").to.equal(1);
+            }).then(() => {
+                Countly.disable_offline_mode("signed in");
+                var waiting = hp.waitingQueues().requestQ.filter((r) => requestsWithEvent([r], "recorded_offline"));
+                expect(waiting.map((r) => r.device_id)).to.deep.equal(["signed in"]);
+            });
+        });
+    });
+
+    it("sends what it recorded in offline mode before what follows once it gets a device ID", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            initRecording(sent, { device_id: undefined, offline_mode: true });
+            Countly.add_event({ key: "recorded_offline", count: 1 });
+            cy.window({ timeout: 5000 }).should(() => {
+                expect(requestsWithEvent(shared("cly_queue"), "recorded_offline"), "waiting in the shared list").to.equal(1);
+            }).then(() => {
+                Countly.disable_offline_mode("signed in");
+                Countly.user_details({ custom: { plan: "pro" } });
+            });
+            cy.window({ timeout: 5000 }).should(() => {
+                var order = sent.filter((p) => p.user_details || requestsWithEvent([p], "recorded_offline")).map((p) => (p.user_details ? "profile" : "events") + " of " + p.device_id);
+                expect(order).to.deep.equal(["events of signed in", "profile of signed in"]);
             });
         });
     });
@@ -655,6 +877,163 @@ describe("Storage modes and tabs", () => {
                 expect(document.cookie, "no event queue in cookies").to.not.contain("cly_event");
                 expect(ownStored("cly_queue").filter((r) => typeof r.user_details === "string").length).to.equal(1);
                 expect(shared("cly_queue")).to.equal(null);
+            });
+        });
+    });
+});
+
+describe("Device ID and profile changes with several tabs", () => {
+    // what reached the fake server, in order, with the device ID each went out for; the heartbeat is slowed down
+    function initRecordingIds(sent, extra) {
+        Countly.init(Object.assign({
+            app_key: hp.appKey,
+            url: "https://your.domain.count.ly",
+            device_id: "this tab user",
+            debug: true,
+            interval: 10000,
+            fake_request_handler: (req) => {
+                if (req.functionName === "send_request_queue") {
+                    var p = req.params;
+                    var what = p.old_device_id ? "merge" : p.user_details ? "profile" : typeof p.events === "string" ? JSON.parse(p.events).map((e) => e.key).join(",") : "other";
+                    sent.push(what + " for " + p.device_id);
+                }
+                return { status: 200, responseText: "{\"result\":\"Success\"}" };
+            }
+        }, extra || {}));
+    }
+
+    // another tab of the site is about to change the device ID, or the profile when no ID is given
+    function otherTabChanges(newId) {
+        triggerStorageChange(hp.appKey + "/cly_handover", JSON.stringify(newId ? { at: Date.now(), id: newId, t: 0 } : { at: Date.now() }));
+    }
+
+    function leftWithEvent(key) {
+        return (shared("cly_queue") || []).filter((r) => requestsWithEvent([r], key)).map((r) => r.device_id);
+    }
+
+    it("leaves what it has not sent, under the previous device ID, when another tab changes the device ID", () => {
+        hp.haltAndClearStorage(() => {
+            initRecordingIds([], { interval: 500 });
+            cy.wait(1500).then(() => {
+                Countly.add_event({ key: "before_the_change", count: 1 });
+                otherTabChanges("next user");
+                expect(leftWithEvent("before_the_change"), "left for the changing tab").to.deep.equal(["this tab user"]);
+                expect(Countly.get_device_id()).to.equal("next user");
+            });
+            cy.wait(1000).then(() => {
+                expect(leftWithEvent("before_the_change"), "not taken back, the changing tab sends it before its change").to.deep.equal(["this tab user"]);
+            });
+        });
+    });
+
+    it("leaves what it has not sent under the previous device ID also when only the stored ID changes, as an older SDK version in another tab does", () => {
+        hp.haltAndClearStorage(() => {
+            initRecordingIds([]);
+            cy.wait(1500).then(() => {
+                Countly.add_event({ key: "before_the_change", count: 1 });
+                triggerStorageChange(hp.appKey + "/cly_id", "next user");
+                expect(leftWithEvent("before_the_change"), "left for the changing tab").to.deep.equal(["this tab user"]);
+                expect(Countly.get_device_id()).to.equal("next user");
+            });
+        });
+    });
+
+    it("sends nothing of its own for a moment after another tab changes the device ID", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            initRecordingIds(sent);
+            cy.wait(1500).then(() => {
+                otherTabChanges("next user");
+                sent.length = 0;
+                Countly.add_event({ key: "after_the_change", count: 1 });
+                Countly.user_details({ custom: { plan: "pro" } });
+            });
+            cy.wait(1000).then(() => {
+                expect(sent, "while the changing tab sends what was left before its change").to.deep.equal([]);
+                expect(leftWithEvent("after_the_change"), "kept in this tab, so it cannot go ahead of the change").to.deep.equal([]);
+            });
+            cy.wait(2500).then(() => {
+                expect(sent).to.deep.equal(["after_the_change for next user", "profile for next user"]);
+            });
+        });
+    });
+
+    it("sends everything it held back at once when the pause after another tab's device ID change ends", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            initRecordingIds(sent);
+            cy.wait(1500).then(() => {
+                otherTabChanges("next user");
+                sent.length = 0;
+                Countly.add_event({ key: "first_after", count: 1 });
+                Countly._internals.sendEventsForced();
+                Countly.add_event({ key: "second_after", count: 1 });
+                Countly._internals.sendEventsForced();
+            });
+            // the pause ends after 2 s, the slow heartbeat would come only after 10 s
+            cy.wait(2800).then(() => {
+                expect(sent).to.deep.equal(["first_after for next user", "second_after for next user"]);
+            });
+        });
+    });
+
+    it("learns the device ID another tab changed to, also when the ID is kept in a cookie", () => {
+        hp.haltAndClearStorage(() => {
+            initRecordingIds([], { storage: "cookie" });
+            cy.wait(500).then(() => {
+                otherTabChanges("next user");
+                expect(Countly.get_device_id()).to.equal("next user");
+            });
+        });
+    });
+
+    it("sends what other tabs leave right after its device ID change before its merge request", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            initRecordingIds(sent, { device_id: "anonymous" });
+            cy.wait(1500).then(() => {
+                sent.length = 0;
+                Countly.change_id("signed in user", true);
+                expect(shared("cly_handover"), "the other tabs are told").to.include({ id: "signed in user" });
+                // another tab leaves what it had not sent under the previous ID
+                triggerStorageChange(hp.appKey + "/cly_queue", JSON.stringify([{ app_key: hp.appKey, device_id: "anonymous", t: 0, timestamp: Date.now(), events: JSON.stringify([{ key: "other_tab_before", count: 1 }]) }]));
+            });
+            cy.wait(1500).then(() => {
+                expect(sent).to.deep.equal(["other_tab_before for anonymous", "merge for signed in user"]);
+            });
+        });
+    });
+
+    it("leaves its pending events for another tab that changes the profile, and keeps sending its own", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            initRecordingIds(sent);
+            cy.wait(1500).then(() => {
+                Countly.add_event({ key: "before_the_profile_change", count: 1 });
+                otherTabChanges();
+                expect(leftWithEvent("before_the_profile_change"), "left for the changing tab").to.deep.equal(["this tab user"]);
+                expect(Countly.get_device_id()).to.equal("this tab user");
+                sent.length = 0;
+                Countly.user_details({ custom: { plan: "pro" } });
+            });
+            cy.wait(1200).then(() => {
+                expect(sent, "no pause for a profile change").to.include("profile for this tab user");
+            });
+        });
+    });
+
+    it("sends what other tabs leave right after its profile change before the change", () => {
+        var sent = [];
+        hp.haltAndClearStorage(() => {
+            initRecordingIds(sent);
+            cy.wait(1500).then(() => {
+                sent.length = 0;
+                Countly.user_details({ custom: { plan: "pro" } });
+                expect(shared("cly_handover"), "the other tabs are told").to.have.property("at");
+                triggerStorageChange(hp.appKey + "/cly_queue", JSON.stringify([{ app_key: hp.appKey, device_id: "this tab user", t: 0, timestamp: Date.now(), events: JSON.stringify([{ key: "other_tab_before", count: 1 }]) }]));
+            });
+            cy.wait(1500).then(() => {
+                expect(sent).to.deep.equal(["other_tab_before for this tab user", "profile for this tab user"]);
             });
         });
     });
