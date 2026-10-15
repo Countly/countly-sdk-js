@@ -31,15 +31,15 @@ function initWithServerConfig(armed) {
 
 describe("Connection test URL building", () => {
     it("keeps the path prefix of a reverse-proxied server url", () => {
-        expect(ct.buildProbeUrl("https://x.com/countly", "/o/ping")).to.equal("https://x.com/countly/o/ping");
+        expect(ct.buildProbeUrl("https://countly.example/countly", "/o/ping")).to.equal("https://countly.example/countly/o/ping");
     });
 
     it("strips a trailing slash from the server url", () => {
-        expect(ct.buildProbeUrl("https://x.com/countly/", "/o/ping")).to.equal("https://x.com/countly/o/ping");
+        expect(ct.buildProbeUrl("https://countly.example/countly/", "/o/ping")).to.equal("https://countly.example/countly/o/ping");
     });
 
     it("keeps the query string of a probe path", () => {
-        expect(ct.buildProbeUrl("https://x.com", "/o/sdk?method=rc")).to.equal("https://x.com/o/sdk?method=rc");
+        expect(ct.buildProbeUrl("https://countly.example", "/o/sdk?method=rc")).to.equal("https://countly.example/o/sdk?method=rc");
     });
 });
 
@@ -206,9 +206,9 @@ function stubProbe(byPath, calls) {
 
 function baseContext(overrides) {
     var ctx = {
-        url: "https://x.com/countly",
+        url: "https://countly.example/countly",
         sdkName: "javascript_native_web",
-        sdkVersion: "26.1.3",
+        sdkVersion: "1.2.3",
         sc: { status: 200, ms: 112 },
         tier2: "unsupported"
     };
@@ -234,7 +234,7 @@ describe("Connection test battery", () => {
         var calls = [];
         var ctx = baseContext({ probe: stubProbe({ "/o/ping": { status: 200, ms: 5 } }, calls) });
         return ct.runConnectionTest(ctx).then((report) => {
-            expect(report.sdk).to.deep.equal({ name: "javascript_native_web", version: "26.1.3" });
+            expect(report.sdk).to.deep.equal({ name: "javascript_native_web", version: "1.2.3" });
             expect(report.ts).to.be.a("number");
         });
     });
@@ -254,7 +254,7 @@ describe("Connection test battery", () => {
         var ctx = baseContext({ probe: stubProbe({ "/o/ping": { status: 200, ms: 5 } }, calls) });
         return ct.runConnectionTest(ctx).then(() => {
             expect(calls.length).to.equal(10);
-            calls.forEach((c) => expect(c.url).to.contain("https://x.com/countly/"));
+            calls.forEach((c) => expect(c.url).to.contain("https://countly.example/countly/"));
             expect(calls.some((c) => c.url.indexOf("/countly/o/ping") !== -1)).to.be.true;
             expect(calls.some((c) => c.url.indexOf("/countly/o/surveys/nps/widget") !== -1)).to.be.true;
         });
@@ -428,7 +428,7 @@ describe("Connection test integration", () => {
 
 describe("Connection test report caps", () => {
     function reportOf(results) {
-        return { ts: 1, sdk: { name: "javascript_native_web", version: "26.1.3" }, results: results };
+        return { ts: 1, sdk: { name: "javascript_native_web", version: "1.2.3" }, results: results };
     }
 
     it("truncates a long detail to 256 characters", () => {
@@ -603,7 +603,7 @@ describe("Connection test custom headers", () => {
     var tier2Paths = ["/feedback/nps", "/feedback/survey", "/feedback/rating", "/surveys/images/", "/star-rating/images/", "/_external/content/"];
 
     function isTier2(url) {
-        return tier2Paths.some((path) => url.indexOf("https://x.com/countly" + path) === 0);
+        return tier2Paths.some((path) => url.indexOf("https://countly.example/countly" + path) === 0);
     }
 
     it("sends the init headers with the probes of the routes the SDK calls, not with page and image probes", () => {
