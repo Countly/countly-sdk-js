@@ -22,8 +22,8 @@ const require = createRequire(join(consumer, "package.json"));
 
 // import() takes a URL: a Windows path such as C:\dist would be read as a URL with the scheme "c:"
 const esm = (await import(pathToFileURL(join(dist, "countly_esm.js")).href)).default;
-const cjs = require(join(consumer, "countly_cjs.js")).default;
-const umd = require(join(consumer, "countly_umd.js")).default;
+const cjs = require(join(consumer, "countly_cjs.js"));
+const umd = require(join(consumer, "countly_umd.js"));
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -35,6 +35,38 @@ for (const [format, Countly] of [["esm", esm], ["cjs", cjs], ["umd", umd]]) {
         assert.equal(typeof Countly.DeviceIdType, "object");
     });
 }
+
+for (const [format, Countly] of [["cjs", cjs], ["umd", umd]]) {
+    test(`${format} bundle: require() hands out the SDK itself, and Countly.default, kept for earlier code, is the same object`, () => {
+        assert.equal(Countly.default, Countly);
+        assert.equal(Countly.__esModule, true);
+        assert.deepEqual(Object.keys(Countly).filter((key) => key === "default" || key === "__esModule"), []);
+    });
+}
+
+test("a bundled copy that finds an older copy's global, with a listed Countly.default, hides it", () => {
+    const older = { q: [] };
+    older.default = older;
+    globalThis.Countly = older;
+    try {
+        const copy = join(consumer, "countly_cjs_second_copy.js");
+        copyFileSync(join(dist, "countly_cjs.js"), copy);
+        const bundled = require(copy);
+        assert.equal(bundled, older);
+        assert.deepEqual(Object.keys(bundled).filter((key) => key === "default"), []);
+    }
+    finally {
+        delete globalThis.Countly;
+    }
+});
+
+test("an ES module importing the CommonJS and UMD bundles gets the SDK as the default export", async () => {
+    for (const file of ["countly_cjs.js", "countly_umd.js"]) {
+        const imported = (await import(pathToFileURL(join(consumer, file)).href)).default;
+        assert.equal(imported, require(join(consumer, file)), file);
+        assert.equal(typeof imported.init, "function", file);
+    }
+});
 
 test("runs in a runtime without a window and delivers events through the request path", async () => {
     const Countly = esm;
