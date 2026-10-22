@@ -191,4 +191,12 @@ if (isBrowser) {
     });
 }
 
+/**
+ *  The CommonJS and UMD bundles hand out Countly itself, so import and require() get the SDK under every module system.
+ *  Countly.default and __esModule keep code written as Countly.default.init and bundlers that read __esModule working;
+ *  they are not enumerable, so they do not show when Countly is listed or serialized.
+ */
+Object.defineProperty(Countly, "default", { value: Countly, enumerable: false, writable: true, configurable: true });
+Object.defineProperty(Countly, "__esModule", { value: true, enumerable: false });
+
 export default Countly;
