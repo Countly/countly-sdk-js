@@ -8,7 +8,7 @@
     "test": "npm run build && npm run test:node && npm run cy:run",
     "test:node": "npm run test:smoke && npm run test:tooling",
     "test:smoke": "node --test --test-force-exit test/node/smoke.test.mjs",
-    "test:tooling": "node --test --test-force-exit test/node/public-api.test.mjs test/node/sync-web.test.mjs",
+    "test:tooling": "node --test --test-force-exit test/node/public-api.test.mjs test/node/sync-web.test.mjs test/node/node-globals.test.mjs",
     "build": "rollup -c",
     "sync:web": "node scripts/sync-web.mjs",
     "cy:run": "cypress run",
