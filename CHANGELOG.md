@@ -11,6 +11,7 @@
 * Mitigated an issue where the health check counted errors and warnings only with `debug` on, and lost the ones logged on pages without automatic sessions. Its counters now restart when it is sent, even if it fails, and the legacy remote config API note is an info line, so it is not counted.
 * Mitigated an issue where the back-off request age setting (`bom_ra`) never applied, so requests older than it still paused sending while the server was slow.
 * Mitigated an issue where building a site with Parcel required the `buffer` package.
+* Mitigated an issue where the health check reported the status code and response of a failed request only for queued requests such as events, not for others such as the health check, server configuration, remote config or feedback widget requests. A request that got no HTTP answer is not recorded.
 
 ## 26.8.0
 

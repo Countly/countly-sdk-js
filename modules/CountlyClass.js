@@ -8575,9 +8575,7 @@ class CountlyClass {
                         }
                         else {
                             this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                            if (functionName === "send_request_queue") {
-                                this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
-                            }
+                            this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
                             answer(true, params, xhr.status, xhr.responseText);
                         }
                     }
@@ -8759,9 +8757,7 @@ class CountlyClass {
                     }
                     else {
                         this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                        if (functionName === "send_request_queue") {
-                            this.#HealthCheck.saveRequestCounters(response.status, data);
-                        }
+                        this.#HealthCheck.saveRequestCounters(response.status, data);
                         if (typeof callback === "function") {
                             callback(true, params, response.status, data);
                         }
@@ -9852,7 +9848,16 @@ class CountlyClass {
             this.hcBackoffCount = 0;
             this.hcConsecutiveBackoffCount = 0;
         },
+        /**
+         * Keeps the HTTP status code and response of the last failed request, of any kind, for the next health check.
+         * A request that got no HTTP answer, such as one sent while offline or blocked, has no status code to keep.
+         * @param {Number} status - HTTP status code
+         * @param {String} responseText - response body
+         */
         saveRequestCounters: (status, responseText) => {
+            if (!(status > 0 && status < 1000)) {
+                return;
+            }
             this.hcStatusCode = status;
             this.hcErrorMessage = responseText;
             this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);

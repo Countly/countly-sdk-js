@@ -173,6 +173,37 @@ describe("Health Check tests", () => {
             });
         });
     });
+    it("Records the status and message of any failed request for the next health check", () => {
+        hp.haltAndClearStorage(() => {
+            cy.intercept("POST", "https://your.domain.count.ly/i", { statusCode: 200, body: "{\"result\":\"Success\"}" });
+            // the server configuration request at start fails
+            cy.intercept("POST", "https://your.domain.count.ly/o/sdk", { statusCode: 503, body: "{\"result\":\"Service Unavailable\"}" }).as("serverConfig").then(() => {
+                Countly.init({
+                    app_key: "YOUR_APP_KEY",
+                    url: "https://your.domain.count.ly"
+                });
+            });
+            cy.wait("@serverConfig");
+            cy.wait(500).then(() => {
+                expect(localStorage.getItem("YOUR_APP_KEY/cly_hc_status_code")).to.equal("503");
+                expect(localStorage.getItem("YOUR_APP_KEY/cly_hc_error_message")).to.equal("{\"result\":\"Service Unavailable\"}");
+            });
+        });
+    });
+    it("Does not record a failed request that got no HTTP answer", () => {
+        hp.haltAndClearStorage(() => {
+            cy.intercept("https://your.domain.count.ly/**", { forceNetworkError: true }).then(() => {
+                Countly.init({
+                    app_key: "YOUR_APP_KEY",
+                    url: "https://your.domain.count.ly"
+                });
+                Countly.add_event({ key: "connection_lost" });
+            });
+            cy.wait(2000).then(() => {
+                expect(localStorage.getItem("YOUR_APP_KEY/cly_hc_status_code")).to.equal("-1");
+            });
+        });
+    });
     it("Sends no health check with disable_health_check, and still counts", () => {
         hp.haltAndClearStorage(() => {
             var sent = [];
