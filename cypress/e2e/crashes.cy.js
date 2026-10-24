@@ -133,6 +133,19 @@ describe("Crashes from errors given to the SDK", () => {
             });
         });
     });
+    it("Puts the error's name and message before a stack that lacks them, as Firefox and Safari give it, and keeps a stack that starts with them", () => {
+        hp.haltAndClearStorage(() => {
+            initMain();
+            Countly.log_error({ name: "PaymentError", message: "card declined", stack: "pay@https://site.example/pay.js:42:7" });
+            Countly.log_error({ name: "PaymentError", message: "card declined", stack: "PaymentError: card declined\n    at pay (https://site.example/pay.js:42:7)" });
+            cy.fetch_local_request_queue().then((rq) => {
+                var crashes = crashesIn(rq);
+                expect(crashes).to.have.length(2);
+                expect(crashes[0]._error).to.equal("PaymentError: card declined\npay@https://site.example/pay.js:42:7");
+                expect(crashes[1]._error).to.equal("PaymentError: card declined\n    at pay (https://site.example/pay.js:42:7)");
+            });
+        });
+    });
     it("Reports a text given as the error as it is", () => {
         hp.haltAndClearStorage(() => {
             initMain();

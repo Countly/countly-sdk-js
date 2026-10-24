@@ -12,6 +12,7 @@
 * Mitigated an issue where the back-off request age setting (`bom_ra`) never applied, so requests older than it still paused sending while the server was slow.
 * Mitigated an issue where building a site with Parcel required the `buffer` package.
 * Mitigated an issue where the health check reported the status code and response of a failed request only for queued requests such as events, not for others such as the health check, server configuration, remote config or feedback widget requests. A request that got no HTTP answer is not recorded.
+* Mitigated an issue where crash reports from Firefox and Safari had no error name or message, and those of unhandled promise rejections had no reason, only a line inside the SDK.
 
 ## 26.8.0
 
