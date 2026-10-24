@@ -3957,7 +3957,7 @@ class CountlyClass {
             // error handling for 'uncaught rejections'
             window.addEventListener("unhandledrejection", (event) => {
                 // true indicates non fatal error (as in non_fatal: true)
-                dispatchErrors(new Error("Unhandled rejection (reason: " + (event.reason && event.reason.stack ? event.reason.stack : event.reason) + ")."), true);
+                dispatchErrors(new Error("Unhandled rejection (reason: " + (event.reason && event.reason.stack ? this.#stackWithMessage(event.reason) : event.reason) + ")."), true);
             });
         }
     };
@@ -6065,6 +6065,22 @@ class CountlyClass {
     }
 
     /**
+     *  Gives the stack of an error with the error's name and message in front, as Chromium-based browsers give it.
+     *  Firefox and Safari leave the name and message out of the stack, so a crash report made from the stack alone would lack them.
+     *  @param {Object} err - error, or error-like object, with a stack
+     *  @returns {String} the stack, starting with the error's name and message when the error has them
+     */
+    #stackWithMessage = (err) => {
+        var name = err.name ? err.name + "" : "";
+        var message = err.message ? err.message + "" : "";
+        var header = name && message ? name + ": " + message : name || message;
+        if (header && (err.stack + "").indexOf(header) !== 0) {
+            return header + "\n" + err.stack;
+        }
+        return err.stack;
+    };
+
+    /**
      *  Record and report error, this is were tracked errors are modified and send to the request queue
      *  @param {Error} err - Error object
      *  @param {Boolean} nonfatal - nonfatal if true and false if fatal
@@ -6082,7 +6098,7 @@ class CountlyClass {
             var error = "";
             if (typeof err === "object") {
                 if (typeof err.stack !== "undefined") {
-                    error = err.stack;
+                    error = this.#stackWithMessage(err);
                 }
                 else {
                     if (typeof err.name !== "undefined") {
@@ -8575,9 +8591,7 @@ class CountlyClass {
                         }
                         else {
                             this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                            if (functionName === "send_request_queue") {
-                                this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
-                            }
+                            this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
                             answer(true, params, xhr.status, xhr.responseText);
                         }
                     }
@@ -8759,9 +8773,7 @@ class CountlyClass {
                     }
                     else {
                         this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                        if (functionName === "send_request_queue") {
-                            this.#HealthCheck.saveRequestCounters(response.status, data);
-                        }
+                        this.#HealthCheck.saveRequestCounters(response.status, data);
                         if (typeof callback === "function") {
                             callback(true, params, response.status, data);
                         }
@@ -9852,7 +9864,16 @@ class CountlyClass {
             this.hcBackoffCount = 0;
             this.hcConsecutiveBackoffCount = 0;
         },
+        /**
+         * Keeps the HTTP status code and response of the last failed request, of any kind, for the next health check.
+         * A request that got no HTTP answer, such as one sent while offline or blocked, has no status code to keep.
+         * @param {Number} status - HTTP status code
+         * @param {String} responseText - response body
+         */
         saveRequestCounters: (status, responseText) => {
+            if (!(status > 0 && status < 1000)) {
+                return;
+            }
             this.hcStatusCode = status;
             this.hcErrorMessage = responseText;
             this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
