@@ -20,6 +20,7 @@ import {
     stripTrailingSlash,
     createNewObjectFromProperties,
     addNewProperties,
+    makeJsonSafe,
     truncateObject,
     truncateSingleValue,
     get_closest_element,
@@ -107,6 +108,7 @@ class CountlyClass {
     #sdkName;
     #sdkVersion;
     #shouldSendHC;
+    #disableHealthCheck;
     #consents;
     #generatedRequests;
     #contentEndPoint;
@@ -148,6 +150,7 @@ class CountlyClass {
     #SCBackoffRQPercentage;
     #SCBackoffRequestAge;
     #SCBackoffDuration;
+    #SCDropOldRequestTime;
     #SCEventBlacklist;
     #SCEventWhitelist;
     #SCUserPropertyBlacklist;
@@ -199,6 +202,8 @@ class CountlyClass {
     #pushRecordInMemory = {};
     #pushWorkerVersionsWarned = [];
     #ignoredByChoice = false;
+    #orientationListening = false;
+    #hcCountersLoaded = false;
     #idBeforeOfflineMode;
     #passwordFields = new WeakMap();
     #passwordWatchRoots = new WeakMap();
@@ -292,10 +297,12 @@ class CountlyClass {
         this.#SCLimitStackTraceLinesPerThread = getConfig("max_stack_trace_lines_per_thread", ob, configurationDefaultValues.MAX_STACKTRACE_LINES_PER_THREAD);
         this.#SCLimitStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
         this.#SCBackoffMechanismEnabled = !getConfig("disable_backoff_mechanism", ob, false);
+        this.#disableHealthCheck = !!getConfig("disable_health_check", ob, false);
         this.#SCBackoffAcceptedTimeout = 10; // 10 seconds
         this.#SCBackoffRQPercentage = 0.5; // 50% of the request queue
         this.#SCBackoffRequestAge = 24; // 24 hours
         this.#SCBackoffDuration = 60; // 60 seconds
+        this.#SCDropOldRequestTime = 0; // hours, 0 keeps every request
         this.#SCEventBlacklist = [];
         this.#SCEventWhitelist = [];
         this.#SCUserPropertyBlacklist = [];
@@ -641,7 +648,9 @@ class CountlyClass {
         if (cache.hasOwnProperty("lt")) {
             this.#SCTrackingLocation = cache.lt;
         }
-        // web does not have support for 'dort' parameter
+        if (cache.hasOwnProperty("dort")) {
+            this.#SCDropOldRequestTime = cache.dort;
+        }
         if (cache.hasOwnProperty("rcz")) {
             this.#SCEnableRefreshContentZone = cache.rcz;
         }
@@ -756,8 +765,9 @@ class CountlyClass {
         this.push_subscribe_timeout = getConfig("push_subscribe_timeout", ob, pushConstants.SUBSCRIBE_TIMEOUT_MS);
         var pushListener = getConfig("push_notification_listener", ob, null);
         this.#pushNotificationListener = typeof pushListener === "function" ? pushListener : null;
-        this.hcErrorCount = this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0;
-        this.hcWarningCount = this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0;
+        this.hcErrorCount = (this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0) + (this.hcErrorCount || 0);
+        this.hcWarningCount = (this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0) + (this.hcWarningCount || 0);
+        this.#hcCountersLoaded = true;
         this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
         this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
         this.hcBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.backoffCount) || 0;
@@ -984,7 +994,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "initialize, automatic RC optin is enabled:[" + this.rcAutoOptinAb + "]");
         }
         if (!this.useExplicitRcApi) {
-            this.#log(logLevelEnums.WARNING, "initialize, will use legacy RC API. Consider enabling new API during init with use_explicit_rc_api flag");
+            this.#log(logLevelEnums.INFO, "initialize, will use legacy RC API. Consider enabling new API during init with use_explicit_rc_api flag");
         }
         if (this.track_domains) {
             this.#log(logLevelEnums.DEBUG, "initialize, tracking domain info:[" + this.track_domains + "]");
@@ -1831,7 +1841,12 @@ class CountlyClass {
         this.#log(logLevelEnums.WARNING, "halt, Resetting Countly");
         this.#halted = true;
         Countly.i = undefined;
-        Countly.q = [];
+        if (Array.isArray(Countly.q)) {
+            Countly.q.length = 0;
+        }
+        else {
+            Countly.q = [];
+        }
         Countly.noHeartBeat = undefined;
         this.#global = !Countly.i;
         this.#sessionStarted = false;
@@ -2329,13 +2344,16 @@ class CountlyClass {
                 if (this.enableOrientationTracking) {
                     // report orientation
                     this.#report_orientation();
-                    let orientationTimeout;
-                    add_event_listener(window, "resize", () => {
-                        clearTimeout(orientationTimeout);
-                        orientationTimeout = setTimeout(() => {
-                            this.#report_orientation();
-                        }, 200);
-                    });
+                    if (!this.#orientationListening) {
+                        this.#orientationListening = true;
+                        let orientationTimeout;
+                        add_event_listener(window, "resize", () => {
+                            clearTimeout(orientationTimeout);
+                            orientationTimeout = setTimeout(() => {
+                                this.#report_orientation();
+                            }, 200);
+                        });
+                    }
                 }
                 this.#lastBeat = getTimestamp();
                 this.#sessionStarted = true;
@@ -3119,6 +3137,13 @@ class CountlyClass {
         else {
             e.cvid = outsideViews ? "" : (this.#currentViewId || "");
         }
+        try {
+            JSON.stringify(e);
+        }
+        catch (ex) {
+            this.#log(logLevelEnums.ERROR, "add_cly_event, The event [" + e.key + "] cannot be turned into JSON and was not recorded: " + ex);
+            return;
+        }
         if (owner) {
             this.#asDeviceId(owner, () => this.#toRequestQueue({ events: JSON.stringify([e]) }));
             this.#log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully queued the last event for device ID: [" + owner.id + "]", e);
@@ -3632,6 +3657,11 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "[userData] change_custom_property, User property filtered by behavior settings: [" + key + "]");
                 return;
             }
+            var safeValue = makeJsonSafe(value, "[userData] change_custom_property", this.#log);
+            if (typeof safeValue === "undefined" && typeof value !== "undefined") {
+                return;
+            }
+            value = safeValue;
             if (!this.#customData[key]) {
                 this.#customData[key] = {};
             }
@@ -3670,9 +3700,13 @@ class CountlyClass {
         * */
         set: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] set, Setting user's custom property value: [" + value + "] under the key: [" + key + "]");
+            var safeValue = makeJsonSafe(value, "userData set", this.#log);
+            if (typeof safeValue === "undefined" && typeof value !== "undefined") {
+                return;
+            }
             // truncate user's custom property value to internal limits
             key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set", this.#log);
+            value = truncateSingleValue(safeValue, this.#SCLimitValueSize , "userData set", this.#log);
             if (!this.#isUserPropertyAllowed(key)) {
                 this.#log(logLevelEnums.DEBUG, "[userData] set, User property filtered by behavior settings: [" + key + "]");
                 return;
@@ -7359,13 +7393,6 @@ class CountlyClass {
             if (last - this.#lastBeat > this.#SCIntervalSessionUpdate) {
                 this.session_duration(last - this.#lastBeat);
                 this.#lastBeat = last;
-                // save health check logging counters if there are any
-                if (this.hcErrorCount > 0) {
-                    this.#setValueInStorage(healthCheckCounterEnum.errorCount, this.hcErrorCount);
-                }
-                if (this.hcWarningCount > 0) {
-                    this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
-                }
             }
         }
 
@@ -7429,7 +7456,8 @@ class CountlyClass {
     }
 
     /**
-     * Check if back-off conditions are met and activate back-off if necessary
+     * Check if back-off conditions are met and activate back-off if necessary. The request's timestamp is in
+     * milliseconds, its age is compared in seconds.
      * @param {Object} parameters - Request parameters to check timestamp
      */
     #checkBackoffConditions = (parameters) => {
@@ -7448,8 +7476,8 @@ class CountlyClass {
         var queueNotHalfFull = this.#requestQueue.length < (this.#SCSizeReqQueue * this.#SCBackoffRQPercentage);
         
         var currentTime = getTimestamp();
-        var requestTimestamp = parameters && parameters.timestamp ? parameters.timestamp : currentTime;
-        var requestAge = currentTime - (requestTimestamp);
+        var requestTimestamp = parameters && parameters.timestamp ? parameters.timestamp : getMsTimestamp();
+        var requestAge = Math.round((getMsTimestamp() - requestTimestamp) / 1000);
         var requestIsYoung = requestAge < (this.#SCBackoffRequestAge * 60 * 60); // 24 hours in seconds
         
         if (responseTimeExceeded && queueNotHalfFull && requestIsYoung) {
@@ -7570,6 +7598,25 @@ class CountlyClass {
             this.#requestQueue.splice(index, 1);
         }
     };
+    /**
+     *  Drop the requests at the front of the queue that are older than the drop old request time (dort, in hours) of the
+     *  SDK behavior settings, as each one comes up to be sent, instead of sending them
+     */
+    #dropOldRequests = () => {
+        if (!(this.#SCDropOldRequestTime > 0)) {
+            return;
+        }
+        var oldest = getMsTimestamp() - this.#SCDropOldRequestTime * 60 * 60 * 1000;
+        var dropped = 0;
+        while (this.#requestQueue.length > 0 && this.#requestQueue[0] && this.#requestQueue[0].timestamp < oldest) {
+            this.#requestQueue.shift();
+            dropped++;
+        }
+        if (dropped > 0) {
+            this.#log(logLevelEnums.INFO, "dropOldRequests, Dropped [" + dropped + "] request(s) older than [" + this.#SCDropOldRequestTime + "] hours");
+            this.#saveRequestQueue();
+        }
+    };
 
     #sendRequestFromQueue = (requestName, onSuccess) => {
         return new Promise((resolve) => {
@@ -7601,6 +7648,12 @@ class CountlyClass {
 
             this.#takeBackWhenSendable(false);
             if (this.#waitingToRetry) {
+                resolve(false);
+                return;
+            }
+
+            this.#dropOldRequests();
+            if (this.#requestQueue.length === 0) {
                 resolve(false);
                 return;
             }
@@ -7656,8 +7709,7 @@ class CountlyClass {
             return;
         }
 
-        const q = Countly.q;
-        Countly.q = [];
+        const q = Countly.q.splice(0, Countly.q.length);
         // another instance leaves the main instance's calls, unaddressed ones included, for the main instance to run in their order
         var forMainInstance = [];
         for (let i = 0; i < q.length; i++) {
@@ -7718,7 +7770,7 @@ class CountlyClass {
             }
         }
         if (forMainInstance.length > 0) {
-            Countly.q = forMainInstance.concat(Countly.q);
+            Countly.q.unshift.apply(Countly.q, forMainInstance);
         }
     }
 
@@ -7998,6 +8050,12 @@ class CountlyClass {
      * @memberof Countly._internals
      */
     #log = (level, message, third) => {
+        if (level === logLevelEnums.ERROR) {
+            this.#HealthCheck.incrementErrorCount();
+        }
+        else if (level === logLevelEnums.WARNING) {
+            this.#HealthCheck.incrementWarningCount();
+        }
         var shouldPrint = this.debug && typeof console !== "undefined";
         var levelChar = logLevelToWireChar[level] || "d";
         var shouldCapture = this.#logLineWanted(levelChar);
@@ -8033,12 +8091,10 @@ class CountlyClass {
             if (level === logLevelEnums.ERROR) {
                 // eslint-disable-next-line no-console
                 console.error(log);
-                this.#HealthCheck.incrementErrorCount();
             }
             else if (level === logLevelEnums.WARNING) {
                 // eslint-disable-next-line no-console
                 console.warn(log);
-                this.#HealthCheck.incrementWarningCount();
             }
             else if (level === logLevelEnums.INFO) {
                 // eslint-disable-next-line no-console
@@ -8100,11 +8156,12 @@ class CountlyClass {
     }
 
     /**
-     * Tells whether consent is given for a feature, without the log line check_consent writes.
+     * Tells whether consent is given for a feature, without the log line check_consent writes. Before the consents are
+     * read at start-up, as for a log line the constructor writes, no consent is given.
      * @param {String} feature - name of the feature
      * @returns {Boolean} true when consent is given
      */
-    #hasConsent = (feature) => !!(this.#consents[feature] && this.#consents[feature].optin);
+    #hasConsent = (feature) => !!(this.#consents && this.#consents[feature] && this.#consents[feature].optin);
 
     /**
      * Runs fn with log capture paused when the request carries a log batch, so the lines that
@@ -9718,6 +9775,10 @@ class CountlyClass {
      */
     #HealthCheck = {
         sendInstantHCRequest: () => {
+            if (this.#disableHealthCheck) {
+                this.#log(logLevelEnums.DEBUG, "sendInstantHCRequest, Health check is disabled with disable_health_check. Not sending health check request.");
+                return;
+            }
             if (this.#offlineMode) {
                 this.#log(logLevelEnums.DEBUG, "sendInstantHCRequest, Offline mode is active. Not sending health check request.");
                 this.#shouldSendHC = true;
@@ -9745,14 +9806,10 @@ class CountlyClass {
             };
             // add common request params
             this.#prepareRequest(request);
-            // send request
-            this.#makeNetworkRequest("[healthCheck]", this.url + this.#apiPath, request, (err) => {
-                // request maker already logs the error. No need to log it again here
-                if (!err) {
-                    // reset and save health check counters if request was successful
-                    this.#HealthCheck.resetAndSaveCounters();
-                }
-            }, true);
+            // the counters start again once the health check is sent, whether it reaches the server or not
+            this.#HealthCheck.resetAndSaveCounters();
+            // send request, the request maker logs a failure
+            this.#makeNetworkRequest("[healthCheck]", this.url + this.#apiPath, request, null, true);
         },
         resetAndSaveCounters: () => {
             this.#HealthCheck.resetCounters();
@@ -9764,10 +9821,16 @@ class CountlyClass {
             this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount);
         },
         incrementErrorCount: () => {
-            this.hcErrorCount++;
+            this.hcErrorCount = (this.hcErrorCount || 0) + 1;
+            if (this.#hcCountersLoaded) {
+                this.#setValueInStorage(healthCheckCounterEnum.errorCount, this.hcErrorCount);
+            }
         },
         incrementWarningCount: () => {
-            this.hcWarningCount++;
+            this.hcWarningCount = (this.hcWarningCount || 0) + 1;
+            if (this.#hcCountersLoaded) {
+                this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
+            }
         },
         incrementBackoffCount: () => {
             this.hcBackoffCount++;

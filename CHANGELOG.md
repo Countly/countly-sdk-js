@@ -1,6 +1,15 @@
 ## NEXT RELEASE
 
+* Added `disable_health_check` init option for turning off the health check request the SDK sends when it starts (default `false`).
+* Added support for the drop old request time (`dort`) SDK behavior setting: queued requests older than the set number of hours are dropped instead of sent.
+
 * Mitigated an issue where importing the SDK as an ES module (Vite 8 and other `"type": "module"` projects, Node.js, jsDelivr's `+esm`) or with `require()` gave a wrapper object instead of the SDK, so `Countly.init` was undefined. `Countly.default` keeps working.
+* Mitigated an issue where an event or user property holding a value JSON cannot encode, such as a `BigInt` or an object that refers back to itself (a React click event holds the window), stopped sending for the rest of the page. A `BigInt` is now sent as a string, other such values are left out.
+* Mitigated an issue where, with `require_consent`, `Countly.init` threw an error in browsers that refuse access to storage, as when the visitor blocks cookies.
+* Mitigated an issue where every session started again on the same page, after a device ID change without merge or an expired session, made one window resize or screen rotation record one more orientation event.
+* Mitigated an issue where calls pushed into `Countly.q` through a reference kept from before the SDK started, as Google Tag Manager's `createQueue` gives, were never run.
+* Mitigated an issue where the health check counted errors and warnings only with `debug` on, and lost the ones logged on pages without automatic sessions. Its counters now restart when it is sent, even if it fails, and the legacy remote config API note is an info line, so it is not counted.
+* Mitigated an issue where the back-off request age setting (`bom_ra`) never applied, so requests older than it still paused sending while the server was slow.
 * Mitigated an issue where building a site with Parcel required the `buffer` package.
 
 ## 26.8.0
