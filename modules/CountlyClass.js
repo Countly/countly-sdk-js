@@ -725,7 +725,7 @@ class CountlyClass {
         this.utm = getConfig("utm", ob, { source: true, medium: true, campaign: true, term: true, content: true });
         this.ignore_prefetch = getConfig("ignore_prefetch", ob, true);
         this.rcAutoOptinAb = getConfig("rc_automatic_optin_for_ab", ob, true);
-        this.useExplicitRcApi = getConfig("use_explicit_rc_api", ob, false);
+        this.useExplicitRcApi = getConfig("use_explicit_rc_api", ob, true);
         this.debug = getConfig("debug", ob, false);
         this.test_mode = getConfig("test_mode", ob, false);
         this.test_mode_eq = getConfig("test_mode_eq", ob, false);
@@ -994,7 +994,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "initialize, automatic RC optin is enabled:[" + this.rcAutoOptinAb + "]");
         }
         if (!this.useExplicitRcApi) {
-            this.#log(logLevelEnums.INFO, "initialize, will use legacy RC API. Consider enabling new API during init with use_explicit_rc_api flag");
+            this.#log(logLevelEnums.WARNING, "initialize, will use legacy RC API. Consider enabling new API during init with use_explicit_rc_api flag");
         }
         if (this.track_domains) {
             this.#log(logLevelEnums.DEBUG, "initialize, tracking domain info:[" + this.track_domains + "]");
@@ -3994,7 +3994,7 @@ class CountlyClass {
         }
     };
     /**
-    * Fetch remote config from the server (old one for method=fetch_remote_config API)
+    * Fetch remote config from the server, with the method=rc API, or with the legacy method=fetch_remote_config API when use_explicit_rc_api is false
     * @param {array=} keys - Array of keys to fetch, if not provided will fetch all keys
     * @param {array=} omit_keys - Array of keys to omit, if provided will fetch all keys except provided ones
     * @param {function=} callback - Callback to notify with first param error and second param remote config object
