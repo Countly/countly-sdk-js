@@ -1,4 +1,4 @@
-## NEXT RELEASE
+## 26.8.1
 
 * ! Minor Breaking Change ! Remote config is now downloaded with the current remote config API (`method=rc`) by default, as `use_explicit_rc_api` now defaults to `true`. It needs Countly server 22.09 or newer; set `use_explicit_rc_api` to `false` to keep the legacy API. The values and the A/B test enrollment stay the same, except that downloading only some keys now enrolls the user only in the A/B tests that use those keys.
 
