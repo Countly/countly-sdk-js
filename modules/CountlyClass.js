@@ -109,6 +109,7 @@ class CountlyClass {
     #sdkVersion;
     #shouldSendHC;
     #disableHealthCheck;
+    #gpcConsentRequired;
     #consents;
     #generatedRequests;
     #contentEndPoint;
@@ -289,6 +290,7 @@ class CountlyClass {
         this.#SCTrackingLocation = true;
         this.#SCEnableContent = false;
         this.#SCEnableRefreshContentZone = true;    
+        this.#gpcConsentRequired = !!getConfig("honor_gpc", ob, false) && typeof navigator !== "undefined" && navigator.globalPrivacyControl === true;
         this.#SCEnableConsentRequired = getConfig("require_consent", ob, false);
         this.#SCLimitKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
         this.#SCLimitValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
@@ -935,6 +937,9 @@ class CountlyClass {
         this.#log(logLevelEnums.DEBUG, "initialize, app_key:[" + this.app_key + "], url:[" + this.url + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, device_id:[" + getConfig("device_id", ob, undefined) + "]");
         this.#log(logLevelEnums.DEBUG, "initialize, require_consent is enabled:[" + this.#SCEnableConsentRequired + "]");
+        if (getConfig("honor_gpc", ob, false)) {
+            this.#log(logLevelEnums.DEBUG, "initialize, honor_gpc is set, Global Privacy Control signal:[" + this.#gpcConsentRequired + "]");
+        }
         try {
             this.#log(logLevelEnums.DEBUG, "initialize, metric override:[" + JSON.stringify(this.metrics) + "]");
             this.#log(logLevelEnums.DEBUG, "initialize, header override:[" + JSON.stringify(this.headers) + "]");
@@ -2070,7 +2075,7 @@ class CountlyClass {
     */
     check_consent = (feature) => {
         this.#log(logLevelEnums.INFO, "check_consent, Checking if consent is given for specific feature:[" + feature + "]");
-        if (!this.#SCEnableConsentRequired) {
+        if (!this.#consentRequired()) {
             // we don't need to have specific consents
             this.#log(logLevelEnums.INFO, "check_consent, require_consent is off, no consent is necessary");
             return true;
@@ -2122,7 +2127,7 @@ class CountlyClass {
     */
     check_any_consent = () => {
         this.#log(logLevelEnums.INFO, "check_any_consent, Checking if any consent is given");
-        if (!this.#SCEnableConsentRequired) {
+        if (!this.#consentRequired()) {
             // we don't need to have consents
             this.#log(logLevelEnums.INFO, "check_any_consent, require_consent is off, no consent is necessary");
             return true;
@@ -8165,11 +8170,18 @@ class CountlyClass {
      * @returns {Boolean} true when consent is not required or is given
      */
     #logConsentGiven = (need) => {
-        if (!this.#SCEnableConsentRequired) {
+        if (!this.#consentRequired()) {
             return true;
         }
         return need ? this.#hasConsent(need) : this.#hasConsent(featureEnums.EVENTS) && this.#hasConsent(featureEnums.USERS);
     }
+
+    /**
+     * Tells whether features need consent: the developer or the server requires it, or the browser sends a Global
+     * Privacy Control signal and the developer set honor_gpc. The server thus cannot lift what the signal requires.
+     * @returns {Boolean} true when features need consent
+     */
+    #consentRequired = () => !!(this.#SCEnableConsentRequired || this.#gpcConsentRequired);
 
     /**
      * Tells whether consent is given for a feature, without the log line check_consent writes. Before the consents are

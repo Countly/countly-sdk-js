@@ -1,3 +1,7 @@
+## XX.XX.XX
+
+* Added `honor_gpc` init option for requiring consent from visitors whose browser sends a Global Privacy Control signal, as `require_consent` does for every visitor (default `false`). Turning the consent requirement off in the SDK behavior settings does not lift it.
+
 ## 26.8.1
 
 * ! Minor Breaking Change ! Remote config is now downloaded with the current remote config API (`method=rc`) by default, as `use_explicit_rc_api` now defaults to `true`. It needs Countly server 22.09 or newer; set `use_explicit_rc_api` to `false` to keep the legacy API. The values and the A/B test enrollment stay the same, except that downloading only some keys now enrolls the user only in the A/B tests that use those keys.
