@@ -191,6 +191,7 @@ var DeviceIdTypeInternalEnums = {
  */
 var configurationDefaultValues = {
     BEAT_INTERVAL: 500,
+    HC_COUNT_CAP: 65535,
     QUEUE_SIZE: 1000,
     FAIL_TIMEOUT_AMOUNT: 60,
     INACTIVITY_TIME: 20,
@@ -233,6 +234,8 @@ var healthCheckCounterEnum = Object.freeze({
     errorMessage: "cly_hc_error_message",
     backoffCount: "cly_hc_backoff_count",
     consecutiveBackoffCount: "cly_hc_consecutive_backoff_count",
+    methodUsage: "cly_hc_method_usage",
+    logCodes: "cly_hc_log_codes",
 });
 
 /**

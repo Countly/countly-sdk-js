@@ -624,8 +624,10 @@ describe("Journey trigger behavior settings", () => {
                 expect(sbsReq).to.exist;
                 expect(journeyReq).to.exist;
                 expect(contentReqs.length).to.equal(1); // only 1 content request for 2 journey events
-                expect(requests[3]).to.equal(contentReqs[0]); // one before last request
-                expect(requests[4]).to.equal(journeyReqs[1]); // last request
+                // the health check of the page load goes out after the first heartbeat, wherever that falls among the others
+                const withoutHealthCheck = requests.filter((r) => !r.functionName.includes("[healthCheck]"));
+                expect(withoutHealthCheck[2]).to.equal(contentReqs[0]); // one before last request
+                expect(withoutHealthCheck[3]).to.equal(journeyReqs[1]); // last request
             });
         });
     });

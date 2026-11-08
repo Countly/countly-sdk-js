@@ -118,7 +118,7 @@ function dispatchErrors(error, fatality, segments) {
         // If track_errors is enabled for that instance
         if (Countly.i[app_key].tracking_crashes) {
             // Trigger recordError function for that instance
-            Countly.i[app_key].recordError(error, fatality, segments);
+            Countly.i[app_key].recordError(error, fatality, segments, true);
         }
     }
 }
@@ -252,7 +252,8 @@ function makeJsonSafe(value, errorLog, logCall) {
         return typeof json === "undefined" ? undefined : JSON.parse(json);
     }
     catch (ex) {
-        logCall(logLevelEnums.ERROR, errorLog + ", A value JSON cannot encode was left out: [" + ex + "]");
+        logCall(logLevelEnums.WARNING, errorLog + ", A value JSON cannot encode was left out: [" + ex + "]");
+        recordLogCode(logCall, "w206");
         return undefined;
     }
 }
@@ -271,6 +272,8 @@ function truncateObject(obj, keyLimit, valueLimit, segmentLimit, errorLog, logCa
     var ob = {};
     if (obj) {
         if (Object.keys(obj).length > segmentLimit) {
+            logCall(logLevelEnums.WARNING, errorLog + ", The segmentation has more than [" + segmentLimit + "] pairs, the extra pairs are dropped");
+            recordLogCode(logCall, "w203");
             var resizedObj = {};
             var i = 0;
             for (var e in obj) {
@@ -286,8 +289,8 @@ function truncateObject(obj, keyLimit, valueLimit, segmentLimit, errorLog, logCa
             if (typeof safeValue === "undefined" && typeof obj[key] !== "undefined") {
                 continue;
             }
-            var newKey = truncateSingleValue(key, keyLimit, errorLog, logCall);
-            var newValue = truncateSingleValue(safeValue, valueLimit, errorLog, logCall);
+            var newKey = truncateSingleValue(key, keyLimit, errorLog, logCall, "w201");
+            var newValue = truncateSingleValue(safeValue, valueLimit, errorLog, logCall, "w202");
             ob[newKey] = newValue;
         }
     }
@@ -300,9 +303,10 @@ function truncateObject(obj, keyLimit, valueLimit, segmentLimit, errorLog, logCa
  * @param {Number} limit - limit length
  * @param {string} errorLog - prefix for error log
  * @param {function} logCall - internal logging function
+ * @param {string=} logCode - health check log code to record when the value is cut, "w201" for a key, "w202" for a value
  * @returns {string|number} - the new truncated value
  */
-function truncateSingleValue(str, limit, errorLog, logCall) {
+function truncateSingleValue(str, limit, errorLog, logCall, logCode) {
     var newStr = str;
     if (typeof str === "number") {
         str = str.toString();
@@ -310,10 +314,22 @@ function truncateSingleValue(str, limit, errorLog, logCall) {
     if (typeof str === "string") {
         if (str.length > limit) {
             newStr = str.substring(0, limit);
-            logCall(logLevelEnums.DEBUG, errorLog + ", Key: [ " + str + " ] is longer than accepted length. It will be truncated.");
+            logCall(logLevelEnums.WARNING, errorLog + ", Key: [ " + str + " ] is longer than accepted length. It will be truncated.");
+            recordLogCode(logCall, logCode);
         }
     }
     return newStr;
+}
+
+/**
+ * Records a health check log code through the logging function of the instance, which carries the instance's recorder
+ * @param {function} logCall - internal logging function of the instance
+ * @param {string=} logCode - the log code, nothing is recorded without one
+ */
+function recordLogCode(logCall, logCode) {
+    if (logCode && logCall && typeof logCall.recordLogCode === "function") {
+        logCall.recordLogCode(logCode);
+    }
 }
 
 /**
