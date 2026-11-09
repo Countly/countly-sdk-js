@@ -176,7 +176,7 @@ describe("Global content segmentation", () => {
         hp.haltAndClearStorage(() => {
             init({ global_content_segmentation: { plan: "pro", source: "global" } });
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!contentFrame(), "content on screen").then(() => {
                 expect(contentFrame(), "content on screen").to.exist;
                 fromContent({ event: [{ key: "[CLY]_content_shown", segmentation: { content_id: "c1" } }, { key: "banner_click", count: 1, segmentation: { source: "banner" } }] });
                 expect(queued("[CLY]_content_shown")[0]).to.include({ content_id: "c1", plan: "pro", source: "global" });

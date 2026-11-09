@@ -54,7 +54,7 @@ describe("Leaving the content zone", () => {
         hp.haltAndClearStorage(() => {
             var counts = initWithContent(() => false);
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => counts.content === 1, "the zone was entered").then(() => {
                 expect(counts.content, "the zone was entered").to.equal(1);
                 Countly.content.refreshContentZone();
                 Countly.content.exitContentZone();
@@ -69,7 +69,7 @@ describe("Leaving the content zone", () => {
         hp.haltAndClearStorage(() => {
             var counts = initWithContent(() => true);
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!contentFrame(), "content is shown").then(() => {
                 expect(contentFrame(), "content is shown").to.exist;
                 Countly.content.exitContentZone();
                 expect(contentFrame(), "content after leaving").to.not.exist;
@@ -92,7 +92,7 @@ describe("Leaving the content zone", () => {
                 return true;
             });
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !leaveWhileOnItsWay, "the zone was entered").then(() => {
                 expect(contentFrame(), "content that arrived after leaving").to.not.exist;
                 Countly.content.enterContentZone();
                 cy.wait(500).then(() => {
@@ -112,7 +112,7 @@ describe("Device ID change without merge", () => {
         hp.haltAndClearStorage(() => {
             var counts = initWithContent(() => true);
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!contentFrame(), "content is shown").then(() => {
                 expect(contentFrame(), "content is shown").to.exist;
                 Countly.change_id("next user", false);
                 expect(contentFrame(), "content after the change").to.not.exist;
@@ -150,7 +150,7 @@ describe("Messages from content", () => {
         hp.haltAndClearStorage(() => {
             initWithContent(() => true);
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!contentFrame(), "first content is shown").then(() => {
                 expect(contentFrame(), "first content is shown").to.exist;
                 fromContent({ close: 1 });
                 expect(contentFrame(), "first content is closed").to.not.exist;
@@ -170,7 +170,7 @@ describe("Messages from content", () => {
         hp.haltAndClearStorage(() => {
             initWithContent(() => true);
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!contentFrame(), "content is shown").then(() => {
                 expect(contentFrame(), "content is shown").to.exist;
                 fromContent({ event: { key: "single_from_content" } });
                 fromContent({ event: [{ key: "listed_from_content" }] });

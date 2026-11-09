@@ -31,7 +31,7 @@ describe("Web Worker Local Queue Tests", () => {
             cy.check_session(requestQueue[1], 0, false, false, false);
         });
     });
-    it("Records the status and message of a failed request for the next health check", () => {
+    it("Does not record a failed immediate request for the health check", () => {
         let myWorker;
         let health;
         cy.intercept("POST", "https://your.domain.count.ly/i", { statusCode: 200, body: "{\"result\":\"Success\"}" });
@@ -48,7 +48,8 @@ describe("Web Worker Local Queue Tests", () => {
             myWorker.postMessage({ data: "health", type: "hc" });
         });
         cy.wait(1000).then(() => {
-            expect(health).to.deep.equal({ sc: 503, em: "{\"result\":\"Service Unavailable\"}" });
+            // only queued requests the server refused fill in the status code and message
+            expect(health).to.deep.equal({ sc: -1, em: "" });
         });
     });
 });

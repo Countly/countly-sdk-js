@@ -175,7 +175,12 @@ class CountlyClass {
     #backoffEndTime;
     #isInBackoff;
     #backOffLogShown;
-    #lastRequestWasBackoff;
+    #hcBackoffRun = 0;
+    #hcMethodUsage = {};
+    #hcLogCodes = {};
+    #hcSent = false;
+    #hcDirty = false;
+    #hcSavedAt = 0;
     #testModeTime;
     #requestTimeoutDuration;
     #contentFilterCallback;
@@ -265,6 +270,8 @@ class CountlyClass {
         this.#previousViewId = null; // this is the global variable for tracking the previous view's ID. Used in view tracking. First view has no previous view ID.
         this.#freshUTMTags = null;
         this.#shouldSendHC = false;
+        this.#hcSent = false;
+        this.#log.recordLogCode = (code) => this.#HealthCheck.recordLogCode(code);
         this.#generatedRequests = [];
         this.#contentEndPoint = "/o/sdk/content";
         this.#inContentZone = false;
@@ -339,7 +346,8 @@ class CountlyClass {
             localStorage.removeItem("cly_testLocal");
         }
         catch (e) {
-            this.#log(logLevelEnums.ERROR, "Local storage test failed, Halting local storage support: " + e);
+            this.#log(logLevelEnums.WARNING, "Local storage test failed, Halting local storage support: " + e);
+            this.#HealthCheck.recordLogCode("w502");
             this.#lsSupport = false;
         }
 
@@ -362,6 +370,11 @@ class CountlyClass {
             } else {
                 this.#log(logLevelEnums.WARNING, "initialize, Heartbeat disabled. This is for testing purposes only!");
             }
+            // runs after the first heartbeat took the calls queued in Countly.q: a page that tracks no session sends the
+            // health check of its page load, a page that does sends it when a new session begins
+            if (!this.#hcSent && !this.#sessionStarted && !this.#halted && !this.ignore_visitor) {
+                this.#HealthCheck.sendInstantHCRequest();
+            }
 
             if (this.remote_config) {
                 this.fetch_remote_config(this.remote_config);
@@ -371,8 +384,14 @@ class CountlyClass {
             document.documentElement.setAttribute("data-countly-useragent", currentUserAgentString());
         }
         this.#initTimestamp = getMsTimestamp();
-        // send instant health check request
-        this.#HealthCheck.sendInstantHCRequest(); 
+        if (isBrowser) {
+            add_event_listener(window, "pagehide", () => this.#HealthCheck.saveState(true));
+            add_event_listener(document, "visibilitychange", () => {
+                if (document.visibilityState === "hidden") {
+                    this.#HealthCheck.saveState(true);
+                }
+            });
+        }
         if (this.#SCEnableContent) {
             this.#enterContentZoneInternal();
             this.#initContentSent = true;
@@ -526,7 +545,7 @@ class CountlyClass {
                 }
             }
             catch (ex) {
-                this.#log(logLevelEnums.ERROR, "server_config, Had an issue while parsing the response: " + ex);
+                this.#log(logLevelEnums.DEBUG, "server_config, Had an issue while parsing the response: " + ex);
                 this.#resolveProvisionalLogs("server config response could not be parsed");
             }
         }, true, true);
@@ -765,14 +784,7 @@ class CountlyClass {
         this.push_subscribe_timeout = getConfig("push_subscribe_timeout", ob, pushConstants.SUBSCRIBE_TIMEOUT_MS);
         var pushListener = getConfig("push_notification_listener", ob, null);
         this.#pushNotificationListener = typeof pushListener === "function" ? pushListener : null;
-        this.hcErrorCount = (this.#getValueFromStorage(healthCheckCounterEnum.errorCount) || 0) + (this.hcErrorCount || 0);
-        this.hcWarningCount = (this.#getValueFromStorage(healthCheckCounterEnum.warningCount) || 0) + (this.hcWarningCount || 0);
-        this.#hcCountersLoaded = true;
-        this.hcStatusCode = this.#getValueFromStorage(healthCheckCounterEnum.statusCode) || -1;
-        this.hcErrorMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage) || "";
-        this.hcBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.backoffCount) || 0;
-        this.hcConsecutiveBackoffCount = this.#getValueFromStorage(healthCheckCounterEnum.consecutiveBackoffCount) || 0;
-        this.#lastRequestWasBackoff = false; // Track if the previous request resulted in a backoff
+        this.#HealthCheck.loadState();
         this.#crashFilterCallback = getConfig("crash_filter_callback", ob, null);
 
         this.#serverConfigCache = this.#getValueFromStorage("cly_config");
@@ -1895,6 +1907,9 @@ class CountlyClass {
         this.#previousViewId = null;
         this.#freshUTMTags = null;
         this.#generatedRequests = [];
+        this.#HealthCheck.resetCounters();
+        this.#hcSent = false;
+        this.#hcCountersLoaded = false;
         // decided, so nothing logged after halt is captured
         this.#resetLogGathering(true);
 
@@ -1920,6 +1935,8 @@ class CountlyClass {
             localStorage.removeItem("cly_hc_error_message");
             localStorage.removeItem("cly_hc_backoff_count");
             localStorage.removeItem("cly_hc_consecutive_backoff_count");
+            localStorage.removeItem("cly_hc_method_usage");
+            localStorage.removeItem("cly_hc_log_codes");
         }
         catch (e) {
             this.#log(logLevelEnums.ERROR, "halt, Local storage test failed, will fallback to cookies");
@@ -2050,7 +2067,8 @@ class CountlyClass {
                         this.#consents[i] = { features: features[i] };
                     }
                     else {
-                        this.#log(logLevelEnums.ERROR, "group_features, Incorrect feature list for [" + i + "] value: [" + features[i] + "]");
+                        this.#log(logLevelEnums.WARNING, "group_features, Incorrect feature list for [" + i + "] value: [" + features[i] + "]");
+                this.#HealthCheck.recordLogCode("w700");
                     }
                 }
                 else {
@@ -2059,7 +2077,8 @@ class CountlyClass {
             }
         }
         else {
-            this.#log(logLevelEnums.ERROR, "group_features, Incorrect features:[" + features + "]");
+            this.#log(logLevelEnums.WARNING, "group_features, Incorrect features:[" + features + "]");
+            this.#HealthCheck.recordLogCode("w700");
         }
     };
 
@@ -2161,12 +2180,13 @@ class CountlyClass {
                     this.#updateConsent();
                     setTimeout(() => {
                         if (feature === featureEnums.SESSIONS && this.#lastParams.begin_session) {
-                            this.begin_session.apply(this, this.#lastParams.begin_session);
+                            var pendingSession = this.#lastParams.begin_session;
                             this.#lastParams.begin_session = null;
+                            this.#beginSession(pendingSession[0], pendingSession[1], this.#autoSessionTracking);
                         }
                         else if (feature === featureEnums.VIEWS && this.#lastParams.track_pageview) {
                             this.#lastView = null;
-                            this.track_pageview.apply(this, this.#lastParams.track_pageview);
+                            this.#trackPageview.apply(this, this.#lastParams.track_pageview);
                             this.#lastParams.track_pageview = null;
                         }
                         else if (feature === featureEnums.CONTENT && this.#contentZoneWanted) {
@@ -2183,7 +2203,8 @@ class CountlyClass {
             }
         }
         else {
-            this.#log(logLevelEnums.ERROR, "add_consent, No feature available for [" + feature + "]");
+            this.#log(logLevelEnums.WARNING, "add_consent, No feature available for [" + feature + "]");
+            this.#HealthCheck.recordLogCode("w402");
         }
     };
 
@@ -2236,6 +2257,7 @@ class CountlyClass {
         }
         else {
             this.#log(logLevelEnums.WARNING, "remove_consent, No feature available for [" + feature + "]");
+            this.#HealthCheck.recordLogCode("w402");
         }
     };
 
@@ -2328,9 +2350,28 @@ class CountlyClass {
     * @param {bool} force - force begin session request even if session cookie is enabled
     */
     begin_session = (noHeartBeat, force) => {
+        this.#HealthCheck.recordUsage("sessions", "begin");
+        if (this.#sessionStarted && this.#SCTrackingSession && this.check_consent(featureEnums.SESSIONS)) {
+            this.#log(logLevelEnums.WARNING, "begin_session, A session is already running, this call will be ignored");
+            this.#HealthCheck.recordLogCode("w760", "sessions");
+            return;
+        }
+        this.#beginSession(noHeartBeat, force, false);
+    };
+
+    /**
+     * Begins a session when the behavior settings and the sessions consent allow it. A page that continues the session of
+     * the visit sends no begin request; one that begins a new session sends the health check of the visit
+     * @param {boolean} noHeartBeat - true to not extend the session with heartbeats
+     * @param {boolean} force - true to begin a new session whatever the session cookie says
+     * @param {boolean} bySdk - true when the SDK begins the session by itself, counted as "begin:a" before the health check
+     * this begin may send
+     * @returns {boolean} true when the session of this page began
+     */
+    #beginSession = (noHeartBeat, force, bySdk) => {
         if (!this.#SCTrackingSession) {
             this.#log(logLevelEnums.INFO, "begin_session, Session tracking is disabled by server config");
-            return;
+            return false;
         }
         this.#log(logLevelEnums.INFO, "begin_session, Starting the session. There was an ongoing session: [" + this.#sessionStarted + "]");
         if (noHeartBeat) {
@@ -2357,6 +2398,9 @@ class CountlyClass {
                 }
                 this.#lastBeat = getTimestamp();
                 this.#sessionStarted = true;
+                if (bySdk) {
+                    this.#HealthCheck.recordUsage("sessions", "begin:a");
+                }
                 this.#autoExtend = !(noHeartBeat);
                 var expire = this.#getValueFromStorage("cly_session");
                 this.#log(logLevelEnums.VERBOSE, "begin_session, Session state, forced: [" + force + "], useSessionCookie: [" + this.#useSessionCookie + "], seconds to expire: [" + (expire - this.#lastBeat) + "], expired: [" + (parseInt(expire) <= getTimestamp()) + "] ");
@@ -2371,13 +2415,16 @@ class CountlyClass {
                     this.userData.save(true); // ensure user data is saved before session start
                     this.#toRequestQueue(req);
                     this.#renewPushTokenForSession();
+                    this.#HealthCheck.sendInstantHCRequest();
                 }
                 this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
+                return true;
             }
         }
         else {
             this.#lastParams.begin_session = [noHeartBeat, force];
         }
+        return false;
     };
 
     /**
@@ -2385,24 +2432,40 @@ class CountlyClass {
     * @param {int} sec - amount of seconds to report for current session
     */
     session_duration = (sec) => {
+        this.#HealthCheck.recordUsage("sessions", "update");
+        if (!this.#sessionStarted && this.#SCTrackingSession && this.check_consent(featureEnums.SESSIONS)) {
+            this.#log(logLevelEnums.WARNING, "session_duration, No session was started, this call will be ignored");
+            this.#HealthCheck.recordLogCode("w760", "sessions");
+            return;
+        }
+        this.#sessionDuration(sec);
+    };
+
+    /**
+     * Reports the duration of the running session when the behavior settings and the sessions consent allow it
+     * @param {int} sec - amount of seconds to report for current session
+     * @returns {boolean} true when the duration was reported
+     */
+    #sessionDuration = (sec) => {
         if (!this.#SCTrackingSession) {
             this.#log(logLevelEnums.INFO, "session_duration, Session tracking is disabled by server config");
-            return;
+            return false;
         }
         this.#log(logLevelEnums.INFO, "session_duration, Reporting session duration: [" + sec + "]");
         if (!this.check_consent(featureEnums.SESSIONS)) {
-            return;
+            return false;
         }
 
         if (!this.#sessionStarted) {
             this.#log(logLevelEnums.DEBUG, "session_duration, No session was started");
-            return;
+            return false;
         }
 
         this.#log(logLevelEnums.INFO, "session_duration, Session extended: [" + sec + "]");
         this.userData.save(true); // ensure user data is saved before session update
         this.#toRequestQueue({ session_duration: sec });
         this.#extendSession();
+        return true;
     };
 
     /**
@@ -2411,9 +2474,26 @@ class CountlyClass {
     * @param {bool} force - force end session request even if session cookie is enabled
     */
     end_session = (sec, force) => {
+        this.#HealthCheck.recordUsage("sessions", "end");
+        if (!this.#sessionStarted && this.#SCTrackingSession && this.check_consent(featureEnums.SESSIONS)) {
+            this.#log(logLevelEnums.WARNING, "end_session, No session was started, this call will be ignored");
+            this.#HealthCheck.recordLogCode("w760", "sessions");
+            return;
+        }
+        this.#endSession(sec, force);
+    };
+
+    /**
+     * Ends the running session when the behavior settings and the sessions consent allow it, and stores the health check
+     * counters, as the end of a session can be the end of the visit
+     * @param {int} sec - amount of seconds to report for current session, before ending it
+     * @param {bool} force - force end session request even if session cookie is enabled
+     * @returns {boolean} true when the session of this page ended
+     */
+    #endSession = (sec, force) => {
         if (!this.#SCTrackingSession && !force) {
             this.#log(logLevelEnums.INFO, "end_session, Session tracking is disabled by server config");
-            return;
+            return false;
         }
         this.#log(logLevelEnums.INFO, "end_session, Ending the current session. There was an on going session:[" + this.#sessionStarted + "]");
         if (this.check_consent(featureEnums.SESSIONS)) {
@@ -2426,11 +2506,14 @@ class CountlyClass {
                     this.#toRequestQueue({ end_session: 1, session_duration: sec });
                 }
                 else {
-                    this.session_duration(sec);
+                    this.#sessionDuration(sec);
                 }
                 this.#sessionStarted = false;
+                this.#HealthCheck.saveState(true);
+                return true;
             }
         }
+        return false;
     };
 
     /**
@@ -2441,6 +2524,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "set_id, Changing the device ID to:[" + newId + "]");
         if (newId == null || newId === "") {
             this.#log(logLevelEnums.WARNING, "set_id, The provided device is not a valid ID");
+            this.#HealthCheck.recordLogCode("w601");
             return;
         }
         if (this.#deviceIdType === DeviceIdTypeInternalEnums.DEVELOPER_SUPPLIED || this.#deviceIdType === DeviceIdTypeInternalEnums.URL_PROVIDED) {
@@ -2461,6 +2545,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "change_id, Changing the device ID to: [" + newId + "] with merge:[" + merge + "]");
         if (!newId || typeof newId !== "string" || newId.length === 0) {
             this.#log(logLevelEnums.WARNING, "change_id, The provided device ID is not a valid ID");
+            this.#HealthCheck.recordLogCode("w601");
             return;
         }
         if (this.#offlineMode) {
@@ -2486,7 +2571,9 @@ class CountlyClass {
             this.userData.save(true);
             this.#customData = {};
             // end current session
-            this.end_session(null, true);
+            if (this.#endSession(null, true)) {
+                this.#HealthCheck.recordUsage("sessions", "end:a");
+            }
             // the previous user's session cookie must not let the next user continue that session
             this.#removeValueFromStorage("cly_session");
             // clear timed events
@@ -2516,7 +2603,7 @@ class CountlyClass {
         }
         else if (this.#autoSessionTracking) {
             // only automatic session tracking starts a session for the new ID, manual sessions are left to the developer
-            this.begin_session(!this.#autoExtend, true);
+            this.#beginSession(!this.#autoExtend, true, true);
         }
         this.#handlePushOnDeviceIdChange(merge, oldId);
         // the behavior settings and remote config can differ for the new ID. A fetch creates the user of an ID the server has not seen,
@@ -2550,6 +2637,18 @@ class CountlyClass {
     * @param {Object=} event.segmentation - object with segments key /values
     * */
     add_event = (event) => {
+        if (!(event && typeof event.key === "string" && event.key.indexOf("[CLY]_") === 0)) {
+            this.#HealthCheck.recordUsage("events", "record");
+        }
+        this.#addEvent(event);
+    };
+
+    /**
+     * Records an event after checking the consent of its feature. Used for the events the app records and for the event an
+     * ended timed event records
+     * @param {Object} event - Countly event object
+     */
+    #addEvent = (event) => {
         this.#log(logLevelEnums.INFO, "add_event, Adding event: ", event);
         // initially no consent is given
         var respectiveConsent = false;
@@ -2613,12 +2712,14 @@ class CountlyClass {
         }
         var vapidKey = opts.push_vapid_public_key || this.push_vapid_public_key;
         if (!vapidKey) {
-            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is required");
+            this.#log(logLevelEnums.WARNING, "enable_push_notifications, push_vapid_public_key is required");
+            this.#HealthCheck.recordLogCode("w121");
             return Promise.resolve({ subscribed: false, reason: "missing_vapid_key" });
         }
         var applicationServerKey = this.#urlBase64ToUint8Array(vapidKey);
         if (!applicationServerKey || applicationServerKey.length !== pushConstants.VAPID_PUBLIC_KEY_BYTE_LENGTH || applicationServerKey[0] !== pushConstants.VAPID_PUBLIC_KEY_PREFIX) {
-            this.#log(logLevelEnums.ERROR, "enable_push_notifications, push_vapid_public_key is not a base64-url encoded uncompressed P-256 public key (got [" + vapidKey + "]). Generate one from your Countly application settings.");
+            this.#log(logLevelEnums.WARNING, "enable_push_notifications, push_vapid_public_key is not a base64-url encoded uncompressed P-256 public key (got [" + vapidKey + "]). Generate one from your Countly application settings.");
+            this.#HealthCheck.recordLogCode("w121");
             return Promise.resolve({ subscribed: false, reason: "invalid_vapid_key" });
         }
         var swPath = opts.push_service_worker_path || this.push_service_worker_path;
@@ -2982,6 +3083,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "record_push_action, Recording push action for message:[" + messageId + "], button:[" + buttonIndex + "]" + (owner ? ", device ID:[" + owner.id + "]" : ""));
         if (!messageId) {
             this.#log(logLevelEnums.WARNING, "record_push_action, messageId is required");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         if (this.check_consent(featureEnums.PUSH)) {
@@ -3092,11 +3194,15 @@ class CountlyClass {
         // ignore bots
         if (this.ignore_visitor || !this.#SCTrackingAll) {
             this.#log(logLevelEnums.WARNING, "Not adding the event. Tracking is disabled by the server config:[" + !this.#SCTrackingAll + "] or ignore_visitor is:[" + this.ignore_visitor + "]");
+            if (!this.#SCTrackingAll) {
+                this.#HealthCheck.recordLogCode("w505");
+            }
             return;
         }
 
         if (!event.key) {
-            this.#log(logLevelEnums.ERROR, "Adding event failed. Event must have a key property");
+            this.#log(logLevelEnums.WARNING, "Adding event failed. Event must have a key property");
+            this.#HealthCheck.recordLogCode("w701", "events");
             return;
         }
 
@@ -3118,7 +3224,7 @@ class CountlyClass {
         const initialKey = event.key;
         // we omit the internal event keys from truncation. TODO: This is not perfect as it would omit a key that includes an internal event key and more too. But that possibility seems negligible. 
         if (!internalEventKeyEnumsArray.includes(event.key)) {
-            event.key = truncateSingleValue(event.key, this.#SCLimitKeyLength, "add_cly_event", this.#log);
+            event.key = truncateSingleValue(event.key, this.#SCLimitKeyLength, "add_cly_event", this.#log, "w201");
         }
         if (!isInternalEvent) {
             event.segmentation = this.#filterSegmentationByBehaviorSettings(event.key, event.segmentation);
@@ -3481,15 +3587,18 @@ class CountlyClass {
     * @param {string} key - event name that will be used as key property
     * */
     start_event = (key) => {
+        this.#HealthCheck.recordUsage("events", "start");
         if (!key || typeof key !== "string") {
             this.#log(logLevelEnums.WARNING, "start_event, you have to provide a valid string key instead of: [" + key + "]");
+            this.#HealthCheck.recordLogCode("w700", "events");
             return;
         }
         this.#log(logLevelEnums.INFO, "start_event, Starting timed event with key: [" + key + "]");
         // truncate event name to internal limits
-        key = truncateSingleValue(key, this.#SCLimitKeyLength, "start_event", this.#log);
+        key = truncateSingleValue(key, this.#SCLimitKeyLength, "start_event", this.#log, "w201");
         if (this.#timedEvents[key]) {
             this.#log(logLevelEnums.WARNING, "start_event, Timed event with key: [" + key + "] already started");
+            this.#HealthCheck.recordLogCode("w722", "events");
             return;
         }
         this.#timedEvents[key] = getTimestamp();
@@ -3501,19 +3610,22 @@ class CountlyClass {
     * @returns {boolean} - returns true if the event was canceled and false if no event with that key was found
     * */
     cancel_event = (key) => {
+        this.#HealthCheck.recordUsage("events", "cancel");
         if (!key || typeof key !== "string") {
             this.#log(logLevelEnums.WARNING, "cancel_event, you have to provide a valid string key instead of: [" + key + "]");
+            this.#HealthCheck.recordLogCode("w700", "events");
             return false;
         }
         this.#log(logLevelEnums.INFO, "cancel_event, Canceling timed event with key: [" + key + "]");
         // truncate event name to internal limits. This is done incase start_event key was truncated.
-        key = truncateSingleValue(key, this.#SCLimitKeyLength, "cancel_event", this.#log);
+        key = truncateSingleValue(key, this.#SCLimitKeyLength, "cancel_event", this.#log, "w201");
         if (this.#timedEvents[key]) {
             delete this.#timedEvents[key];
             this.#log(logLevelEnums.INFO, "cancel_event, Timed event with key: [" + key + "] is canceled");
             return true;
         }
         this.#log(logLevelEnums.WARNING, "cancel_event, Timed event with key: [" + key + "] was not found");
+        this.#HealthCheck.recordLogCode("w721", "events");
         return false;
     };
 
@@ -3522,26 +3634,30 @@ class CountlyClass {
     * @param {string|object} event - event key if string or Countly event same as passed to {@link Countly.add_event}
     * */
     end_event = (event) => {
+        this.#HealthCheck.recordUsage("events", "end");
         if (!event) {
             this.#log(logLevelEnums.WARNING, "end_event, you have to provide a valid string key or event object instead of: [" + event + "]");
+            this.#HealthCheck.recordLogCode("w700", "events");
             return;
         }
         this.#log(logLevelEnums.INFO, "end_event, Ending timed event");
         if (typeof event === "string") {
             // truncate event name to internal limits. This is done incase start_event key was truncated.
-            event = truncateSingleValue(event, this.#SCLimitKeyLength, "end_event", this.#log);
+            event = truncateSingleValue(event, this.#SCLimitKeyLength, "end_event", this.#log, "w201");
             event = { key: event };
         }
         if (!event.key) {
-            this.#log(logLevelEnums.ERROR, "end_event, Timed event must have a key property");
+            this.#log(logLevelEnums.WARNING, "end_event, Timed event must have a key property");
+            this.#HealthCheck.recordLogCode("w700", "events");
             return;
         }
         if (!this.#timedEvents[event.key]) {
-            this.#log(logLevelEnums.ERROR, "end_event, Timed event with key: [" + event.key + "] was not started");
+            this.#log(logLevelEnums.WARNING, "end_event, Timed event with key: [" + event.key + "] was not started");
+            this.#HealthCheck.recordLogCode("w720", "events");
             return;
         }
         event.dur = getTimestamp() - this.#timedEvents[event.key];
-        this.add_event(event);
+        this.#addEvent(event);
         delete this.#timedEvents[event.key];
     };
 
@@ -3570,6 +3686,7 @@ class CountlyClass {
     * */
     report_conversion = (campaign_id, campaign_user_id) => {
         this.#log(logLevelEnums.WARNING, "report_conversion, Deprecated function call! Use 'recordDirectAttribution' in place of this call. Call will be redirected now!");
+        this.#HealthCheck.recordLogCode("w120");
         this.recordDirectAttribution(campaign_id, campaign_user_id);
     };
     /**
@@ -3622,14 +3739,14 @@ class CountlyClass {
                 }
             }
             // truncating user values and custom object key value pairs
-            user.name = truncateSingleValue(user.name, this.#SCLimitValueSize , "user_details", this.#log);
-            user.username = truncateSingleValue(user.username, this.#SCLimitValueSize , "user_details", this.#log);
-            user.email = truncateSingleValue(user.email, this.#SCLimitValueSize , "user_details", this.#log);
-            user.organization = truncateSingleValue(user.organization, this.#SCLimitValueSize , "user_details", this.#log);
-            user.phone = truncateSingleValue(user.phone, this.#SCLimitValueSize , "user_details", this.#log);
-            user.picture = truncateSingleValue(user.picture, 4096, "user_details", this.#log);
-            user.gender = truncateSingleValue(user.gender, this.#SCLimitValueSize , "user_details", this.#log);
-            user.byear = truncateSingleValue(user.byear, this.#SCLimitValueSize , "user_details", this.#log);
+            user.name = truncateSingleValue(user.name, this.#SCLimitValueSize , "user_details", this.#log, "w202");
+            user.username = truncateSingleValue(user.username, this.#SCLimitValueSize , "user_details", this.#log, "w202");
+            user.email = truncateSingleValue(user.email, this.#SCLimitValueSize , "user_details", this.#log, "w202");
+            user.organization = truncateSingleValue(user.organization, this.#SCLimitValueSize , "user_details", this.#log, "w202");
+            user.phone = truncateSingleValue(user.phone, this.#SCLimitValueSize , "user_details", this.#log, "w202");
+            user.picture = truncateSingleValue(user.picture, 4096, "user_details", this.#log, "w202");
+            user.gender = truncateSingleValue(user.gender, this.#SCLimitValueSize , "user_details", this.#log, "w202");
+            user.byear = truncateSingleValue(user.byear, this.#SCLimitValueSize , "user_details", this.#log, "w202");
             user.custom = this.#filterUserCustomProperties(user.custom);
             user.custom = truncateObject(user.custom, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "user_details", this.#log);
             var props = ["name", "username", "email", "organization", "phone", "picture", "gender", "byear", "custom"];
@@ -3705,8 +3822,8 @@ class CountlyClass {
                 return;
             }
             // truncate user's custom property value to internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set", this.#log);
-            value = truncateSingleValue(safeValue, this.#SCLimitValueSize , "userData set", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set", this.#log, "w201");
+            value = truncateSingleValue(safeValue, this.#SCLimitValueSize , "userData set", this.#log, "w202");
             if (!this.#isUserPropertyAllowed(key)) {
                 this.#log(logLevelEnums.DEBUG, "[userData] set, User property filtered by behavior settings: [" + key + "]");
                 return;
@@ -3735,8 +3852,8 @@ class CountlyClass {
         set_once: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] set_once, Setting user's unique custom property value: [" + value + "] under the key: [" + key + "] ");
             // truncate user's custom property value to internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set_once", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set_once", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData set_once", this.#log, "w201");
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData set_once", this.#log, "w202");
             this.#change_custom_property(key, value, "$setOnce");
         },
         /**
@@ -3747,7 +3864,7 @@ class CountlyClass {
         increment: (key) => {
             this.#log(logLevelEnums.INFO, "[userData] increment, Increasing user's custom property value under the key: [" + key + "] by one");
             // truncate property name wrt internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment", this.#log, "w201");
             this.#change_custom_property(key, 1, "$inc");
         },
         /**
@@ -3759,8 +3876,8 @@ class CountlyClass {
         increment_by: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] increment_by, Increasing user's custom property value under the key: [" + key + "] by: [" + value + "]");
             // truncate property name and value wrt internal limits 
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment_by", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData increment_by", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData increment_by", this.#log, "w201");
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData increment_by", this.#log, "w202");
             this.#change_custom_property(key, value, "$inc");
         },
         /**
@@ -3772,8 +3889,8 @@ class CountlyClass {
         multiply: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] multiply, Multiplying user's custom property value under the key: [" + key + "] by: [" + value + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData multiply", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData multiply", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData multiply", this.#log, "w201");
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData multiply", this.#log, "w202");
             this.#change_custom_property(key, value, "$mul");
         },
         /**
@@ -3785,8 +3902,8 @@ class CountlyClass {
         max: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] max, Saving user's maximum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData max", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData max", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData max", this.#log, "w201");
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData max", this.#log, "w202");
             this.#change_custom_property(key, value, "$max");
         },
         /**
@@ -3798,8 +3915,8 @@ class CountlyClass {
         min: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] min, Saving user's minimum custom property value compared to the value: [" + value + "] under the key: [" + key + "]");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData min", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData min", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData min", this.#log, "w201");
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData min", this.#log, "w202");
             this.#change_custom_property(key, value, "$min");
         },
         /**
@@ -3811,8 +3928,8 @@ class CountlyClass {
         push: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] push, Pushing a value: [" + value + "] under the key: [" + key + "] to user's custom property array");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push", this.#log, "w201");
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push", this.#log, "w202");
             this.#change_custom_property(key, value, "$push");
         },
         /**
@@ -3824,8 +3941,8 @@ class CountlyClass {
         push_unique: (key, value) => {
             this.#log(logLevelEnums.INFO, "[userData] push_unique, Pushing a unique value: [" + value + "] under the key: [" + key + "] to user's custom property array");
             // truncate key value pair wrt internal limits
-            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push_unique", this.#log);
-            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push_unique", this.#log);
+            key = truncateSingleValue(key, this.#SCLimitKeyLength, "userData push_unique", this.#log, "w201");
+            value = truncateSingleValue(value, this.#SCLimitValueSize , "userData push_unique", this.#log, "w202");
             this.#change_custom_property(key, value, "$addToSet");
         },
         /**
@@ -3894,7 +4011,7 @@ class CountlyClass {
                 }
             }
             // truncate trace name and metrics wrt internal limits
-            trace.name = truncateSingleValue(trace.name, this.#SCLimitKeyLength, "report_trace", this.#log);
+            trace.name = truncateSingleValue(trace.name, this.#SCLimitKeyLength, "report_trace", this.#log, "w201");
             trace.app_metrics = truncateObject(trace.app_metrics, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "report_trace", this.#log);
             var e = createNewObjectFromProperties(trace, props);
             e.timestamp = trace.stz;
@@ -3969,8 +4086,9 @@ class CountlyClass {
     * */
     log_error = (err, segments) => {
         this.#log(logLevelEnums.INFO, "log_error, Logging errors");
+        this.#HealthCheck.recordUsage("crashes", "record");
         // true indicates non fatal error (as in non_fatal:true)
-        this.recordError(err, true, segments);
+        this.#recordError(err, true, segments);
     };
 
     /**
@@ -3979,16 +4097,17 @@ class CountlyClass {
     * */
     add_log = (record) => {
         this.#log(logLevelEnums.INFO, "add_log, Adding a new log of breadcrumbs: [ " + record + " ]");
+        this.#HealthCheck.recordUsage("crashes", "log");
         if (this.check_consent(featureEnums.CRASHES)) {
             // truncate description wrt internal limits
-            record = truncateSingleValue(record, this.#SCLimitValueSize , "add_log", this.#log);
+            record = truncateSingleValue(record, this.#SCLimitValueSize , "add_log", this.#log, "w202");
             if (!(this.#SCLimitBreadcrumbCount > 0)) {
                 this.#log(logLevelEnums.DEBUG, "add_log, The breadcrumb limit is [" + this.#SCLimitBreadcrumbCount + "], not keeping breadcrumbs");
                 return;
             }
             while (this.#crashLogs.length >= this.#SCLimitBreadcrumbCount) {
                 this.#crashLogs.shift();
-                this.#log(logLevelEnums.WARNING, "add_log, Reached maximum crashLogs size. Will erase the oldest one.");
+                this.#log(logLevelEnums.DEBUG, "add_log, Reached maximum crashLogs size. Will erase the oldest one.");
             }
             this.#crashLogs.push(record);
         }
@@ -4118,7 +4237,7 @@ class CountlyClass {
                     this.#setValueInStorage("cly_remote_configs", this.#remoteConfigs);
                 }
                 catch (ex) {
-                    this.#log(logLevelEnums.ERROR, "fetch_remote_config_explicit, Had an issue while parsing the response: " + ex);
+                    this.#log(logLevelEnums.DEBUG, "fetch_remote_config_explicit, Had an issue while parsing the response: " + ex);
                     parseError = new Error("Remote config answer could not be read");
                 }
                 if (providedCall) {
@@ -4143,7 +4262,8 @@ class CountlyClass {
     enrollUserToAb = (keys) => {
         this.#log(logLevelEnums.INFO, "enrollUserToAb, Providing AB test keys to opt in for");
         if (!keys || !Array.isArray(keys) || keys.length === 0) {
-            this.#log(logLevelEnums.ERROR, "enrollUserToAb, No keys provided");
+            this.#log(logLevelEnums.WARNING, "enrollUserToAb, No keys provided");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         var request = {
@@ -4162,7 +4282,7 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "enrollUserToAb, Parsed the response's result: [" + resp.result + "]");
             }
             catch (ex) {
-                this.#log(logLevelEnums.ERROR, "enrollUserToAb, Had an issue while parsing the response: " + ex);
+                this.#log(logLevelEnums.DEBUG, "enrollUserToAb, Had an issue while parsing the response: " + ex);
             }
             // JSON array can pass    
         }, true);
@@ -4218,7 +4338,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "track_session, Starting tracking user session");
         this.#autoSessionTracking = true;
         // start session
-        this.begin_session();
+        this.#beginSession(undefined, undefined, true);
         this.#start_time();
         // end session on unload
         add_event_listener(window, "beforeunload", () => {
@@ -4226,7 +4346,10 @@ class CountlyClass {
             this.#processAsyncQueue();
             // empty the event queue
             this.#sendEventsForced();
-            this.end_session();
+            if (this.#endSession()) {
+                this.#HealthCheck.recordUsage("sessions", "end:a");
+            }
+            this.#HealthCheck.saveState(true);
         });
 
         // manage sessions on window visibility events
@@ -4306,6 +4429,17 @@ class CountlyClass {
     * @param {object=} viewSegments - optional key value object with segments to report with the view
     * */
     track_pageview = (page, ignoreList, viewSegments) => {
+        this.#HealthCheck.recordUsage("views", "start");
+        this.#trackPageview(page, ignoreList, viewSegments);
+    };
+
+    /**
+     * Records a page view after the checks of its consent and behavior settings
+     * @param {string=} page - optional name of the page, by default uses current url path
+     * @param {array=} ignoreList - optional array of strings or regexps to test for the url/view name to ignore and not report
+     * @param {object=} viewSegments - optional key value object with segments to report with the view
+     */
+    #trackPageview = (page, ignoreList, viewSegments) => {
         if (!isBrowser && !page) {
             this.#log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views as page name is not provided.");
             return;
@@ -4326,7 +4460,7 @@ class CountlyClass {
         this.#previousViewId = this.#currentViewId;
         this.#currentViewId = secureRandom();
         // truncate page name and segmentation wrt internal limits
-        page = truncateSingleValue(page, this.#SCLimitKeyLength, "track_pageview", this.#log);
+        page = truncateSingleValue(page, this.#SCLimitKeyLength, "track_pageview", this.#log, "w201");
         // if the first parameter we got is an array we got the ignoreList first, assign it here
         if (page && Array.isArray(page)) {
             ignoreList = page;
@@ -4337,11 +4471,13 @@ class CountlyClass {
             page = this.getViewName();
         }
         if (page === undefined || page === "") {
-            this.#log(logLevelEnums.ERROR, "track_pageview, No page name to track (it is either undefined or empty string). No page view can be tracked.");
+            this.#log(logLevelEnums.WARNING, "track_pageview, No page name to track (it is either undefined or empty string). No page view can be tracked.");
+            this.#HealthCheck.recordLogCode("w710", "views");
             return;
         }
         if (page === null) {
-            this.#log(logLevelEnums.ERROR, "track_pageview, View name returned as null. Page view will be ignored.");
+            this.#log(logLevelEnums.WARNING, "track_pageview, View name returned as null. Page view will be ignored.");
+            this.#HealthCheck.recordLogCode("w710", "views");
             return;
         }
 
@@ -4447,7 +4583,8 @@ class CountlyClass {
     * */
     track_view = (page, ignoreList, segments) => {
         this.#log(logLevelEnums.INFO, "track_view, Initiating tracking page views");
-        this.track_pageview(page, ignoreList, segments);
+        this.#HealthCheck.recordUsage("views", "start");
+        this.#trackPageview(page, ignoreList, segments);
     };
 
     /**
@@ -4588,7 +4725,8 @@ class CountlyClass {
             return;
         }
         if (!imageFile || typeof imageFile !== "object" || !imageFile.type || imageFile.type.indexOf("image") !== 0) {
-            this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Provided file is not an image.");
+            this.#log(logLevelEnums.WARNING, "uploadUserProfilePicture: Provided file is not an image.");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         if (typeof FileReader === "undefined") {
@@ -4609,7 +4747,8 @@ class CountlyClass {
             const commaIndex = result.indexOf(",");
             const base64Data = commaIndex === -1 ? result : result.substring(commaIndex + 1);
             if (!base64Data) {
-                this.#log(logLevelEnums.ERROR, "uploadUserProfilePicture: Invalid image data received.");
+                this.#log(logLevelEnums.WARNING, "uploadUserProfilePicture: Invalid image data received.");
+                this.#HealthCheck.recordLogCode("w700");
                 return;
             }
 
@@ -5026,6 +5165,7 @@ class CountlyClass {
     * */
     opt_out = () => {
         this.#log(logLevelEnums.WARNING, "opt_out, Opting out the user. Deprecated function call! Use 'consent' in place of this call.");
+        this.#HealthCheck.recordLogCode("w120");
         this.ignore_visitor = true;
         this.#ignoredByChoice = true;
         this.#setValueInStorage("cly_ignore", true);
@@ -5053,6 +5193,7 @@ class CountlyClass {
     * */
     opt_in = () => {
         this.#log(logLevelEnums.WARNING, "opt_in, Opting in the user. Deprecated function call! Use 'consent' in place of this call.");
+        this.#HealthCheck.recordLogCode("w120");
         this.#setValueInStorage("cly_ignore", false);
         this.ignore_visitor = false;
         this.#ignoredByChoice = false;
@@ -5078,6 +5219,7 @@ class CountlyClass {
     * */
     report_feedback = (ratingWidget) => {
         this.#log(logLevelEnums.WARNING, "report_feedback, Deprecated function call! Use 'recordRatingWidgetWithID' or 'reportFeedbackWidgetManually' in place of this call. Call will be redirected to 'recordRatingWidgetWithID' now!");
+        this.#HealthCheck.recordLogCode("w120");
         this.recordRatingWidgetWithID(ratingWidget);
     };
     /**
@@ -5097,11 +5239,13 @@ class CountlyClass {
             return;
         }
         if (!ratingWidget.widget_id) {
-            this.#log(logLevelEnums.ERROR, "recordRatingWidgetWithID, Rating Widget must contain widget_id property");
+            this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, Rating Widget must contain widget_id property");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         if (!ratingWidget.rating) {
-            this.#log(logLevelEnums.ERROR, "recordRatingWidgetWithID, Rating Widget must contain rating property");
+            this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, Rating Widget must contain rating property");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         var props = ["widget_id", "contactMe", "platform", "app_version", "rating", "email", "comment"];
@@ -5116,10 +5260,12 @@ class CountlyClass {
         }
         if (event.segmentation.rating > 5) {
             this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating higher than 5. Changing it back to 5 now.");
+            this.#HealthCheck.recordLogCode("w700");
             event.segmentation.rating = 5;
         }
         else if (event.segmentation.rating < 1) {
             this.#log(logLevelEnums.WARNING, "recordRatingWidgetWithID, You have entered a rating lower than 1. Changing it back to 1 now.");
+            this.#HealthCheck.recordLogCode("w700");
             event.segmentation.rating = 1;
         }
         event.segmentation = this.#withGlobalContentSegmentation(event.segmentation);
@@ -5158,11 +5304,13 @@ class CountlyClass {
             return;
         }
         if (!(CountlyFeedbackWidget && CountlyWidgetData)) {
-            this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget data and/or Widget object not provided. Aborting.");
+            this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, Widget data and/or Widget object not provided. Aborting.");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         if (!CountlyFeedbackWidget._id) {
-            this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Feedback Widgets must contain _id property");
+            this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, Feedback Widgets must contain _id property");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         if (this.#offlineMode) {
@@ -5180,16 +5328,19 @@ class CountlyClass {
             if (widgetResult) {
                 var npsScore = parseFloat(widgetResult.rating);
                 if (isNaN(npsScore)) {
-                    this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
+                    this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, Widget must contain rating property");
+                    this.#HealthCheck.recordLogCode("w700");
                     return;
                 }
                 widgetResult.rating = Math.round(npsScore);
                 if (widgetResult.rating > 10) {
                     this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 10. Changing it back to 10 now.");
+                    this.#HealthCheck.recordLogCode("w700");
                     widgetResult.rating = 10;
                 }
                 else if (widgetResult.rating < 0) {
                     this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating lower than 0. Changing it back to 0 now.");
+                    this.#HealthCheck.recordLogCode("w700");
                     widgetResult.rating = 0;
                 }
                 props = ["rating", "comment"];
@@ -5199,7 +5350,8 @@ class CountlyClass {
         else if (type === "survey") {
             if (widgetResult) {
                 if (Object.keys(widgetResult).length < 1) {
-                    this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget should have answers to be reported");
+                    this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, Widget should have answers to be reported");
+                    this.#HealthCheck.recordLogCode("w700");
                     return;
                 }
                 props = Object.keys(widgetResult);
@@ -5209,16 +5361,19 @@ class CountlyClass {
         else if (type === "rating") {
             if (widgetResult) {
                 if (!widgetResult.rating) {
-                    this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget must contain rating property");
+                    this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, Widget must contain rating property");
+                    this.#HealthCheck.recordLogCode("w700");
                     return;
                 }
                 widgetResult.rating = Math.round(widgetResult.rating);
                 if (widgetResult.rating > 5) {
                     this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating higher than 5. Changing it back to 5 now.");
+                    this.#HealthCheck.recordLogCode("w700");
                     widgetResult.rating = 5;
                 }
                 else if (widgetResult.rating < 1) {
                     this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, You have entered a rating lower than 1. Changing it back to 1 now.");
+                    this.#HealthCheck.recordLogCode("w700");
                     widgetResult.rating = 1;
                 }
                 props = ["rating", "comment", "email", "contactMe"];
@@ -5226,7 +5381,8 @@ class CountlyClass {
             eventKey = internalEventKeyEnums.STAR_RATING;
         }
         else {
-            this.#log(logLevelEnums.ERROR, "reportFeedbackWidgetManually, Widget has an unacceptable type");
+            this.#log(logLevelEnums.WARNING, "reportFeedbackWidgetManually, Widget has an unacceptable type");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
 
@@ -5266,6 +5422,7 @@ class CountlyClass {
             return;
         }
         this.#log(logLevelEnums.WARNING, "show_feedback_popup, Deprecated function call! Use 'presentRatingWidgetWithID' in place of this call. Call will be redirected now!");
+        this.#HealthCheck.recordLogCode("w120");
         this.presentRatingWidgetWithID(id);
     };
     /**
@@ -5316,6 +5473,7 @@ class CountlyClass {
             return;
         }
         this.#log(logLevelEnums.WARNING, "initialize_feedback_popups, Deprecated function call! Use 'initializeRatingWidgets' in place of this call. Call will be redirected now!");
+        this.#HealthCheck.recordLogCode("w120");
         this.initializeRatingWidgets(enableWidgets);
     };
     /**
@@ -5400,6 +5558,7 @@ class CountlyClass {
             return;
         }
         this.#log(logLevelEnums.WARNING, "enable_feedback, Deprecated function call! Use 'enableRatingWidgets' in place of this call. Call will be redirected now!");
+        this.#HealthCheck.recordLogCode("w120");
         this.enableRatingWidgets(params);
     };
     /**
@@ -5433,7 +5592,8 @@ class CountlyClass {
                 this.initializeRatingWidgets(enableWidgets);
             }
             else {
-                this.#log(logLevelEnums.ERROR, "enableRatingWidgets, You should provide at least one widget id as param. Read documentation for more detail. https://resources.count.ly/plugins/feedback");
+                this.#log(logLevelEnums.WARNING, "enableRatingWidgets, You should provide at least one widget id as param. Read documentation for more detail. https://resources.count.ly/plugins/feedback");
+                this.#HealthCheck.recordLogCode("w700");
             }
         }
     };
@@ -5557,7 +5717,8 @@ class CountlyClass {
     * */
     getFeedbackWidgetData = (CountlyFeedbackWidget, callback) => {
         if (!CountlyFeedbackWidget.type) {
-            this.#log(logLevelEnums.ERROR, "getFeedbackWidgetData, Expected the provided widget object to have a type but got: [" + JSON.stringify(CountlyFeedbackWidget) + "], aborting.");
+            this.#log(logLevelEnums.WARNING, "getFeedbackWidgetData, Expected the provided widget object to have a type but got: [" + JSON.stringify(CountlyFeedbackWidget) + "], aborting.");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         this.#log(logLevelEnums.INFO, "getFeedbackWidgetData, Retrieving data for: [" + JSON.stringify(CountlyFeedbackWidget) + "], callback function is provided:[" + (!!callback) + "]");
@@ -5593,7 +5754,8 @@ class CountlyClass {
             url += "/o/surveys/rating/widget";
         }
         else {
-            this.#log(logLevelEnums.ERROR, "getFeedbackWidgetData, Unknown type info: [" + CountlyFeedbackWidget.type + "]");
+            this.#log(logLevelEnums.WARNING, "getFeedbackWidgetData, Unknown type info: [" + CountlyFeedbackWidget.type + "]");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
 
@@ -5653,7 +5815,8 @@ class CountlyClass {
             || (typeof presentableFeedback !== "object")
             || Array.isArray(presentableFeedback)
         ) {
-            this.#log(logLevelEnums.ERROR, "present_feedback_widget, Please provide at least one feedback widget object.");
+            this.#log(logLevelEnums.WARNING, "present_feedback_widget, Please provide at least one feedback widget object.");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
 
@@ -5679,7 +5842,8 @@ class CountlyClass {
                 url += "/feedback/rating";
             }
             else {
-                this.#log(logLevelEnums.ERROR, "present_feedback_widget, Feedback widget only accepts nps, rating and survey types.");
+                this.#log(logLevelEnums.WARNING, "present_feedback_widget, Feedback widget only accepts nps, rating and survey types.");
+                this.#HealthCheck.recordLogCode("w700");
                 return;
             }
 
@@ -5793,7 +5957,8 @@ class CountlyClass {
                     found = true;
                 }
                 else {
-                    this.#log(logLevelEnums.ERROR, "present_feedback_widget, Provided ID not found.");
+                    this.#log(logLevelEnums.WARNING, "present_feedback_widget, Provided ID not found.");
+                    this.#HealthCheck.recordLogCode("w700");
                 }
             }
 
@@ -5804,7 +5969,8 @@ class CountlyClass {
                         element = document.getElementsByClassName(className)[0];
                     }
                     else {
-                        this.#log(logLevelEnums.ERROR, "present_feedback_widget, Provided class not found.");
+                        this.#log(logLevelEnums.WARNING, "present_feedback_widget, Provided class not found.");
+                        this.#HealthCheck.recordLogCode("w700");
                     }
                 }
             }
@@ -6086,7 +6252,18 @@ class CountlyClass {
      *  @param {Boolean} nonfatal - nonfatal if true and false if fatal
      *  @param {Object} segments - custom crash segments
      */
-    recordError = (err, nonfatal, segments) => {
+    recordError = (err, nonfatal, segments, bySdk) => {
+        this.#HealthCheck.recordUsage("crashes", bySdk ? "record:a" : "record");
+        this.#recordError(err, nonfatal, segments);
+    };
+
+    /**
+     * Records an error when crash tracking is allowed and the crashes consent is given
+     * @param {Object} err - error object
+     * @param {Boolean} nonfatal - nonfatal if true and false if fatal
+     * @param {Object} segments - custom crash segments
+     */
+    #recordError = (err, nonfatal, segments) => {
         if (!this.#SCTrackingCrashes) {
             this.#log(logLevelEnums.WARNING, "recordError, Crash tracking is disabled by the server config. Not tracking errors.");
             return
@@ -6258,6 +6435,7 @@ class CountlyClass {
         if (typeof segmentation !== "object" || Array.isArray(segmentation)) {
             this.#globalContentSegmentation = {};
             this.#log(logLevelEnums.WARNING, caller + ", The global content segmentation must be an object, cleared it instead");
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         var isValue = (value) => typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && isFinite(value));
@@ -6279,7 +6457,7 @@ class CountlyClass {
                 if (items.length < value.length) {
                     unsupported.push(key + " (some items)");
                 }
-                kept[key] = items.map((item) => truncateSingleValue(item, this.#SCLimitValueSize, caller, this.#log));
+                kept[key] = items.map((item) => truncateSingleValue(item, this.#SCLimitValueSize, caller, this.#log, "w202"));
             }
             else {
                 unsupported.push(key);
@@ -6287,9 +6465,11 @@ class CountlyClass {
         });
         if (reserved.length) {
             this.#log(logLevelEnums.WARNING, caller + ", Left out keys the server and the widget and content pages read on these events: [" + reserved.join(", ") + "]");
+            this.#HealthCheck.recordLogCode("w700");
         }
         if (unsupported.length) {
             this.#log(logLevelEnums.WARNING, caller + ", Left out values that are not a string, number, boolean or a list of those: [" + unsupported.join(", ") + "]");
+            this.#HealthCheck.recordLogCode("w206");
         }
         this.#globalContentSegmentation = truncateObject(kept, this.#SCLimitKeyLength, this.#SCLimitValueSize, this.#SCLimitSegmentationValues, caller, this.#log);
         this.#log(logLevelEnums.DEBUG, caller + ", Global content segmentation set: [" + JSON.stringify(this.#globalContentSegmentation) + "]");
@@ -6330,6 +6510,7 @@ class CountlyClass {
         }
         if (theme !== "dark" && theme !== "light" && theme !== false) {
             this.#log(logLevelEnums.WARNING, caller + ", Unknown theme: [" + theme + "], expected \"dark\", \"light\", false or null; keeping " + (this.#contentTheme === null ? "the page's theme" : "[" + this.#contentTheme + "]"));
+            this.#HealthCheck.recordLogCode("w700");
             return;
         }
         this.#contentTheme = theme;
@@ -6939,7 +7120,7 @@ class CountlyClass {
         var expire = this.#getValueFromStorage("cly_session");
         if (!expire || parseInt(expire) <= getTimestamp()) {
             this.#sessionStarted = false;
-            this.begin_session(!this.#autoExtend);
+            this.#beginSession(!this.#autoExtend, undefined, true);
         }
         this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
     }
@@ -7407,10 +7588,14 @@ class CountlyClass {
         if (this.#sessionStarted && this.#autoExtend && this.#trackTime) {
             var last = getTimestamp();
             if (last - this.#lastBeat > this.#SCIntervalSessionUpdate) {
-                this.session_duration(last - this.#lastBeat);
+                if (this.#sessionDuration(last - this.#lastBeat)) {
+                    this.#HealthCheck.recordUsage("sessions", "update:a");
+                }
                 this.#lastBeat = last;
             }
         }
+
+        this.#HealthCheck.saveState(false);
 
         // process event queue
         if (this.#eventQueue.length > 0 && !this.test_mode_eq) {
@@ -7486,6 +7671,7 @@ class CountlyClass {
 
         var responseTimeExceeded = this.#lastRequestDuration > this.#SCBackoffAcceptedTimeout;
         if (!responseTimeExceeded) {
+            this.#HealthCheck.endBackoffRun();
             return; // No need to check further if response time is acceptable
         }
         
@@ -7502,12 +7688,13 @@ class CountlyClass {
             this.#isInBackoff = true;
             this.#backoffEndTime = currentTime + this.#SCBackoffDuration; // 60 seconds from now
             
-            this.#HealthCheck.incrementBackoffCount();
+            this.#log(logLevelEnums.WARNING, "Request back-off started, the server answered slowly");
+            this.#HealthCheck.logBackoffRequest();
             
             this.#log(logLevelEnums.INFO, "Request back-off activated until: " + this.#backoffEndTime);
         } else {
             this.#log(logLevelEnums.DEBUG, "No back-off conditions met: response time [" + this.#lastRequestDuration + "s], queue size [" + this.#requestQueue.length + "/" + this.#SCSizeReqQueue + "], request age [" + requestAge + "s]");
-            this.#HealthCheck.resetLastRequestBackoffStatus();
+            this.#HealthCheck.endBackoffRun();
         }
     };
 
@@ -7679,10 +7866,11 @@ class CountlyClass {
             params.rr = this.#requestQueue.length;
             this.#requestOnItsWay = params;
             this.#saveRequestQueue();
-            this.#makeNetworkRequest(requestName, this.url + this.#apiPath, params, (err, parameters) => {
+            this.#makeNetworkRequest(requestName, this.url + this.#apiPath, params, (err, parameters, status, responseText) => {
                 this.#requestOnItsWay = null;
                 if (err) {
                     this.#failTimeout = getTimestamp() + this.#failTimeoutAmount;
+                    this.#HealthCheck.logFailedNetworkRequest(status, responseText);
                 }
                 else {
                     this.#removeSentRequest(params);
@@ -7783,6 +7971,7 @@ class CountlyClass {
             }
             catch (error) {
                 this.#log(logLevelEnums.ERROR, "processAsyncQueue, A queued call threw and was skipped: " + error);
+                this.#HealthCheck.recordLogCode("e901");
             }
         }
         if (forMainInstance.length > 0) {
@@ -8067,10 +8256,10 @@ class CountlyClass {
      */
     #log = (level, message, third) => {
         if (level === logLevelEnums.ERROR) {
-            this.#HealthCheck.incrementErrorCount();
+            this.#HealthCheck.logError();
         }
         else if (level === logLevelEnums.WARNING) {
-            this.#HealthCheck.incrementWarningCount();
+            this.#HealthCheck.logWarning();
         }
         var shouldPrint = this.debug && typeof console !== "undefined";
         var levelChar = logLevelToWireChar[level] || "d";
@@ -8266,6 +8455,7 @@ class CountlyClass {
         }
         if (typeof lg !== "object" || Array.isArray(lg)) {
             this.#log(logLevelEnums.WARNING, "applyLogGatheringConfig, Ignoring malformed log gathering configuration");
+            this.#HealthCheck.recordLogCode("w121");
             return;
         }
         var enabled = lg.e === true;
@@ -8289,6 +8479,7 @@ class CountlyClass {
         }
         if (enabled && !receivedId) {
             this.#log(logLevelEnums.WARNING, "applyLogGatheringConfig, Log gathering was enabled without a gather id, will not gather");
+            this.#HealthCheck.recordLogCode("w121");
             enabled = false;
         }
         var idChanged = !!receivedId && receivedId !== previousState.gatherId;
@@ -8467,7 +8658,13 @@ class CountlyClass {
                 }
                 var isError = response.status < 200 || response.status >= 300;
                 if (typeof callback === "function") {
-                    callback(isError, params, response.responseText);
+                    // answered like the real request paths: a failure passes the status code before the answer
+                    if (isError) {
+                        callback(true, params, response.status, response.responseText);
+                    }
+                    else {
+                        callback(false, params, response.responseText);
+                    }
                 }
             }
             catch (e) {
@@ -8510,7 +8707,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "Sending XML HTTP request");
             var xhr = new XMLHttpRequest();
             xhr.ontimeout = () => this.#forRequest(params, () => {
-                this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
+                this.#log(logLevelEnums.DEBUG, functionName + " timed out after 30 seconds");
                 answer(true, params, 'timeout');
             });
             params = params || {};
@@ -8590,8 +8787,7 @@ class CountlyClass {
                             answer(false, params, xhr.responseText);
                         }
                         else {
-                            this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                            this.#HealthCheck.saveRequestCounters(xhr.status, xhr.responseText);
+                            this.#log(logLevelEnums.DEBUG, functionName + " Invalid response from server");
                             answer(true, params, xhr.status, xhr.responseText);
                         }
                     }
@@ -8772,8 +8968,7 @@ class CountlyClass {
                         }
                     }
                     else {
-                        this.#log(logLevelEnums.ERROR, functionName + " Invalid response from server");
-                        this.#HealthCheck.saveRequestCounters(response.status, data);
+                        this.#log(logLevelEnums.DEBUG, functionName + " Invalid response from server");
                         if (typeof callback === "function") {
                             callback(true, params, response.status, data);
                         }
@@ -8781,13 +8976,13 @@ class CountlyClass {
                 })).catch((error) => this.#forRequest(params, () => {
                     clearTimeout(timeoutId);
                     if (error.name === 'AbortError') {
-                        this.#log(logLevelEnums.ERROR, functionName + " timed out after 30 seconds");
+                        this.#log(logLevelEnums.DEBUG, functionName + " timed out after 30 seconds");
                         if (typeof callback === "function") {
                             callback(true, params, 'timeout');
                         }
                     }
                     else {
-                        this.#log(logLevelEnums.ERROR, functionName + " Failed Fetch request: " + error);
+                        this.#log(logLevelEnums.DEBUG, functionName + " Failed Fetch request: " + error);
                         if (typeof callback === "function") {
                             callback(true, params);
                         }
@@ -8816,7 +9011,7 @@ class CountlyClass {
     #isResponseValid = (statusCode, str) => {
         // status code and response format check
         if (!(statusCode >= 200 && statusCode < 300)) {
-            this.#log(logLevelEnums.ERROR, "Http response status code:[" + statusCode + "] is not within the expected range");
+            this.#log(logLevelEnums.DEBUG, "Http response status code:[" + statusCode + "] is not within the expected range");
             return false;
         }
 
@@ -8826,14 +9021,14 @@ class CountlyClass {
 
             // check if parsed response is a JSON object, if not the response is not valid
             if (Object.prototype.toString.call(parsedResponse) !== "[object Object]") {
-                this.#log(logLevelEnums.ERROR, "Http response is not JSON Object");
+                this.#log(logLevelEnums.DEBUG, "Http response is not JSON Object");
                 return false;
             }
 
             return !!(parsedResponse.result);
         }
         catch (e) {
-            this.#log(logLevelEnums.ERROR, "Http response is not JSON: " + e);
+            this.#log(logLevelEnums.DEBUG, "Http response is not JSON: " + e);
             return false;
         }
     }
@@ -8850,7 +9045,7 @@ class CountlyClass {
     #isResponseValidBroad = (statusCode, str) => {
         // status code and response format check
         if (!(statusCode >= 200 && statusCode < 300)) {
-            this.#log(logLevelEnums.ERROR, "Http response status code:[" + statusCode + "] is not within the expected range");
+            this.#log(logLevelEnums.DEBUG, "Http response status code:[" + statusCode + "] is not within the expected range");
             return false;
         }
 
@@ -8859,7 +9054,7 @@ class CountlyClass {
             var parsedResponse = JSON.parse(str);
             // check if parsed response is a JSON object or JSON array, if not it is not valid 
             if ((Object.prototype.toString.call(parsedResponse) !== "[object Object]") && (!Array.isArray(parsedResponse)) && parsedResponse !== "No content block found!") {
-                this.#log(logLevelEnums.ERROR, "Http response is not JSON Object nor JSON Array");
+                this.#log(logLevelEnums.DEBUG, "Http response is not JSON Object nor JSON Array");
                 return false;
             }
 
@@ -8867,7 +9062,7 @@ class CountlyClass {
             return true;
         }
         catch (e) {
-            this.#log(logLevelEnums.ERROR, "Http response is not JSON: " + e);
+            this.#log(logLevelEnums.DEBUG, "Http response is not JSON: " + e);
             return false;
         }
     }
@@ -9776,14 +9971,18 @@ class CountlyClass {
 
     /**
      * Health Check Interface:
-     * {sendInstantHCRequest} Sends instant health check request
-     * {resetAndSaveCounters} Resets and saves health check counters (including backoff counters)
-     * {incrementErrorCount} Increments health check error count
-     * {incrementWarningCount} Increments health check warning count
-     * {incrementBackoffCount} Increments health check backoff count and consecutive backoff count
-     * {resetConsecutiveBackoffCount} Resets consecutive backoff tracking flag (not the counter value)
-     * {resetCounters} Resets health check counters (excluding backoff counters)
-     * {saveRequestCounters} Saves health check request counters
+     * {sendInstantHCRequest} Sends the health check of the page as an immediate request, once
+     * {logWarning} / {logError} Count a warning or an error log line
+     * {logFailedNetworkRequest} Keeps the status code and the answer of the last queued request the server refused
+     * {logBackoffRequest} Counts a backoff and extends the current run of backoffs in a row
+     * {endBackoffRun} Ends the current run of backoffs, when a request was answered in time
+     * {recordUsage} Counts a call of a session, event, view or crash method
+     * {recordLogCode} Counts a known problem
+     * {snapshot} The counters as the health check reports them
+     * {clearSentValues} Takes away what a delivered health check reported
+     * {saveState} Stores the counters, at most once per session update interval unless asked to store them now
+     * {loadState} Adds the stored counters to the ones counted so far
+     * {resetCounters} Clears every counter
      */
     #HealthCheck = {
         sendInstantHCRequest: () => {
@@ -9796,65 +9995,231 @@ class CountlyClass {
                 this.#shouldSendHC = true;
                 return;
             }
-            // truncate error message to 1000 characters
-            var curbedMessage = truncateSingleValue(this.hcErrorMessage, 1000, "healthCheck", this.#log);
-            // due to some server issues we pass empty string as is
-            if (curbedMessage !== "") {
-                curbedMessage = JSON.stringify(curbedMessage);
+            if (this.#hcSent) {
+                this.#log(logLevelEnums.DEBUG, "sendInstantHCRequest, The health check of this page was already sent.");
+                return;
             }
-            // prepare hc object
-            var hc = {
-                el: this.hcErrorCount,
-                wl: this.hcWarningCount,
-                sc: this.hcStatusCode,
-                em: curbedMessage,
-                bom: this.hcBackoffCount,
-                cbom: this.hcConsecutiveBackoffCount
-            };
-            // prepare request
+            this.#hcSent = true;
+            if (!this.#SCNetwork) {
+                this.#log(logLevelEnums.DEBUG, "sendInstantHCRequest, Networking is disabled by the SDK behavior settings, the counters wait for the next page.");
+                return;
+            }
+            var snapshot = this.#HealthCheck.snapshot();
             var request = {
-                hc: JSON.stringify(hc),
-                metrics: JSON.stringify({ _app_version: this.app_version })
+                hc: JSON.stringify(snapshot),
+                metrics: JSON.stringify({ _app_version: this.metrics._app_version || this.app_version })
             };
-            // add common request params
             this.#prepareRequest(request);
-            // the counters start again once the health check is sent, whether it reaches the server or not
-            this.#HealthCheck.resetAndSaveCounters();
-            // send request, the request maker logs a failure
-            this.#makeNetworkRequest("[healthCheck]", this.url + this.#apiPath, request, null, true);
+            this.#makeNetworkRequest("[healthCheck]", this.url + this.#apiPath, request, (err) => {
+                if (err) {
+                    this.#log(logLevelEnums.DEBUG, "sendInstantHCRequest, The health check was not delivered, the counters are kept.");
+                    return;
+                }
+                this.#HealthCheck.clearSentValues(snapshot);
+            }, false);
         },
-        resetAndSaveCounters: () => {
-            this.#HealthCheck.resetCounters();
-            this.#setValueInStorage(healthCheckCounterEnum.errorCount, this.hcErrorCount);
-            this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
-            this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
-            this.#setValueInStorage(healthCheckCounterEnum.errorMessage, this.hcErrorMessage);
-            this.#setValueInStorage(healthCheckCounterEnum.backoffCount, this.hcBackoffCount);
-            this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount);
-        },
-        incrementErrorCount: () => {
-            this.hcErrorCount = (this.hcErrorCount || 0) + 1;
-            if (this.#hcCountersLoaded) {
-                this.#setValueInStorage(healthCheckCounterEnum.errorCount, this.hcErrorCount);
-            }
-        },
-        incrementWarningCount: () => {
+        logWarning: () => {
             this.hcWarningCount = (this.hcWarningCount || 0) + 1;
-            if (this.#hcCountersLoaded) {
-                this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount);
-            }
+            this.#hcDirty = true;
         },
-        incrementBackoffCount: () => {
-            this.hcBackoffCount++;
-            if (this.#lastRequestWasBackoff) {
-                this.hcConsecutiveBackoffCount++;
-            }
-            this.#lastRequestWasBackoff = true;
-            this.#setValueInStorage(healthCheckCounterEnum.backoffCount, this.hcBackoffCount);
-            this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount);
+        logError: () => {
+            this.hcErrorCount = (this.hcErrorCount || 0) + 1;
+            this.#hcDirty = true;
         },
-        resetLastRequestBackoffStatus: () => {
-            this.#lastRequestWasBackoff = false;
+        /**
+         * Keeps the HTTP status code and the answer of the last queued request the server answered with a failure. A request
+         * that got no HTTP answer, such as one sent while offline or blocked, has no status code to keep.
+         * @param {Number} status - HTTP status code
+         * @param {String} responseText - response body
+         */
+        logFailedNetworkRequest: (status, responseText) => {
+            if (!(status > 0 && status < 1000)) {
+                return;
+            }
+            var text = typeof responseText === "string" ? responseText : (responseText === undefined || responseText === null ? "" : String(responseText));
+            this.hcStatusCode = status;
+            this.hcErrorMessage = text.length > 1000 ? text.substring(0, 1000) : text;
+            this.#hcDirty = true;
+        },
+        /**
+         * Counts a backoff and extends the current run of backoffs in a row. The longest run is raised right away, so no
+         * save has to end the run to keep it. Records log code w320, and w321 when the backoff continues a run
+         */
+        logBackoffRequest: () => {
+            var continuesRun = this.#hcBackoffRun > 0;
+            this.hcBackoffCount = (this.hcBackoffCount || 0) + 1;
+            this.#hcBackoffRun++;
+            this.hcConsecutiveBackoffCount = Math.max(this.hcConsecutiveBackoffCount || 0, this.#hcBackoffRun);
+            this.#HealthCheck.addLogCode("w320", 1);
+            if (continuesRun) {
+                this.#HealthCheck.addLogCode("w321", 1);
+            }
+            this.#hcDirty = true;
+        },
+        endBackoffRun: () => {
+            this.#hcBackoffRun = 0;
+        },
+        /**
+         * Counts a call of a method of the session, event, view or crash feature. Nothing is counted while consent is
+         * required and the feature has no consent, since knowing which methods a site calls is tracking information
+         * @param {String} area - feature area: sessions, events, views or crashes
+         * @param {String} method - method name, with ":a" for a call the SDK made by itself
+         */
+        recordUsage: (area, method) => {
+            if (!area || !method || !this.#HealthCheck.hasConsentForArea(area)) {
+                return;
+            }
+            var methods = this.#hcMethodUsage[area] || (this.#hcMethodUsage[area] = {});
+            methods[method] = Math.min((methods[method] || 0) + 1, configurationDefaultValues.HC_COUNT_CAP);
+            this.#hcDirty = true;
+        },
+        /**
+         * Counts a known problem. A code a method of a feature area records passes the area and is counted only while that
+         * feature has consent
+         * @param {String} code - log code, a level letter and three digits
+         * @param {String=} area - feature area of the method that recorded it
+         * @param {Number=} count - how many times the condition occurred, 1 by default
+         */
+        recordLogCode: (code, area, count) => {
+            if (!code || (area && !this.#HealthCheck.hasConsentForArea(area))) {
+                return;
+            }
+            this.#HealthCheck.addLogCode(code, count || 1);
+            this.#hcDirty = true;
+        },
+        addLogCode: (code, count) => {
+            this.#hcLogCodes[code] = Math.min((this.#hcLogCodes[code] || 0) + count, configurationDefaultValues.HC_COUNT_CAP);
+        },
+        hasConsentForArea: (area) => {
+            var feature = { sessions: featureEnums.SESSIONS, events: featureEnums.EVENTS, views: featureEnums.VIEWS, crashes: featureEnums.CRASHES }[area];
+            if (!feature) {
+                return false;
+            }
+            if (!this.#SCEnableConsentRequired) {
+                return true;
+            }
+            return !!(this.#consents[feature] && this.#consents[feature].optin);
+        },
+        snapshot: () => ({
+            el: this.hcErrorCount || 0,
+            wl: this.hcWarningCount || 0,
+            sc: this.hcStatusCode,
+            em: this.hcErrorMessage || "",
+            bom: this.hcBackoffCount || 0,
+            cbom: this.hcConsecutiveBackoffCount || 0,
+            fu: JSON.parse(JSON.stringify(this.#hcMethodUsage)),
+            lc: Object.assign({}, this.#hcLogCodes)
+        }),
+        /**
+         * Takes away what a health check the server accepted reported, so what was counted while it was on its way is
+         * reported next time. The last failed request and the longest run are cleared only when they did not change since
+         * @param {Object} sent - the snapshot the delivered health check was built from
+         */
+        clearSentValues: (sent) => {
+            this.hcErrorCount = Math.max(0, (this.hcErrorCount || 0) - sent.el);
+            this.hcWarningCount = Math.max(0, (this.hcWarningCount || 0) - sent.wl);
+            this.hcBackoffCount = Math.max(0, (this.hcBackoffCount || 0) - sent.bom);
+            if (this.hcConsecutiveBackoffCount === sent.cbom) {
+                this.hcConsecutiveBackoffCount = 0;
+            }
+            if (this.hcStatusCode === sent.sc && this.hcErrorMessage === sent.em) {
+                this.hcStatusCode = -1;
+                this.hcErrorMessage = "";
+            }
+            Object.keys(sent.fu).forEach((area) => {
+                var counted = this.#hcMethodUsage[area];
+                if (!counted) {
+                    return;
+                }
+                Object.keys(sent.fu[area]).forEach((method) => {
+                    var left = (counted[method] || 0) - sent.fu[area][method];
+                    if (left > 0) {
+                        counted[method] = left;
+                    }
+                    else {
+                        delete counted[method];
+                    }
+                });
+                if (Object.keys(counted).length === 0) {
+                    delete this.#hcMethodUsage[area];
+                }
+            });
+            Object.keys(sent.lc).forEach((code) => {
+                var left = (this.#hcLogCodes[code] || 0) - sent.lc[code];
+                if (left > 0) {
+                    this.#hcLogCodes[code] = left;
+                }
+                else {
+                    delete this.#hcLogCodes[code];
+                }
+            });
+            this.#hcDirty = true;
+            this.#HealthCheck.saveState(true);
+        },
+        /**
+         * Stores the counters when they changed: right away when asked to, otherwise at most once per session update
+         * interval. Nothing is stored before the stored counters were read, so that they are not overwritten
+         * @param {Boolean} now - true to store right away, as when the page is hidden or closed
+         */
+        saveState: (now) => {
+            if (!this.#hcDirty || !this.#hcCountersLoaded) {
+                return;
+            }
+            if (!now && getTimestamp() - this.#hcSavedAt < this.#SCIntervalSessionUpdate) {
+                return;
+            }
+            this.#hcDirty = false;
+            this.#hcSavedAt = getTimestamp();
+            this.#setValueInStorage(healthCheckCounterEnum.errorCount, this.hcErrorCount || 0);
+            this.#setValueInStorage(healthCheckCounterEnum.warningCount, this.hcWarningCount || 0);
+            this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
+            this.#setValueInStorage(healthCheckCounterEnum.errorMessage, this.hcErrorMessage || "");
+            this.#setValueInStorage(healthCheckCounterEnum.backoffCount, this.hcBackoffCount || 0);
+            this.#setValueInStorage(healthCheckCounterEnum.consecutiveBackoffCount, this.hcConsecutiveBackoffCount || 0);
+            this.#setValueInStorage(healthCheckCounterEnum.methodUsage, this.#hcMethodUsage);
+            this.#setValueInStorage(healthCheckCounterEnum.logCodes, this.#hcLogCodes);
+        },
+        /**
+         * Adds the counters an earlier page stored to the ones counted so far, which may include warnings logged before
+         * the stored counters could be read. A stored value of the wrong type is skipped
+         */
+        loadState: () => {
+            var storedNumber = (key, fallback) => {
+                var value = this.#getValueFromStorage(key);
+                return typeof value === "number" ? value : fallback;
+            };
+            this.hcErrorCount = storedNumber(healthCheckCounterEnum.errorCount, 0) + (this.hcErrorCount || 0);
+            this.hcWarningCount = storedNumber(healthCheckCounterEnum.warningCount, 0) + (this.hcWarningCount || 0);
+            this.hcStatusCode = storedNumber(healthCheckCounterEnum.statusCode, -1);
+            var storedMessage = this.#getValueFromStorage(healthCheckCounterEnum.errorMessage);
+            this.hcErrorMessage = typeof storedMessage === "string" ? storedMessage : "";
+            this.hcBackoffCount = storedNumber(healthCheckCounterEnum.backoffCount, 0);
+            this.hcConsecutiveBackoffCount = storedNumber(healthCheckCounterEnum.consecutiveBackoffCount, 0);
+            var storedUsage = this.#getValueFromStorage(healthCheckCounterEnum.methodUsage);
+            if (storedUsage && typeof storedUsage === "object") {
+                Object.keys(storedUsage).forEach((area) => {
+                    if (!storedUsage[area] || typeof storedUsage[area] !== "object") {
+                        return;
+                    }
+                    Object.keys(storedUsage[area]).forEach((method) => {
+                        var count = storedUsage[area][method];
+                        if (typeof count === "number" && count > 0) {
+                            var methods = this.#hcMethodUsage[area] || (this.#hcMethodUsage[area] = {});
+                            methods[method] = Math.min((methods[method] || 0) + count, configurationDefaultValues.HC_COUNT_CAP);
+                        }
+                    });
+                });
+            }
+            var storedCodes = this.#getValueFromStorage(healthCheckCounterEnum.logCodes);
+            if (storedCodes && typeof storedCodes === "object") {
+                Object.keys(storedCodes).forEach((code) => {
+                    if (typeof storedCodes[code] === "number" && storedCodes[code] > 0) {
+                        this.#HealthCheck.addLogCode(code, storedCodes[code]);
+                    }
+                });
+            }
+            this.#hcBackoffRun = 0;
+            this.#hcCountersLoaded = true;
         },
         resetCounters: () => {
             this.hcErrorCount = 0;
@@ -9863,21 +10228,10 @@ class CountlyClass {
             this.hcErrorMessage = "";
             this.hcBackoffCount = 0;
             this.hcConsecutiveBackoffCount = 0;
-        },
-        /**
-         * Keeps the HTTP status code and response of the last failed request, of any kind, for the next health check.
-         * A request that got no HTTP answer, such as one sent while offline or blocked, has no status code to keep.
-         * @param {Number} status - HTTP status code
-         * @param {String} responseText - response body
-         */
-        saveRequestCounters: (status, responseText) => {
-            if (!(status > 0 && status < 1000)) {
-                return;
-            }
-            this.hcStatusCode = status;
-            this.hcErrorMessage = responseText;
-            this.#setValueInStorage(healthCheckCounterEnum.statusCode, this.hcStatusCode);
-            this.#setValueInStorage(healthCheckCounterEnum.errorMessage, this.hcErrorMessage);
+            this.#hcBackoffRun = 0;
+            this.#hcMethodUsage = {};
+            this.#hcLogCodes = {};
+            this.#hcDirty = false;
         }
     };
 }

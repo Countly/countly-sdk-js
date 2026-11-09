@@ -140,8 +140,9 @@ describe("Remote config request", () => {
                 expect(rcRequests[0].method).to.equal("fetch_remote_config");
                 expect(rcRequests[0]).to.not.have.property("oi");
                 expect(Countly.get_remote_config()).to.deep.equal({ color: "red" });
-                // the test_mode warning and the legacy API warning
-                expect(healthChecks.map((hc) => hc.wl)).to.deep.equal([2]);
+                // the test_mode warning, the legacy API warning of init and the one of the legacy fetch, all logged before the
+                // health check of the page load goes out
+                expect(healthChecks.map((hc) => hc.wl)).to.deep.equal([3]);
             });
         });
     });

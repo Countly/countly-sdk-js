@@ -1,3 +1,11 @@
+## XX.XX.XX
+
+* Added SDK method usage and log codes to the health check.
+* Improved internal logging.
+* Improved health check send count. It is now sent once per visit, when a new session begins, and once per page load only on pages that track no session.
+
+* Mitigated an issue where health check counters restarted even when it was not delivered, and what was counted while it was on its way was lost when it was.
+
 ## 26.8.1
 
 * ! Minor Breaking Change ! Remote config is now downloaded with the current remote config API (`method=rc`) by default, as `use_explicit_rc_api` now defaults to `true`. It needs Countly server 22.09 or newer; set `use_explicit_rc_api` to `false` to keep the legacy API. The values and the A/B test enrollment stay the same, except that downloading only some keys now enrolls the user only in the A/B tests that use those keys.

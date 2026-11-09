@@ -33,7 +33,7 @@ describe("Content Filter Tests", () => {
 
             Countly.content.enterContentZone(filter);
 
-            cy.wait(5000).then(() => {
+            hp.waitForContentZone(() => filterParams.length > 0, "the content reached the filter").then(() => {
                 expect(filterParams.length).to.be.greaterThan(0);
                 expect(filterParams[0]).to.have.property("id");
                 expect(filterParams[0]["id"]).to.equal("111");
@@ -60,7 +60,7 @@ describe("Content Filter Tests", () => {
 
             Countly.q.push(["content.enterContentZone", filter]);
 
-            cy.wait(5000).then(() => {
+            hp.waitForContentZone(() => filterParams.length > 0, "the content reached the filter").then(() => {
                 expect(filterParams.length).to.be.greaterThan(0);
                 expect(filterParams[0]).to.have.property("id");
                 expect(filterParams[0]["id"]).to.equal("111");

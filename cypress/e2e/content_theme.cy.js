@@ -89,7 +89,7 @@ describe("Theme for content and feedback widgets", () => {
             Countly.presentRatingWidgetWithID("legacy123");
             expect(themeOf(document.getElementById("countly-feedback-iframe").getAttribute("src")), "rating popup").to.equal("d");
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!document.getElementById("cly-content-iframe"), "content is shown").then(() => {
                 var src = new URL(document.getElementById("cly-content-iframe").getAttribute("src"));
                 expect(src.searchParams.get("th"), "content").to.equal("d");
                 expect(src.searchParams.get("id")).to.equal("1");
@@ -104,7 +104,7 @@ describe("Theme for content and feedback widgets", () => {
             contentPage = "https://your.domain.count.ly/_external/content#top";
             init();
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!document.getElementById("cly-content-iframe"), "content is shown").then(() => {
                 expect(document.getElementById("cly-content-iframe").getAttribute("src")).to.equal("https://your.domain.count.ly/_external/content?th=d#top");
             });
         });
