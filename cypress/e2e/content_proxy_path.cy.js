@@ -24,7 +24,7 @@ describe("Content proxy path rebasing", () => {
             });
             Countly.content.enterContentZone();
             // enterContentZone waits ~4s after init before firing the first request
-            cy.wait(6000).then(() => {
+            hp.waitForContentZone(() => !!document.getElementById("cly-content-iframe"), "content iframe should be created").then(() => {
                 var iframe = document.getElementById("cly-content-iframe");
                 expect(iframe, "content iframe should be created").to.exist;
                 // server returned http://test/_external/content?...; rebased onto this.url with
@@ -91,7 +91,7 @@ describe("Content request size on an iPhone", () => {
                 }
             });
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => contentRequests.length > 0, "a content request was made").then(() => {
                 var metricResolution = Countly._internals.getMetrics()._resolution;
                 if (savedPlatform) {
                     Object.defineProperty(navigator, "platform", savedPlatform);
@@ -145,7 +145,7 @@ describe("Content link safety", () => {
                 }
             });
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!document.getElementById("cly-content-iframe"), "content is shown").then(() => {
                 var iframe = document.getElementById("cly-content-iframe");
                 expect(iframe, "content is shown").to.exist;
                 var opened = [];
@@ -209,7 +209,7 @@ describe("Content consent", () => {
             });
             Countly.add_consent(["content"]);
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!document.getElementById("cly-content-iframe"), "content is shown").then(() => {
                 expect(document.getElementById("cly-content-iframe"), "content is shown").to.exist;
                 Countly.remove_consent("content");
                 expect(document.getElementById("cly-content-iframe"), "content is closed").to.not.exist;
@@ -230,7 +230,7 @@ describe("Content consent", () => {
             });
             Countly.add_consent(["content"]);
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => contentRequests > 0, "the zone was entered for the first user").then(() => {
                 expect(contentRequests, "the zone was entered for the first user").to.be.greaterThan(0);
                 Countly.change_id("next user", false);
                 var countAtChange = contentRequests;

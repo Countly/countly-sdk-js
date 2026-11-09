@@ -25,6 +25,20 @@ function haltAndClearStorage(callback) {
 }
 
 /**
+ * Waits for what the SDK does once it enters a content zone that enterContentZone asked for within 4 s of init. The SDK
+ * enters it about 4 s after init, or 4 s later when its millisecond timestamp ran a few ms ahead of the clock at init,
+ * so a fixed wait in between passes or fails by chance
+ * @param {Function} entered - returns true once the zone was entered, such as once the content is on the page
+ * @param {String} what - what entered() checks, named when the wait times out
+ * @returns {Cypress.Chainable} a chain that goes on once entered() returns true
+ */
+function waitForContentZone(entered, what) {
+    return cy.window({ timeout: lWait }).should(() => {
+        expect(entered(), what).to.equal(true);
+    });
+}
+
+/**
  * what waits to be sent: the requests left in the shared storage, as while sending fails, then what the tab keeps
  * @param {String} key - app key, the default test app key if not given
  * @returns {Object} the tab's event queue and the waiting requests, in the order they would be sent
@@ -556,6 +570,7 @@ function createFakeRequestHandler(options = {}) {
 
 module.exports = {
     haltAndClearStorage,
+    waitForContentZone,
     waitingQueues,
     sWait,
     sWait2,

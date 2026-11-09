@@ -94,7 +94,7 @@ describe("Behavior settings filters", () => {
                 }
             });
             Countly.content.enterContentZone();
-            cy.wait(5500).then(() => {
+            hp.waitForContentZone(() => !!document.getElementById("cly-content-iframe"), "content is shown").then(() => {
                 var frame = document.getElementById("cly-content-iframe");
                 expect(frame, "content is shown").to.exist;
                 window.dispatchEvent(new MessageEvent("message", { data: { event: [{ key: "[CLY]_content_shown", segmentation: { content_id: "c1" } }, { key: "banner_click", segmentation: { keep: 1 } }] }, origin: "https://your.domain.count.ly", source: frame.contentWindow }));
