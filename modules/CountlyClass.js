@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -123,6 +123,7 @@ class CountlyClass {
     #contentTheme = null;
     #contentIframeID;
     #crashFilterCallback;
+    #logListener = null;
     #serverConfigCache;
     #SCNetwork;
     #SCSizeReqQueue;
@@ -746,6 +747,11 @@ class CountlyClass {
         this.rcAutoOptinAb = getConfig("rc_automatic_optin_for_ab", ob, true);
         this.useExplicitRcApi = getConfig("use_explicit_rc_api", ob, true);
         this.debug = getConfig("debug", ob, false);
+        var logListener = getConfig("log_listener", ob, null);
+        this.#logListener = typeof logListener === "function" ? logListener : null;
+        if (logListener !== null && !this.#logListener) {
+            this.#log(logLevelEnums.WARNING, "initialize, log_listener must be a function, ignoring it");
+        }
         this.test_mode = getConfig("test_mode", ob, false);
         this.test_mode_eq = getConfig("test_mode_eq", ob, false);
         this.metrics = getConfig("metrics", ob, {});
@@ -1961,6 +1967,7 @@ class CountlyClass {
         this.utm = undefined;
         this.ignore_prefetch = undefined;
         this.debug = undefined;
+        this.#logListener = null;
         this.test_mode = undefined;
         this.test_mode_eq = undefined;
         this.metrics = undefined;
@@ -8248,7 +8255,7 @@ class CountlyClass {
     }
 
     /**
-     *  Print a log line to the console when debug is on, and gather it when log gathering wants it and its consent is given
+     *  Print a log line to the console when debug is on, pass it to the log listener when one is set, and gather it when log gathering wants it and its consent is given
      * @param {string} level - log level (error, warning, info, debug, verbose)
      * @param {string} message - any string message
      * @param {*} [third] - optional value appended to the message, serialized when it is an object
@@ -8264,7 +8271,7 @@ class CountlyClass {
         var shouldPrint = this.debug && typeof console !== "undefined";
         var levelChar = logLevelToWireChar[level] || "d";
         var shouldCapture = this.#logLineWanted(levelChar);
-        if (!shouldPrint && !shouldCapture) {
+        if (!shouldPrint && !shouldCapture && !this.#logListener) {
             return;
         }
         // parse the arguments into a string if it is an object
@@ -8288,6 +8295,17 @@ class CountlyClass {
         // the gathered line carries its level in its own field, so the prefix is left off
         if (shouldCapture) {
             this.#captureLogLine(levelChar, body, this.#logLineConsent(message));
+        }
+        if (this.#logListener) {
+            try {
+                this.#logListener(body, logLevelToListenerName[level] || "debug");
+            }
+            catch (ex) {
+                if (shouldPrint) {
+                    // eslint-disable-next-line no-console
+                    console.error("[ERROR] [Countly] log, the log listener threw an error: " + ex);
+                }
+            }
         }
         if (shouldPrint) {
             // eslint-disable-next-line no-shadow
