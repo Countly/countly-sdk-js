@@ -1,6 +1,11 @@
 ## XX.XX.XX
 
 * Added SDK method usage and log codes to the health check.
+* Added `change_server_url` to change the server URL after init.
+* Added `change_app_key` to change the app key after init.
+* Added `flush_queues` to clear the event and request queues.
+* Added `replace_all_app_keys_in_queue_with_current_app_key` to give queued requests the current app key.
+* Added `remove_different_app_keys_from_queue` to drop queued requests with another app key.
 * Improved internal logging.
 * Improved health check send count. It is now sent once per visit, when a new session begins, and once per page load only on pages that track no session.
 
