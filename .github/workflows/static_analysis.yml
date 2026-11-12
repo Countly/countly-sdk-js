@@ -1,0 +1,46 @@
+name: Static analysis
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - staging
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eslint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # ESLint is installed outside the repository, so the configuration is copied next to it for its imports to resolve.
+      - name: Install ESLint
+        run: |
+          npm install --prefix "$RUNNER_TEMP/eslint" --no-save --no-package-lock --no-audit --no-fund --ignore-scripts \
+            eslint@10.13.0 @eslint/js@10.0.1 globals@17.14.0
+          cp .github/eslint.config.mjs "$RUNNER_TEMP/eslint/"
+
+      # Report-only: exit code 1 means findings and passes, only 2 (ESLint itself failed) fails the job.
+      - name: Lint the SDK
+        run: |
+          code=0
+          "$RUNNER_TEMP/eslint/node_modules/.bin/eslint" -c "$RUNNER_TEMP/eslint/eslint.config.mjs" \
+            -f .github/scripts/eslint-sarif.mjs -o "$RUNNER_TEMP/eslint.sarif" Countly.js countly_sw.js modules || code=$?
+          [ "$code" -le 1 ]
+
+      - name: Summarize the findings
+        run: python3 .github/scripts/sarif_summary.py ESLint "$RUNNER_TEMP/eslint.sarif" >> "$GITHUB_STEP_SUMMARY"
