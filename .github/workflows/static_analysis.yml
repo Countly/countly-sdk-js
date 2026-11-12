@@ -20,6 +20,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Set up Node.js
@@ -34,13 +35,28 @@ jobs:
             eslint@10.13.0 @eslint/js@10.0.1 globals@17.14.0
           cp .github/eslint.config.mjs "$RUNNER_TEMP/eslint/"
 
-      # Report-only: exit code 1 means findings and passes, only 2 (ESLint itself failed) fails the job.
+      # On pull requests the base branch is linted too, so that only findings it lacks can fail the job.
       - name: Lint the SDK
         run: |
-          code=0
-          "$RUNNER_TEMP/eslint/node_modules/.bin/eslint" -c "$RUNNER_TEMP/eslint/eslint.config.mjs" \
-            -f .github/scripts/eslint-sarif.mjs -o "$RUNNER_TEMP/eslint.sarif" Countly.js countly_sw.js modules || code=$?
-          [ "$code" -le 1 ]
+          # Lints the SDK sources of the checkout in $1, writing SARIF to $2. ESLint exits with 1 for findings, 2 when it fails.
+          lint() {
+            code=0
+            (cd "$1" && "$RUNNER_TEMP/eslint/node_modules/.bin/eslint" -c "$RUNNER_TEMP/eslint/eslint.config.mjs" \
+              -f "$GITHUB_WORKSPACE/.github/scripts/eslint-sarif.mjs" -o "$2" Countly.js countly_sw.js modules) || code=$?
+            [ "$code" -le 1 ]
+          }
+          lint "$GITHUB_WORKSPACE" "$RUNNER_TEMP/eslint.sarif"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            # The first parent of the pull request's merge commit is the base branch it merges into.
+            git worktree add "$RUNNER_TEMP/base" HEAD^1
+            lint "$RUNNER_TEMP/base" "$RUNNER_TEMP/eslint-base.sarif"
+          fi
 
+      # Every finding goes to the job summary; a new one at warning or error level fails the job.
       - name: Summarize the findings
-        run: python3 .github/scripts/sarif_summary.py ESLint "$RUNNER_TEMP/eslint.sarif" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          base=()
+          if [ -f "$RUNNER_TEMP/eslint-base.sarif" ]; then
+            base=(--base "$RUNNER_TEMP/eslint-base.sarif" --base-root "$RUNNER_TEMP/base")
+          fi
+          python3 .github/scripts/sarif_summary.py ESLint "$RUNNER_TEMP/eslint.sarif" "${base[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
