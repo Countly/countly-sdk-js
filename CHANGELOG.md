@@ -1,6 +1,7 @@
 ## XX.XX.XX
 
 * Added SDK method usage and log codes to the health check.
+* Added `log_listener` init option, a function that receives every log message of the SDK and its level ("error", "warning", "info", "debug" or "verbose"), also while `debug` is off. It is called inside the SDK's own calls, so it should return quickly and must not call the SDK.
 * Improved internal logging.
 * Improved health check send count. It is now sent once per visit, when a new session begins, and once per page load only on pages that track no session.
 
