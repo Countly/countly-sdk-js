@@ -74,6 +74,17 @@ var logLevelToWireChar = {
 };
 
 /**
+ * Maps the internal log level to the level name the log listener receives
+ */
+var logLevelToListenerName = {
+    "[ERROR] ": "error",
+    "[WARNING] ": "warning",
+    "[INFO] ": "info",
+    "[DEBUG] ": "debug",
+    "[VERBOSE] ": "verbose",
+};
+
+/**
  * Default and limit values for the operator driven internal log gathering ('lg' server config key)
  */
 var logGatheringDefaultValues = {
@@ -336,4 +347,4 @@ var contentReservedSegmentationPrefix = "answ";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE };
