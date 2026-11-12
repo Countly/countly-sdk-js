@@ -731,7 +731,6 @@ class CountlyClass {
     /**
      * Initialize the Countly
      * @param {Object} ob - config object
-     * @returns 
      */
     #initialize = (ob) => {
         this.#ignoreReferrers = getConfig("ignore_referrers", ob, []);
