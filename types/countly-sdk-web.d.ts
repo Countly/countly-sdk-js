@@ -146,6 +146,42 @@ declare module "countly-sdk-web" {
     function attempt_to_send_stored_requests(): void;
 
     /**
+     * Change the server URL. Queued and later requests go to the new URL, a request already on its way finishes at the
+     * previous one; the app key, salt and headers stay. The new server gets the push token and, while consent is required,
+     * the consent state, and the behavior settings and, with automatic remote config, remote config are fetched from it.
+     * An invalid URL is ignored with an error log. Kept in memory only: on each page, call it before track_sessions.
+     * @param {string} url - absolute http or https URL of the server, trailing "/" characters are removed
+     */
+    function change_server_url(url: string): void;
+
+    /**
+     * Change the app key. First the running view and session are ended and the pending events and user profile changes
+     * are queued, all with the previous key. Then a session begins for the new app if one was running, and the new app
+     * gets what a new server gets after change_server_url, without the previous app's remote config values. Queued
+     * requests keep their key; the device ID, consent and server URL stay. An invalid key is ignored with an error log.
+     * Kept in memory only: on each page, call it before track_sessions.
+     * @param {string} appKey - app key of the new app, not empty and not "YOUR_APP_KEY"
+     */
+    function change_app_key(appKey: string): void;
+
+    /**
+     * Discard the events and requests waiting to be sent. A request already on its way is not stopped. Timed events,
+     * the running view and pending user profile changes stay.
+     */
+    function flush_queues(): void;
+
+    /**
+     * Give every queued request the current app key, so the requests queued before change_app_key go to the new app
+     */
+    function replace_all_app_keys_in_queue_with_current_app_key(): void;
+
+    /**
+     * Remove the queued requests that have another app key than the current one, so the requests queued before
+     * change_app_key are not sent
+     */
+    function remove_different_app_keys_from_queue(): void;
+
+    /**
      * Enable web push notifications: asks for notification permission, registers the Countly service worker,
      * subscribes with the configured VAPID public key and registers the subscription with the server.
      * Call it directly from a user gesture (a click handler), not through Countly.q — Firefox and Safari

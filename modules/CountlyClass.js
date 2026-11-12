@@ -214,6 +214,10 @@ class CountlyClass {
     #passwordFields = new WeakMap();
     #passwordWatchRoots = new WeakMap();
     #encodedCookiePrefix = "~cly~";
+    /** App key the stored values are kept under: the init key, also after change_app_key */
+    #storageAppKey;
+    /** Counts the changes of the queued requests, so a request on its way can tell the queue changed */
+    #queueEpoch = 0;
 
     /**
      * Create a new Countly instance with configuration
@@ -335,6 +339,7 @@ class CountlyClass {
         this.#pendingRequestBuffer = null;
         this.#clientHintsBufferTimeoutId = null;
         this.app_key = getConfig("app_key", ob, null);
+        this.#storageAppKey = this.app_key;
         this.url = stripTrailingSlash(getConfig("url", ob, ""));
         this.serialize = getConfig("serialize", ob, Countly.serialize);
         this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
@@ -518,10 +523,15 @@ class CountlyClass {
         params.av = this.app_version;
         params.method = "sc";
         var scStart = Date.now();
+        var sentUrl = this.url;
         this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
             if (err) {
                 // error has been logged by the request function
                 this.#resolveProvisionalLogs("server config request failed");
+                return;
+            }
+            if (params.app_key !== this.app_key || sentUrl !== this.url) {
+                this.#log(logLevelEnums.DEBUG, "server_config, Ignoring the answer for a previous app key or server URL");
                 return;
             }
             try {
@@ -538,7 +548,7 @@ class CountlyClass {
                     this.#populateServerConfig(config);
                     this.#syncPushWorkerConfig();
                 }
-                this.#setValueInStorage("cly_config", JSON.stringify(config));
+                this.#storeIfInitApp("cly_config", JSON.stringify(config));
                 // only a live response decides log gathering, the stored config applied above never does
                 this.#applyLogGatheringConfig(config ? config.lg : undefined);
                 if (armed) {
@@ -1962,6 +1972,7 @@ class CountlyClass {
         }
 
         this.app_key = undefined;
+        this.#storageAppKey = undefined;
         this.device_id = undefined;
         this.onload = undefined;
         this.utm = undefined;
@@ -3179,6 +3190,172 @@ class CountlyClass {
     };
 
     /**
+     * Change the server URL. Queued and later requests go to the new URL, a request already on its way finishes at the
+     * previous one; the app key, salt and headers stay. The new server gets the push token and, while consent is required,
+     * the consent state, and the behavior settings and, with automatic remote config, remote config are fetched from it.
+     * An invalid URL is ignored. Kept in memory only: on each page, call it before track_sessions
+     * @param {string} url - absolute http or https URL of the server, trailing "/" characters are removed
+     */
+    change_server_url = (url) => {
+        this.#log(logLevelEnums.INFO, "change_server_url, Changing the server URL to:[" + url + "]");
+        var end = typeof url === "string" ? url.length : 0;
+        while (end > 0 && url.charAt(end - 1) === "/") {
+            end--;
+        }
+        var newUrl = end > 0 ? url.slice(0, end) : "";
+        // scheme, host or [IPv6] host, optional port and optional path, as the request paths are appended to it
+        if (!/^https?:\/\/(\[[^\]\/?#\s]+\]|[^\/?#\s:[\]]+)(:\d+)?(\/[^?#\s]*)?$/i.test(newUrl)) {
+            this.#log(logLevelEnums.ERROR, "change_server_url, The server URL must be an absolute http or https URL, keeping:[" + this.url + "]");
+            this.#HealthCheck.recordLogCode("e102");
+            return;
+        }
+        if (newUrl !== url) {
+            this.#log(logLevelEnums.WARNING, "change_server_url, Removed the trailing '/' characters, using:[" + newUrl + "]");
+        }
+        var oldUrl = this.url;
+        this.url = newUrl;
+        // content opened from the new server posts its messages from the new origin
+        if (Array.isArray(this.contentWhitelist) && this.contentWhitelist.indexOf(newUrl) === -1) {
+            this.contentWhitelist.push(newUrl);
+        }
+        // requests waiting for a device ID change were given the URL when they were made
+        this.#deferredRequests.forEach((args) => {
+            if (args[1].indexOf(oldUrl) === 0) {
+                args[1] = newUrl + args[1].substring(oldUrl.length);
+            }
+        });
+        // the wait after a failed request was for the previous server
+        this.#failTimeout = 0;
+        this.#catchUp();
+    };
+
+    /**
+     * Change the app key. First the running view and session are ended and the pending events and user profile changes
+     * are queued, all with the previous key. Then a session begins for the new app if one was running, and the new app
+     * gets what a new server gets after change_server_url, without the previous app's remote config values. Queued
+     * requests keep their key, see replace_all_app_keys_in_queue_with_current_app_key and
+     * remove_different_app_keys_from_queue; the device ID, consent, server URL and stored data stay. An invalid or
+     * unchanged key is ignored. Kept in memory only: on each page, call it before track_sessions
+     * @param {string} appKey - app key of the new app, not empty and not "YOUR_APP_KEY"
+     */
+    change_app_key = (appKey) => {
+        this.#log(logLevelEnums.INFO, "change_app_key, Changing the app key to:[" + appKey + "]");
+        if (typeof appKey !== "string" || !appKey || appKey === "YOUR_APP_KEY") {
+            this.#log(logLevelEnums.ERROR, "change_app_key, The app key must be a non-empty string other than YOUR_APP_KEY, keeping:[" + this.app_key + "]");
+            this.#HealthCheck.recordLogCode("e103");
+            return;
+        }
+        if (appKey === this.app_key) {
+            this.#log(logLevelEnums.DEBUG, "change_app_key, The app key is the current one, nothing to change");
+            return;
+        }
+        this.#processAsyncQueue();
+        this.#reportViewDuration();
+        this.#sendEventsForced();
+        this.userData.save(true);
+        var sessionEnded = this.#endSession(null, true);
+        this.app_key = appKey;
+        if (sessionEnded) {
+            this.#HealthCheck.recordUsage("sessions", "end:a");
+            this.#beginSession(!this.#autoExtend, true, true);
+        }
+        this.#remoteConfigs = {};
+        this.#storeIfInitApp("cly_remote_configs", this.#remoteConfigs);
+        this.#catchUp();
+    };
+
+    /**
+     * Discard the events and requests waiting to be sent. A request already on its way is not stopped. Timed events, the
+     * running view, pending user profile changes and the health check counters stay
+     */
+    flush_queues = () => {
+        this.#log(logLevelEnums.INFO, "flush_queues, Discarding the queued events and requests");
+        this.#eventQueue = [];
+        this.#saveEventQueue();
+        this.#changeQueuedRequests(() => []);
+    };
+
+    /**
+     * Give every queued request the current app key, so the requests queued before change_app_key go to the new app. The
+     * checksum is computed when a request is sent, so they stay valid
+     */
+    replace_all_app_keys_in_queue_with_current_app_key = () => {
+        this.#log(logLevelEnums.INFO, "replace_all_app_keys_in_queue_with_current_app_key, Giving the queued requests the app key:[" + this.app_key + "]");
+        this.#changeQueuedRequests((requests) => {
+            requests.forEach((request) => {
+                if (request) {
+                    request.app_key = this.app_key;
+                }
+            });
+            return requests;
+        });
+    };
+
+    /**
+     * Remove the queued requests that have another app key than the current one, so the requests queued before
+     * change_app_key are not sent
+     */
+    remove_different_app_keys_from_queue = () => {
+        this.#log(logLevelEnums.INFO, "remove_different_app_keys_from_queue, Removing the queued requests of app keys other than:[" + this.app_key + "]");
+        this.#changeQueuedRequests((requests) => requests.filter((request) => request && request.app_key === this.app_key));
+    };
+
+    /**
+     *  Give a new server or app what it would know by now: the push token and, while consent is required, the consent
+     *  state. Then, unless in offline mode, fetch its behavior settings, the stored ones staying in use until it answers,
+     *  and with automatic remote config its remote config
+     */
+    #catchUp = () => {
+        this.#syncPushWorkerConfig();
+        // the token was sent to the previous server or app only
+        this.#lastPushToken = null;
+        this.#removePushRecord(pushStorageKeys.sessionToken);
+        this.#autoRegisterPush(true);
+        if (this.#SCEnableConsentRequired) {
+            this.#updateConsent();
+        }
+        if (this.#offlineMode) {
+            return;
+        }
+        this.#getAndSetServerConfig();
+        if (this.remote_config) {
+            this.fetch_remote_config(this.remote_config);
+        }
+    };
+
+    /**
+     *  Change the requests waiting to be sent: the request queue, the requests held until the client hints are known and,
+     *  with a tab store, the requests left in the shared storage
+     *  @param {Function} change - takes an array of requests and returns the array to keep
+     */
+    #changeQueuedRequests = (change) => {
+        this.#requestQueue = change(this.#requestQueue);
+        this.#saveRequestQueue();
+        if (this.#pendingRequestBuffer) {
+            this.#pendingRequestBuffer = change(this.#pendingRequestBuffer);
+        }
+        if (this.#tabStore) {
+            var left = this.#getValueFromStorage("cly_queue", true);
+            if (Array.isArray(left) && left.length) {
+                this.#setValueInStorage("cly_queue", change(left), true);
+            }
+        }
+        this.#queueEpoch++;
+    };
+
+    /**
+     *  Store a behavior settings or remote config value only while the app key is the init key, so the next init and the
+     *  other tabs never load another app's
+     *  @param {String} key - storage key of the value
+     *  @param {*} value - value to store
+     */
+    #storeIfInitApp = (key, value) => {
+        if (this.app_key === this.#storageAppKey) {
+            this.#setValueInStorage(key, value);
+        }
+    };
+
+    /**
      * FOR TESTING PURPOSES ONLY
      * Set test mode for request queue
      * @param {Boolean} value 
@@ -4045,7 +4222,7 @@ class CountlyClass {
         }
         this.#log(logLevelEnums.INFO, "track_errors, Started tracking errors");
         // Indicated that for this instance of the countly error tracking is enabled
-        Countly.i[this.app_key].tracking_crashes = true;
+        this.tracking_crashes = true;
         if (!window.cly_crashes) {
             window.cly_crashes = true;
             this.#crashSegments = segments;
@@ -4228,6 +4405,13 @@ class CountlyClass {
                     }
                     return;
                 }
+                if (request.app_key !== this.app_key) {
+                    this.#log(logLevelEnums.DEBUG, "fetch_remote_config_explicit, Ignoring the answer for a previous app key");
+                    if (providedCall) {
+                        providedCall(new Error("Remote config was fetched for a previous app key"), this.#remoteConfigs);
+                    }
+                    return;
+                }
                 var parseError = false;
                 try {
                     var configs = JSON.parse(responseText);
@@ -4241,7 +4425,7 @@ class CountlyClass {
                         // we replace config
                         this.#remoteConfigs = configs;
                     }
-                    this.#setValueInStorage("cly_remote_configs", this.#remoteConfigs);
+                    this.#storeIfInitApp("cly_remote_configs", this.#remoteConfigs);
                 }
                 catch (ex) {
                     this.#log(logLevelEnums.DEBUG, "fetch_remote_config_explicit, Had an issue while parsing the response: " + ex);
@@ -7796,9 +7980,10 @@ class CountlyClass {
     /**
      *  Remove a request from the queue once the server accepted it
      *  @param {Object} sent - the request that was sent
+     *  @param {Boolean} [queueChanged] - true when the queue was changed while the request was on its way
      */
-    #removeSentRequest = (sent) => {
-        if (!this.#tabStore) {
+    #removeSentRequest = (sent, queueChanged) => {
+        if (!this.#tabStore && !queueChanged) {
             this.#requestQueue.shift();
             return;
         }
@@ -7873,6 +8058,7 @@ class CountlyClass {
             params.rr = this.#requestQueue.length;
             this.#requestOnItsWay = params;
             this.#saveRequestQueue();
+            var queueEpoch = this.#queueEpoch;
             this.#makeNetworkRequest(requestName, this.url + this.#apiPath, params, (err, parameters, status, responseText) => {
                 this.#requestOnItsWay = null;
                 if (err) {
@@ -7880,7 +8066,7 @@ class CountlyClass {
                     this.#HealthCheck.logFailedNetworkRequest(status, responseText);
                 }
                 else {
-                    this.#removeSentRequest(params);
+                    this.#removeSentRequest(params, queueEpoch !== this.#queueEpoch);
                     this.#checkBackoffConditions(parameters);
                     if ((this.#serverConfigAfterMerge || this.#remoteConfigAfterMerge) && !this.#mergeRequestUnsent()) {
                         this.#fetchAfterMerge();
@@ -9253,7 +9439,7 @@ class CountlyClass {
 
         // apply namespace or app_key
         if (!useRawKey) {
-            key = this.app_key + "/" + key;
+            key = this.#storageAppKey + "/" + key;
             if (this.namespace) {
                 key = stripTrailingSlash(this.namespace) + "/" + key;
             }
@@ -9308,7 +9494,7 @@ class CountlyClass {
 
         // apply namespace
         if (!useRawKey) {
-            key = this.app_key + "/" + key;
+            key = this.#storageAppKey + "/" + key;
             if (this.namespace) {
                 key = stripTrailingSlash(this.namespace) + "/" + key;
             }
@@ -9357,7 +9543,7 @@ class CountlyClass {
 
         // apply namespace
         if (!useRawKey) {
-            key = this.app_key + "/" + key;
+            key = this.#storageAppKey + "/" + key;
             if (this.namespace) {
                 key = stripTrailingSlash(this.namespace) + "/" + key;
             }
@@ -9431,7 +9617,7 @@ class CountlyClass {
      *  @returns {String} the prefixed key
      */
     #storageKey = (key) => {
-        var prefixed = this.app_key + "/" + key;
+        var prefixed = this.#storageAppKey + "/" + key;
         return this.namespace ? stripTrailingSlash(this.namespace) + "/" + prefixed : prefixed;
     };
 
