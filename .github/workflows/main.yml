@@ -23,10 +23,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -41,7 +41,7 @@ jobs:
         run: npm run test:tooling
 
       - name: Upload bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist
@@ -58,15 +58,15 @@ jobs:
         node: [22, 24]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
 
       - name: Download bundles
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist
@@ -107,16 +107,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
 
       - name: Run Cypress
-        uses: cypress-io/github-action@v7
+        uses: cypress-io/github-action@18016a55674bd02cabf197de5762a1710cb5577c # v7.4.9
         env:
           CYPRESS_COVERAGE: ${{ env.COVERAGE_LEG }}
         with:
@@ -124,7 +124,7 @@ jobs:
           command: npx cypress run --browser ${{ matrix.browser }} ${{ env.SHARD_ARGS }} --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-${{ matrix.shard }}-[hash].xml
 
       - name: Test report
-        uses: EnricoMi/publish-unit-test-result-action@v2
+        uses: EnricoMi/publish-unit-test-result-action@da5b7be67623cd59bbbd1a0ce4f022050a55605f # v2.26.0
         if: always() && runner.os == 'Linux'
         with:
           check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
@@ -135,7 +135,7 @@ jobs:
           action_fail_on_inconclusive: false
 
       - name: Test report (Windows)
-        uses: EnricoMi/publish-unit-test-result-action/windows@v2
+        uses: EnricoMi/publish-unit-test-result-action/windows@da5b7be67623cd59bbbd1a0ce4f022050a55605f # v2.26.0
         if: always() && runner.os == 'Windows'
         with:
           check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
@@ -146,7 +146,7 @@ jobs:
           action_fail_on_inconclusive: false
 
       - name: Test report (macOS)
-        uses: EnricoMi/publish-unit-test-result-action/macos@v2
+        uses: EnricoMi/publish-unit-test-result-action/macos@da5b7be67623cd59bbbd1a0ce4f022050a55605f # v2.26.0
         if: always() && runner.os == 'macOS'
         with:
           check_name: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
@@ -157,7 +157,7 @@ jobs:
           action_fail_on_inconclusive: false
 
       - name: Upload junit results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: junit-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
@@ -165,7 +165,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload screenshots
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: cypress-screenshots-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
@@ -180,7 +180,7 @@ jobs:
           node .github/scripts/coverage-summary.mjs coverage/coverage-summary.json coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && env.COVERAGE_LEG == 'true'
         with:
           name: coverage-report
@@ -191,7 +191,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Coverage comment
-        uses: marocchino/sticky-pull-request-comment@v3
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         if: always() && env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request' && hashFiles('coverage/summary.md') != ''
         continue-on-error: true
         with:
