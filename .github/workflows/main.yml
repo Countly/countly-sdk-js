@@ -207,6 +207,29 @@ jobs:
           npx nyc report --reporter=lcov --reporter=json-summary --report-dir=coverage
           node .github/scripts/coverage-summary.mjs coverage/coverage-summary.json coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
 
+      # The CI report titles the section itself, so the summary's own heading is dropped.
+      - name: Write the CI report fragment (coverage)
+        if: ${{ !cancelled() && env.COVERAGE_LEG == 'true' && hashFiles('coverage/summary.md') != '' }}
+        run: |
+          pct=$(jq '.total.lines.pct | numbers' coverage/coverage-summary.json)
+          summary='See details'
+          if [ -n "$pct" ]; then
+            summary=$(printf 'Line coverage %.1f%%' "$pct")
+          fi
+          mkdir -p "$RUNNER_TEMP/ci-report-coverage"
+          {
+            printf 'Coverage\n%s\n' "$summary"
+            sed '/^## Code coverage$/d' coverage/summary.md
+          } > "$RUNNER_TEMP/ci-report-coverage/report.md"
+
+      - name: Upload the CI report fragment (coverage)
+        if: ${{ !cancelled() && env.COVERAGE_LEG == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-report-coverage
+          path: ${{ runner.temp }}/ci-report-coverage
+          if-no-files-found: ignore
+
       - name: Upload coverage report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && env.COVERAGE_LEG == 'true'
