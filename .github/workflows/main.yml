@@ -124,6 +124,7 @@ jobs:
           command: npx cypress run --browser ${{ matrix.browser }} ${{ env.SHARD_ARGS }} --reporter junit --reporter-options mochaFile=results/${{ matrix.browser }}-${{ matrix.shard }}-[hash].xml
 
       - name: Test report
+        id: test-report
         uses: EnricoMi/publish-unit-test-result-action@da5b7be67623cd59bbbd1a0ce4f022050a55605f # v2.26.0
         if: always() && runner.os == 'Linux'
         with:
@@ -135,6 +136,7 @@ jobs:
           action_fail_on_inconclusive: false
 
       - name: Test report (Windows)
+        id: test-report-windows
         uses: EnricoMi/publish-unit-test-result-action/windows@da5b7be67623cd59bbbd1a0ce4f022050a55605f # v2.26.0
         if: always() && runner.os == 'Windows'
         with:
@@ -146,6 +148,7 @@ jobs:
           action_fail_on_inconclusive: false
 
       - name: Test report (macOS)
+        id: test-report-macos
         uses: EnricoMi/publish-unit-test-result-action/macos@da5b7be67623cd59bbbd1a0ce4f022050a55605f # v2.26.0
         if: always() && runner.os == 'macOS'
         with:
@@ -155,6 +158,31 @@ jobs:
           report_individual_runs: true
           action_fail: false
           action_fail_on_inconclusive: false
+
+      - name: Write the CI report fragment (test results)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          RESULTS: ${{ steps.test-report.outputs.json || steps.test-report-windows.outputs.json || steps.test-report-macos.outputs.json }}
+          TITLE: Test results (${{ matrix.browser }} ${{ matrix.shard }}, ${{ matrix.os }})
+          FRAGMENT: ci-report-unit-tests-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
+        run: |
+          if [ -z "$RESULTS" ]; then
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/$FRAGMENT"
+          jq -r --arg title "$TITLE" '$title,
+            "\(.stats.tests_succ) passed, \(.stats.tests_fail + .stats.tests_error) failed, \(.stats.tests_skip) skipped",
+            if .check_url then "The [check run](\(.check_url)) lists each test." else empty end
+          ' <<< "$RESULTS" > "$RUNNER_TEMP/$FRAGMENT/report.md"
+
+      - name: Upload the CI report fragment (test results)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-report-unit-tests-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/ci-report-unit-tests-${{ matrix.browser }}-${{ matrix.shard }}-${{ matrix.os }}
+          if-no-files-found: ignore
 
       - name: Upload junit results
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
