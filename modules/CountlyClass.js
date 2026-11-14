@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, paidClickIdParams, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -43,7 +43,9 @@ import {
     getUserAgentClientHints,
     calculateChecksum,
     base64ToBytes,
-    parseUrlParts
+    parseUrlParts,
+    parseQueryPairs,
+    defaultGetSearchQuery
 } from "./Utils.js";
 import { isBrowser, Countly } from "./Platform.js";
 
@@ -105,6 +107,9 @@ class CountlyClass {
     #currentViewId;
     #previousViewId;
     #freshUTMTags;
+    #landingParams;
+    #pendingLanding;
+    #appLinkConfig;
     #sdkName;
     #sdkVersion;
     #shouldSendHC;
@@ -752,6 +757,19 @@ class CountlyClass {
         this.clearStoredId = getConfig("clear_stored_id", ob, false);
         this.onload = getConfig("onload", ob, []);
         this.utm = getConfig("utm", ob, { source: true, medium: true, campaign: true, term: true, content: true });
+        var landingParams = getConfig("attribution_landing_params", ob, []);
+        if (!Array.isArray(landingParams)) {
+            this.#log(logLevelEnums.WARNING, "initialize, attribution_landing_params must be an array of parameter names, ignoring it");
+            landingParams = [];
+        }
+        this.#landingParams = landingParams;
+        this.#pendingLanding = null;
+        // where Countly.attribution.appLink points: the link host (default: the server URL), the app's id and its Android package
+        this.#appLinkConfig = {
+            host: getConfig("attribution_link_host", ob, ""),
+            appId: getConfig("attribution_app_id", ob, ""),
+            androidPackage: getConfig("attribution_android_package", ob, "")
+        };
         this.ignore_prefetch = getConfig("ignore_prefetch", ob, true);
         this.rcAutoOptinAb = getConfig("rc_automatic_optin_for_ab", ob, true);
         this.useExplicitRcApi = getConfig("use_explicit_rc_api", ob, true);
@@ -1093,24 +1111,20 @@ class CountlyClass {
         var searchQuery = this.getSearchQuery();
         var hasUTM = false;
         var utms = {};
+        // a landing with a campaign parameter is sent as is, for the server to parse
+        var hasLandingParam = false;
         if (searchQuery) {
             // remove the '?' character from the beginning if it exists
             if (searchQuery.indexOf('?') === 0) {
                 searchQuery = searchQuery.substring(1);
             };
-            var parts = searchQuery.split("&");
-            // a "+" stays as it is, as links carrying device IDs are often built without encoding
-            var decodeQueryPart = (part) => {
-                try {
-                    return decodeURIComponent(part);
+            var queryPairs = parseQueryPairs(searchQuery);
+            for (var i = 0; i < queryPairs.length; i++) {
+                var nv = queryPairs[i];
+                // an ad platform's click id counts when it has a value, as the server reads it
+                if ((nv[0] + "").indexOf("utm_") === 0 || nv[0] === "cly_clk" || this.#landingParams.indexOf(nv[0]) !== -1 || (paidClickIdParams.indexOf(nv[0]) !== -1 && nv[1])) {
+                    hasLandingParam = true;
                 }
-                catch (ex) {
-                    return part;
-                }
-            };
-            for (var i = 0; i < parts.length; i++) {
-                var separatorIndex = parts[i].indexOf("=");
-                var nv = separatorIndex === -1 ? [decodeQueryPart(parts[i])] : [decodeQueryPart(parts[i].substring(0, separatorIndex)), decodeQueryPart(parts[i].substring(separatorIndex + 1))];
                 if (nv[0] === "cly_id") {
                     this.#setValueInStorage("cly_cmp_id", nv[1]);
                 }
@@ -1219,6 +1233,18 @@ class CountlyClass {
                 }
             }
             this.userData.save();
+        }
+
+        if (hasLandingParam) {
+            // the SDK's own reader gives the address as the browser has it; a custom getSearchQuery, in the
+            // init config or set on Countly.getSearchQuery, gives the query
+            if (isBrowser && this.getSearchQuery === defaultGetSearchQuery) {
+                this.#pendingLanding = window.location.href;
+            }
+            else {
+                this.#pendingLanding = (isBrowser ? window.location.protocol + "//" + window.location.host + window.location.pathname : "") + "?" + searchQuery;
+            }
+            this.#sendLandingAttribution();
         }
 
         this.#initPushMessageListener();
@@ -1843,18 +1869,28 @@ class CountlyClass {
             this.#consentTimer = null;
         }
         this.#consentTimer = setTimeout(() => {
-            var consentMessage = {};
-            for (var i = 0; i < Countly.features.length; i++) {
-                if (this.#consents[Countly.features[i]].optin === true) {
-                    consentMessage[Countly.features[i]] = true;
-                }
-                else {
-                    consentMessage[Countly.features[i]] = false;
-                }
-            }
-            this.#toRequestQueue({ consent: JSON.stringify(consentMessage) });
+            // no longer waiting: the landing attribution request only carries the consent while it is
+            this.#consentTimer = null;
+            this.#toRequestQueue({ consent: JSON.stringify(this.#consentMessage()) });
             this.#log(logLevelEnums.DEBUG, "Consent update request has been sent to the queue.");
         }, 1000);
+    };
+
+    /**
+     * The consent state as the consent request reports it: every feature, true or false
+     * @returns {Object} the consent message
+     */
+    #consentMessage = () => {
+        var consentMessage = {};
+        for (var i = 0; i < Countly.features.length; i++) {
+            if (this.#consents[Countly.features[i]].optin === true) {
+                consentMessage[Countly.features[i]] = true;
+            }
+            else {
+                consentMessage[Countly.features[i]] = false;
+            }
+        }
+        return consentMessage;
     };
 
     /**
@@ -1921,6 +1957,7 @@ class CountlyClass {
         this.#currentViewId = null;
         this.#previousViewId = null;
         this.#freshUTMTags = null;
+        this.#pendingLanding = null;
         this.#generatedRequests = [];
         this.#HealthCheck.resetCounters();
         this.#hcSent = false;
@@ -2205,6 +2242,9 @@ class CountlyClass {
                             this.#lastView = null;
                             this.#trackPageview.apply(this, this.#lastParams.track_pageview);
                             this.#lastParams.track_pageview = null;
+                        }
+                        else if (feature === featureEnums.ATTRIBUTION && this.#pendingLanding) {
+                            this.#sendLandingAttribution();
                         }
                         else if (feature === featureEnums.CONTENT && this.#contentZoneWanted) {
                             this.#enterContentZoneInternal();
@@ -3889,6 +3929,130 @@ class CountlyClass {
             else {
                 this.#toRequestQueue({ campaign_id: campaign_id });
             }
+        }
+    };
+
+    /**
+    * Record the revenue of one paid ad impression, as the ad network's callback gives it, as the [CLY]_ad_revenue event.
+    * Needs the "events" consent. The amount is sent as it is: give it in the currency the app uses for purchases.
+    * @param {number} amount - the impression's revenue (AdMob gives micros: divide them by 1000000 first)
+    * @param {Object=} details - each optional, sent as a segment only when given
+    * @param {string=} details.network - the ad network, such as "admob" or "applovin"
+    * @param {string=} details.placement - the ad placement or unit
+    * @param {string=} details.format - the ad format, such as "banner", "interstitial" or "rewarded"
+    * @param {string=} details.currency - the currency code the network reported, kept for reference and never converted
+    * @param {string=} details.precision - how exact the network says the amount is
+    * */
+    recordAdRevenue = (amount, details) => {
+        this.#log(logLevelEnums.INFO, "recordAdRevenue, Recording the ad revenue:[" + amount + "]");
+        var sum = typeof amount === "string" && amount.trim() !== "" ? Number(amount) : amount;
+        if (typeof sum !== "number" || !isFinite(sum) || sum < 0) {
+            this.#log(logLevelEnums.ERROR, "recordAdRevenue, The amount must be a number of zero or more, not recording it");
+            return;
+        }
+        var segmentation = {};
+        var detailKeys = ["network", "placement", "format", "currency", "precision"];
+        if (details && typeof details === "object") {
+            for (var i = 0; i < detailKeys.length; i++) {
+                var value = details[detailKeys[i]];
+                if (value !== undefined && value !== null && value !== "") {
+                    segmentation[detailKeys[i]] = value + "";
+                }
+            }
+        }
+        this.add_event({ key: internalEventKeyEnums.AD_REVENUE, count: 1, sum: sum, segmentation: segmentation });
+    };
+
+    /**
+    * Smart links for a page on the app's own site, so that a visitor with the app installed opens it there
+    * @namespace Countly.attribution
+    * */
+    attribution = {
+        /**
+        * The smart link of a campaign, to put on this page: it opens the installed app at the given path,
+        * otherwise the server counts the click and sends the visitor on to the store. It carries this page's
+        * UTM tags and the parameters named in attribution_landing_params. Nothing is sent by this call.
+        * @memberof Countly.attribution
+        * @param {Object} options - the link
+        * @param {string} options.code - the campaign's link code
+        * @param {string=} options.path - the deep-link path in the app, such as "/product/42"
+        * @param {Object=} options.params - more query parameters; they win over this page's ones of the same name
+        * @param {string=} options.android - "intent" for the intent:// form, for Android browsers: the browser itself goes to the link when the app is not installed
+        * @param {string=} options.host - the link host, such as "https://go.example.com", in place of attribution_link_host
+        * @param {string=} options.appId - the Countly app id, in place of attribution_app_id
+        * @param {string=} options.androidPackage - the Android package, in place of attribution_android_package
+        * @returns {string|null} the link, or null when the code or the host cannot be used
+        * */
+        appLink: (options) => {
+            var config = this.#appLinkConfig || {};
+            options = options && typeof options === "object" ? options : {};
+            if (typeof options.code !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(options.code)) {
+                this.#log(logLevelEnums.ERROR, "appLink, The campaign code must be letters, digits, - or _, not building a link");
+                return null;
+            }
+            var host = options.host || config.host || this.url;
+            if (typeof host !== "string" || !/^https?:\/\/[^/?#]+/i.test(host)) {
+                this.#log(logLevelEnums.ERROR, "appLink, The link host must be an http(s) address, not building a link");
+                return null;
+            }
+            var link = stripTrailingSlash(host) + "/at/";
+            var appId = options.appId || config.appId;
+            if (typeof appId === "string" && /^[a-f0-9]{24}$/.test(appId)) {
+                link += appId + "/";
+            }
+            else {
+                this.#log(logLevelEnums.WARNING, "appLink, No valid attribution_app_id, building the plain tracking link, which does not open the app");
+            }
+            link += options.code;
+            if (typeof options.path === "string") {
+                var segments = options.path.split("/");
+                for (var i = 0; i < segments.length; i++) {
+                    if (segments[i]) {
+                        link += "/" + encodeURIComponent(segments[i]);
+                    }
+                }
+            }
+            var extra = options.params && typeof options.params === "object" ? options.params : {};
+            var query = [];
+            var seen = {};
+            var landingParams = this.#landingParams || [];
+            var searchQuery;
+            try {
+                searchQuery = this.getSearchQuery();
+            }
+            catch (ex) {
+                this.#log(logLevelEnums.ERROR, "appLink, Reading the page's query failed: " + ex);
+            }
+            // the landing's own UTM tags and allow-listed parameters, the first of a name as the server reads it
+            var pairs = parseQueryPairs(typeof searchQuery === "string" ? searchQuery : "");
+            for (var j = 0; j < pairs.length; j++) {
+                var name = pairs[j][0];
+                if (pairs[j].length === 2 && !seen[name] && !Object.prototype.hasOwnProperty.call(extra, name) && ((name + "").indexOf("utm_") === 0 || landingParams.indexOf(name) !== -1)) {
+                    seen[name] = true;
+                    query.push(encodeURIComponent(name) + "=" + encodeURIComponent(pairs[j][1]));
+                }
+            }
+            for (var key in extra) {
+                if (Object.prototype.hasOwnProperty.call(extra, key) && extra[key] !== undefined && extra[key] !== null) {
+                    query.push(encodeURIComponent(key) + "=" + encodeURIComponent(extra[key] + ""));
+                }
+            }
+            if (query.length) {
+                link += "?" + query.join("&");
+            }
+            if (options.android !== "intent") {
+                return link;
+            }
+            var schemeEnd = link.indexOf("://");
+            var intent = "intent://" + link.substring(schemeEnd + 3) + "#Intent;scheme=" + link.substring(0, schemeEnd).toLowerCase() + ";";
+            var androidPackage = options.androidPackage || config.androidPackage;
+            if (typeof androidPackage === "string" && /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(androidPackage)) {
+                intent += "package=" + androidPackage + ";";
+            }
+            else if (androidPackage) {
+                this.#log(logLevelEnums.WARNING, "appLink, attribution_android_package is not a package name, leaving it out");
+            }
+            return intent + "S.browser_fallback_url=" + encodeURIComponent(link) + ";end";
         }
     };
 
@@ -9636,6 +9800,37 @@ class CountlyClass {
         }
         catch (e) {
             return false;
+        }
+    };
+
+    /**
+     *  Send the landing address of this page as the attribution signal, once per landing address in this tab.
+     *  Waits for the attribution consent: it is sent when the consent is given later.
+     */
+    #sendLandingAttribution = () => {
+        var landing = this.#pendingLanding;
+        if (!landing) {
+            return;
+        }
+        if (!this.check_consent(featureEnums.ATTRIBUTION)) {
+            this.#log(logLevelEnums.DEBUG, "sendLandingAttribution, Waiting for attribution consent to send the landing address");
+            return;
+        }
+        this.#pendingLanding = null;
+        var tabStore = this.#canUseTabStore();
+        if (tabStore && this.#getTabValue("cly_landing") === landing) {
+            this.#log(logLevelEnums.DEBUG, "sendLandingAttribution, Landing address was already sent in this tab, not sending it again");
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "sendLandingAttribution, Sending the landing address:[" + landing + "]");
+        var landingRequest = { attribution: JSON.stringify({ type: "landing", value: landing }) };
+        // the consent request goes out a second after the consent changes, after this request: a server that stores a
+        // campaign only with the attribution consent reads it from this request then (the later one changes nothing)
+        if (this.#SCEnableConsentRequired && this.#consentTimer) {
+            landingRequest.consent = JSON.stringify(this.#consentMessage());
+        }
+        if (this.#toRequestQueue(landingRequest) && tabStore) {
+            this.#setTabValue("cly_landing", landing);
         }
     };
 
