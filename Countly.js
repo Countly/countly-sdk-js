@@ -1,6 +1,6 @@
 import CountlyClass from "./modules/CountlyClass.js";
 import { featureList, DeviceIdTypeInternalEnums, CDN } from "./modules/Constants.js";
-import { checkIfLoggingIsOn, stripTrailingSlash } from "./modules/Utils.js";
+import { checkIfLoggingIsOn, defaultGetSearchQuery, stripTrailingSlash } from "./modules/Utils.js";
 import { isBrowser, Countly } from "./modules/Platform.js";
 
 var apmLibrariesNotLoaded = true; // used to prevent loading apm scripts multiple times.
@@ -149,12 +149,7 @@ Countly.getViewUrl = function () {
 * Overwrite a way to get search query
 * @return {string} view url
 * */
-Countly.getSearchQuery = function () {
-    if (!isBrowser) {
-        return;
-    }
-    return window.location.search;
-};
+Countly.getSearchQuery = defaultGetSearchQuery;
 
 /**
 * Possible device Id types are: DEVELOPER_SUPPLIED, SDK_GENERATED, TEMPORARY_ID

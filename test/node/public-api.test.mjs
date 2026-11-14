@@ -25,7 +25,7 @@ const NOT_QUEUED = [
     // the loader sets it up itself
     "init",
     // a queued call cannot give back what these return
-    "check_consent", "check_any_consent", "get_device_id", "get_device_id_type", "get_remote_config", "sdk_name", "sdk_version", "cancel_event",
+    "check_consent", "check_any_consent", "get_device_id", "get_device_id_type", "get_remote_config", "sdk_name", "sdk_version", "cancel_event", "attribution.appLink",
     // functions the SDK calls, which a site sets rather than calls
     "getViewName", "getViewUrl", "getSearchQuery"
 ].concat(DEPRECATED, INTERNAL);
