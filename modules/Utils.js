@@ -1,5 +1,5 @@
 import { isBrowser, Countly } from "./Platform.js";
-import { logLevelEnums, urlParseRE } from "./Constants.js";
+import { logLevelEnums, requestCompressionValues, urlParseRE } from "./Constants.js";
 
 /**
  *  Get selected values from multi select input
@@ -350,6 +350,26 @@ function calculateChecksum(data, salt) {
         .join(""); // convert bytes to hex string (lowercase)
         return hashHex.toUpperCase();
     }); 
+}
+
+/**
+ * Compresses a request body with gzip, for sending it with the request compression marker in the URL.
+ * @param {String} body - url encoded request body, checksum included
+ * @returns {Promise<Uint8Array|null>} the gzip bytes, or null when the body is smaller than requestCompressionValues.MIN_BYTES,
+ * the runtime has no CompressionStream, compressing fails, or the result is not smaller than the body
+ */
+function gzipRequestBody(body) {
+    if (typeof body !== "string" || typeof CompressionStream === "undefined" || typeof TextEncoder === "undefined" || typeof Response === "undefined" || typeof Blob === "undefined") {
+        return Promise.resolve(null);
+    }
+    var plain = new TextEncoder().encode(body);
+    if (plain.length < requestCompressionValues.MIN_BYTES) {
+        return Promise.resolve(null);
+    }
+    return Promise.resolve().then(() => new Response(new Blob([plain]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer()).then((buffer) => {
+        var compressed = new Uint8Array(buffer);
+        return compressed.length < plain.length ? compressed : null;
+    }, () => null);
 }
 
 /**
@@ -1111,6 +1131,7 @@ export {
     getUserAgentClientHints,
     parseWindowsVersionFromPlatformVersion,
     calculateChecksum,
+    gzipRequestBody,
     base64ToBytes,
     parseUrlParts
 };

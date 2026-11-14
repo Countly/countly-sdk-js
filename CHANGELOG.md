@@ -6,6 +6,7 @@
 * Added `flush_queues` to clear the event and request queues.
 * Added `replace_all_app_keys_in_queue_with_current_app_key` to give queued requests the current app key.
 * Added `remove_different_app_keys_from_queue` to drop queued requests with another app key.
+* Added `enable_request_compression` init option. Request bodies of at least 1 KB are then sent gzip-compressed, once the server's SDK behavior settings answer says it reads them. Browsers without `CompressionStream` keep sending plain bodies.
 * Added `log_listener` init option, a function that receives every log message of the SDK and its level ("error", "warning", "info", "debug" or "verbose"), also while `debug` is off. It is called inside the SDK's own calls, so it should return quickly and must not call the SDK.
 * Improved internal logging.
 * Improved health check send count. It is now sent once per visit, when a new session begins, and once per page load only on pages that track no session.
