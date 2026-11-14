@@ -1,17 +1,20 @@
 // The SDK's public functions, its TypeScript definitions (types/countly-sdk-web.d.ts, shipped as countly-sdk-web's
 // lib/countly.d.ts) and the stubs of the quick async loader must agree: a public function missing from either, or a
 // name either still has after the SDK dropped it, fails here. Left-out functions are listed with the reason.
+// api/countly-sdk-web.api records the public API, so a change to it fails here until the file is updated.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import vm from "node:vm";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import ts from "typescript";
+import { addToJobSummary, apiDifference, apiReport, differenceReport, publicFunctions as functionsOf } from "../../scripts/api-report.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const typesPath = join(root, "types", "countly-sdk-web.d.ts");
 const loaderPath = join(root, "examples", "quick_loader", "quick_async_loader.js");
+const apiPath = join(root, "api", "countly-sdk-web.api");
 
 const DEPRECATED = ["enableRatingWidgets", "enable_feedback", "initializeRatingWidgets", "initialize_feedback_popups", "presentRatingWidgetWithID", "show_feedback_popup", "report_conversion", "report_feedback"];
 const INTERNAL = ["halt", "test_mode_rq", "remove_consent_internal", "serialize", "deserialize"];
@@ -35,22 +38,7 @@ const FROM_PLUGINS = ["track_performance"];
  */
 async function publicFunctions() {
     const Countly = (await import(pathToFileURL(join(root, "Countly.js")).href)).default;
-    Countly.init({ app_key: "api-surface", url: "https://api-surface.example" });
-    const names = [];
-    for (const key of Object.keys(Countly)) {
-        const value = Countly[key];
-        if (key.charAt(0) === "_" || key === "CountlyClass" || key === "i") {
-            continue;
-        }
-        if (typeof value === "function") {
-            names.push(key);
-        }
-        else if (value && typeof value === "object" && !Array.isArray(value)) {
-            Object.keys(value).filter((inner) => typeof value[inner] === "function").forEach((inner) => names.push(key + "." + inner));
-        }
-    }
-    Countly.halt();
-    return names.sort();
+    return functionsOf(Countly);
 }
 
 /**
@@ -183,4 +171,17 @@ test("every public function a site can queue is stubbed by the quick loader, or 
     const sdk = await publicFunctions();
     assert.deepEqual(minus(minus(sdk, loaderStubs()), NOT_QUEUED), [], "add these to " + loaderPath + ", or to NOT_QUEUED with the reason");
     assert.deepEqual(minus(NOT_QUEUED, sdk), [], "listed in NOT_QUEUED, but no longer in the SDK");
+});
+
+test("the public API is the one api/countly-sdk-web.api records", async() => {
+    const message = "the public API changed; if that is deliberate, run npm run api:update, check the difference in api/countly-sdk-web.api and add a CHANGELOG.md line";
+    assert.ok(existsSync(apiPath), "no " + apiPath + ", run npm run api:update");
+    const current = apiReport(await publicFunctions(), readFileSync(typesPath, "utf8"));
+    const committed = readFileSync(apiPath, "utf8").replace(/\r\n/g, "\n");
+    const report = differenceReport(apiDifference(committed, current));
+    if (report) {
+        addToJobSummary("Public API changes against api/countly-sdk-web.api", report);
+        assert.fail(message + "\n" + report);
+    }
+    assert.equal(current, committed, message);
 });

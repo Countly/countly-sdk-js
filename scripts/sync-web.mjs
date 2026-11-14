@@ -1,6 +1,6 @@
 // Brings countly-sdk-web up to date with this repository: builds the SDK and writes the web repository's bundle,
-// minified bundle, service worker, TypeScript definitions, quick async loader, Cypress tests, the newer CHANGELOG
-// sections and the version.
+// minified bundle, service worker, TypeScript definitions, public API file and request scenario files with the scripts
+// that check them, quick async loader, Cypress tests, the newer CHANGELOG sections and the version.
 // The service worker of the release the web repository last committed is kept here as a test fixture.
 // Nothing is committed: review and commit the changes in the web repository. Examples that differ are only listed.
 // Usage: npm run sync:web -- [path to countly-sdk-web] [--closure <closure-compiler jar>] [--test]
@@ -258,6 +258,11 @@ write(join(web, "lib", "countly.js"), toWebBundle(read(join(root, "dist", "count
 console.log("sync:web, lib/countly.min.js: " + minify(opts.closure, web, "lib/countly.js", "lib/countly.min.js"));
 copyFileSync(join(root, "countly_sw.js"), join(web, "lib", "countly_sw.js"));
 copyFileSync(join(root, "types", "countly-sdk-web.d.ts"), join(web, "lib", "countly.d.ts"));
+write(join(web, "api", "countly-sdk-web.api"), read(join(root, "api", "countly-sdk-web.api")));
+write(join(web, "test", "consumers", "helpers", "api-report.mjs"), read(join(root, "scripts", "api-report.mjs")));
+rmSync(join(web, "api", "requests"), { recursive: true, force: true });
+files(join(root, "api", "requests")).filter((name) => name.endsWith(".json")).forEach((name) => write(join(web, "api", "requests", name), read(join(root, "api", "requests", name))));
+write(join(web, "test", "consumers", "helpers", "request-scenarios.mjs"), read(join(root, "scripts", "request-scenarios.mjs")));
 checkBundle(join(web, "lib", "countly.js"), sdkVersion);
 checkBundle(join(web, "lib", "countly.min.js"), sdkVersion);
 
