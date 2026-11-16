@@ -1,5 +1,7 @@
 ## XX.XX.XX
 
+* ! Minor Breaking Change ! With a server that sends content triggers (`jt`) and the content zone in use, the SDK now sends its queue right away and asks for content when it records a listed trigger, so requests go out at those moments instead of in the next batch. `disable_auto_content_triggers` turns this off. Journey trigger events (`jte`) no longer send the queue early when content can't be shown (without the content consent, or after `exitContentZone`), and the end of a view no longer counts as a view trigger.
+
 * Added SDK method usage and log codes to the health check.
 * Added `change_server_url` to change the server URL after init.
 * Added `change_app_key` to change the app key after init.
@@ -7,10 +9,13 @@
 * Added `replace_all_app_keys_in_queue_with_current_app_key` to give queued requests the current app key.
 * Added `remove_different_app_keys_from_queue` to drop queued requests with another app key.
 * Added `log_listener` init option, a function that receives every log message of the SDK and its level ("error", "warning", "info", "debug" or "verbose"), also while `debug` is off. It is called inside the SDK's own calls, so it should return quickly and must not call the SDK.
+* Added support for the content triggers (`jt`) SDK behavior setting, which the server fills from the app's journeys and campaigns: while the app is in the content zone (`enterContentZone` or the `ecz` setting), when the SDK records a listed event, the start of a view with a listed name, a new session, a user property change, an error or a consent change, it sends what it holds right away and asks for content, without waiting for the content zone timer.
+* Added `disable_auto_content_triggers` init option for ignoring the content triggers (`jt`) the server sends (default `false`). The journey trigger events (`jte`) still apply.
 * Improved internal logging.
 * Improved health check send count. It is now sent once per visit, when a new session begins, and once per page load only on pages that track no session.
 
 * Mitigated an issue where health check counters restarted even when it was not delivered, and what was counted while it was on its way was lost when it was.
+* Mitigated an issue where a journey trigger event (`jte`) recorded while another request was on its way did not ask for content until the content zone timer, when the regular sending delivered the event first.
 
 ## 26.8.1
 
