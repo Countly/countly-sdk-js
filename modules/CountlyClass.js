@@ -329,7 +329,7 @@ class CountlyClass {
         this.#SCEventSegmentationBlacklist = {};
         this.#SCEventSegmentationWhitelist = {};
         this.#SCJourneyTriggerEvents = [];
-        this.#SCContentTriggers = { e: [], v: [] };
+        this.#SCContentTriggers = null;
         this.#liveSettingsSettled = false;
         this.#earlyContentTriggers = [];
         // undecided until the server answers, so the init lines below are captured and adopted or dropped later
@@ -531,6 +531,9 @@ class CountlyClass {
         params.dow = date.getDay();
         params.av = this.app_version;
         params.method = "sc";
+        if (!this.#autoContentTriggersDisabled) {
+            params.jt = 1;
+        }
         var scStart = Date.now();
         var sentUrl = this.url;
         this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
@@ -621,7 +624,12 @@ class CountlyClass {
      * @param {Object} mainCache - Server configuration response object
      */
     #populateServerConfig = (mainCache) => {
-        if (!mainCache || !mainCache.c || typeof mainCache.c !== "object") {
+        if (!mainCache || typeof mainCache !== "object") {
+            return;
+        }
+        // the content triggers come next to the settings, also when the settings are empty
+        this.#SCContentTriggers = this.#autoContentTriggersDisabled ? null : this.#readContentTriggers(mainCache.jt);
+        if (!mainCache.c || typeof mainCache.c !== "object") {
             return;
         }
         var cache = mainCache.c;
@@ -738,24 +746,23 @@ class CountlyClass {
         if (cache.hasOwnProperty("jte") && Array.isArray(cache.jte)) {
             this.#SCJourneyTriggerEvents = cache.jte;
         }
-        this.#SCContentTriggers = this.#readContentTriggers(cache.jt);
     };
 
     /**
-     * Reads the content triggers ("jt") of a behavior settings answer. An answer without them, or with an invalid value,
-     * leaves no content triggers
+     * Reads the content triggers ("jt") that come next to the settings ("c") in a behavior settings answer
      * @private
      * @param {Object} value - the "jt" value of the answer: { e: [event keys], v: [view names] }
-     * @returns {Object} { e, v }: the event keys and the view names whose recording makes the SDK ask for content right away
+     * @returns {Object|null} { e, v }: the event keys and the view names whose recording makes the SDK ask for content
+     * right away; null when the answer has no content triggers or an invalid value, so the journey trigger events apply
      */
     #readContentTriggers = (value) => {
         var triggers = { e: [], v: [] };
         if (typeof value === "undefined") {
-            return triggers;
+            return null;
         }
         if (!value || typeof value !== "object" || Array.isArray(value)) {
             this.#log(logLevelEnums.WARNING, "server_config, Content triggers (jt) must be an object, ignoring them: [" + JSON.stringify(value) + "]");
-            return triggers;
+            return null;
         }
         var lists = ["e", "v"];
         for (var i = 0; i < lists.length; i++) {
@@ -1086,7 +1093,7 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#SCIntervalContent + "]");
         }
         if (this.#autoContentTriggersDisabled) {
-            this.#log(logLevelEnums.DEBUG, "initialize, Automatic content triggers are disabled, the content triggers (jt) of the behavior settings are ignored");
+            this.#log(logLevelEnums.DEBUG, "initialize, Automatic content triggers are disabled: the SDK does not ask for the content triggers (jt), and the journey trigger events (jte) apply");
         }
         // functions, if provided, would be printed as true without revealing their content
         this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
@@ -3606,25 +3613,25 @@ class CountlyClass {
     }
 
     /**
-     * Whether recording this makes the SDK ask for content right away: a key the journey trigger events ("jte") or the
-     * content triggers ("jt") behavior setting lists, or a view whose name the content triggers list. The content triggers
-     * apply only while the app wants the content zone, and never when disable_auto_content_triggers is set
+     * Whether recording this makes the SDK ask for content right away. When the server sent content triggers ("jt"),
+     * only they decide, and only while the app wants the content zone: a key they list, or a view whose name they list.
+     * Otherwise (an older server, or disable_auto_content_triggers set) a key the journey trigger events ("jte") list
      * @private
      * @param {String} key - event key, or the content trigger key of what was recorded
      * @param {String} [viewName] - name of the recorded view
      * @returns {Boolean} true when it is a content trigger
      */
     #isContentTrigger = (key, viewName) => {
-        if (Array.isArray(this.#SCJourneyTriggerEvents) && this.#SCJourneyTriggerEvents.indexOf(key) !== -1) {
-            return true;
+        if (this.#SCContentTriggers) {
+            if (!this.#contentZoneWanted) {
+                return false;
+            }
+            if (this.#SCContentTriggers.e.indexOf(key) !== -1) {
+                return true;
+            }
+            return key === internalEventKeyEnums.VIEW && typeof viewName === "string" && this.#SCContentTriggers.v.indexOf(viewName) !== -1;
         }
-        if (this.#autoContentTriggersDisabled || !this.#contentZoneWanted) {
-            return false;
-        }
-        if (this.#SCContentTriggers.e.indexOf(key) !== -1) {
-            return true;
-        }
-        return key === internalEventKeyEnums.VIEW && typeof viewName === "string" && this.#SCContentTriggers.v.indexOf(viewName) !== -1;
+        return Array.isArray(this.#SCJourneyTriggerEvents) && this.#SCJourneyTriggerEvents.indexOf(key) !== -1;
     };
 
     /**

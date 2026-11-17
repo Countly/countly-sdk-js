@@ -87,9 +87,39 @@ describe("Content triggers", () => {
         document.querySelectorAll("#cly-content-iframe").forEach((frame) => frame.remove());
     });
 
+    it("asks the server for the content triggers, unless disable_auto_content_triggers is set", () => {
+        var asked = [];
+        // starts the SDK with behavior settings updates on and keeps the jt parameter of its settings requests
+        function start(extra) {
+            Countly.init(Object.assign({
+                app_key: "YOUR_APP_KEY",
+                url: "https://your.domain.count.ly",
+                fake_request_handler: (req) => {
+                    if (req.params && req.params.method === "sc") {
+                        asked.push(req.params.jt);
+                        return { status: 200, responseText: JSON.stringify({ v: 2, t: Date.now(), c: {} }) };
+                    }
+                    return { status: 200, responseText: "{\"result\":\"Success\"}" };
+                }
+            }, extra || {}));
+        }
+        hp.haltAndClearStorage(() => {
+            start();
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(asked, "the settings request").to.deep.equal([1]);
+            }).then(() => {
+                Countly.halt();
+                start({ disable_auto_content_triggers: true });
+            });
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(asked, "the settings requests").to.deep.equal([1, undefined]);
+            });
+        });
+    });
+
     it("sends a listed event right away and then asks for content", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["purchase"] } } });
+            var run = initWith({ c: {}, jt: { e: ["purchase"] } });
             var from;
             afterZoneEntered(run).then(() => {
                 from = run.sent.length;
@@ -107,7 +137,7 @@ describe("Content triggers", () => {
     it("shows the content the server answers with", () => {
         var triggered = false;
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["purchase"] } } }, {}, () => triggered);
+            var run = initWith({ c: {}, jt: { e: ["purchase"] } }, {}, () => triggered);
             afterZoneEntered(run).then(() => {
                 triggered = true;
                 Countly.add_event({ key: "purchase" });
@@ -120,7 +150,7 @@ describe("Content triggers", () => {
 
     it("does not ask for content for an event that is not listed", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["purchase"] } } });
+            var run = initWith({ c: {}, jt: { e: ["purchase"] } });
             var before;
             afterZoneEntered(run).then(() => {
                 before = contentRequests(run);
@@ -133,17 +163,42 @@ describe("Content triggers", () => {
         });
     });
 
-    it("does not use the content triggers while the app does not want the content zone, but follows the journey trigger events", () => {
+    it("does not use the content triggers while the app does not want the content zone", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["purchase"] }, jte: ["legacy_start"] } }, { noZone: true });
+            var run = initWith({ c: {}, jt: { e: ["purchase"] } }, { noZone: true });
             cy.wait(1000).then(() => {
                 Countly.add_event({ key: "purchase" });
             });
             cy.wait(2500).then(() => {
-                expect(contentRequests(run), "content requests for a content trigger").to.equal(0);
+                expect(matches(run, "purchase"), "matched").to.equal(0);
+                expect(contentRequests(run), "content requests").to.equal(0);
+            });
+        });
+    });
+
+    it("ignores the journey trigger events once the server sent content triggers, even empty ones", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWith({ c: { jte: ["legacy_start"] }, jt: {} });
+            var before;
+            afterZoneEntered(run).then(() => {
+                before = contentRequests(run);
+                Countly.add_event({ key: "legacy_start" });
+            });
+            cy.wait(2500).then(() => {
+                expect(matches(run, "legacy_start"), "matched").to.equal(0);
+                expect(contentRequests(run), "content requests").to.equal(before);
+            });
+        });
+    });
+
+    it("follows the journey trigger events of a server that sends no content triggers, also outside the content zone", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWith({ c: { jte: ["legacy_start"] } }, { noZone: true });
+            cy.wait(1000).then(() => {
                 Countly.add_event({ key: "legacy_start" });
             });
             cy.window({ timeout: 2000 }).should(() => {
+                expect(matches(run, "legacy_start"), "matched").to.equal(1);
                 expect(contentRequests(run), "content requests for a journey trigger event").to.be.greaterThan(0);
             });
         });
@@ -151,7 +206,7 @@ describe("Content triggers", () => {
 
     it("asks for content for a view whose name is listed, and not for other views", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { v: ["Checkout"] } } });
+            var run = initWith({ c: {}, jt: { v: ["Checkout"] } });
             var before;
             afterZoneEntered(run).then(() => {
                 before = contentRequests(run);
@@ -172,7 +227,7 @@ describe("Content triggers", () => {
 
     it("asks for content when a view of any name starts, but not when it ends", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["[CLY]_view"] } } });
+            var run = initWith({ c: {}, jt: { e: ["[CLY]_view"] } });
             afterZoneEntered(run).then(() => {
                 Countly.track_pageview("First");
             });
@@ -192,7 +247,7 @@ describe("Content triggers", () => {
 
     it("sends the beginning of a new session right away and then asks for content", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["[CLY]_session"] } } });
+            var run = initWith({ c: {}, jt: { e: ["[CLY]_session"] } });
             var from;
             afterZoneEntered(run).then(() => {
                 from = run.sent.length;
@@ -208,7 +263,7 @@ describe("Content triggers", () => {
     });
 
     it("does not ask for content on a page that continues the session of the visit", () => {
-        var settings = { c: { jt: { e: ["[CLY]_session"] } } };
+        var settings = { c: {}, jt: { e: ["[CLY]_session"] } };
         hp.haltAndClearStorage(() => {
             initWith(settings);
             Countly.begin_session();
@@ -228,7 +283,7 @@ describe("Content triggers", () => {
 
     it("asks for content when user properties are sent, by user_details and by userData.save", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["[CLY]_property_update"] } } });
+            var run = initWith({ c: {}, jt: { e: ["[CLY]_property_update"] } });
             var from;
             afterZoneEntered(run).then(() => {
                 from = run.sent.length;
@@ -253,7 +308,7 @@ describe("Content triggers", () => {
 
     it("sends a recorded error right away and then asks for content", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["[CLY]_crash"] } } });
+            var run = initWith({ c: {}, jt: { e: ["[CLY]_crash"] } });
             var from;
             afterZoneEntered(run).then(() => {
                 from = run.sent.length;
@@ -270,7 +325,7 @@ describe("Content triggers", () => {
 
     it("sends a consent change right away and then asks for content", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["[CLY]_consent"] } } }, { require_consent: true });
+            var run = initWith({ c: {}, jt: { e: ["[CLY]_consent"] } }, { require_consent: true });
             var from;
             cy.wait(500).then(() => {
                 from = run.sent.length;
@@ -288,7 +343,7 @@ describe("Content triggers", () => {
 
     it("does not ask for content without the content consent", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["purchase"] } } }, { require_consent: true });
+            var run = initWith({ c: {}, jt: { e: ["purchase"] } }, { require_consent: true });
             Countly.add_consent(["events"]);
             cy.wait(1500).then(() => {
                 Countly.add_event({ key: "purchase" });
@@ -301,12 +356,14 @@ describe("Content triggers", () => {
 
     it("asks for content for a session that began before the behavior settings arrived", () => {
         var content = 0;
+        var askedForTriggers = null;
         cy.intercept("https://jt.count.ly/**", (req) => {
             var query = new URLSearchParams(req.url.split("?")[1] || "");
             var body = new URLSearchParams(typeof req.body === "string" ? req.body : "");
             var method = query.get("method") || body.get("method");
             if (method === "sc") {
-                req.reply({ delay: 800, statusCode: 200, body: { v: 2, t: Date.now(), c: { jt: { e: ["[CLY]_session"] } } } });
+                askedForTriggers = query.get("jt") || body.get("jt");
+                req.reply({ delay: 800, statusCode: 200, body: { v: 2, t: Date.now(), c: {}, jt: { e: ["[CLY]_session"] } } });
                 return;
             }
             if (method === "queue") {
@@ -323,6 +380,7 @@ describe("Content triggers", () => {
             expect(content, "content requests before the settings arrived").to.equal(0);
             // well before the zone's own first fetch, 4 s after init
             cy.window({ timeout: 3000 }).should(() => {
+                expect(askedForTriggers, "the settings request asked for the content triggers").to.equal("1");
                 expect(content, "content requests once the settings arrived").to.be.greaterThan(0);
             });
         });
@@ -335,7 +393,7 @@ describe("Content triggers", () => {
                 app_key: "YOUR_APP_KEY",
                 url: "https://your.domain.count.ly",
                 debug: true,
-                behavior_settings: { c: { jt: { e: ["purchase"] } } },
+                behavior_settings: { c: {}, jt: { e: ["purchase"] } },
                 log_listener: (message) => {
                     run.logs.push(message);
                 },
@@ -364,9 +422,9 @@ describe("Content triggers", () => {
         });
     });
 
-    it("ignores the content triggers with disable_auto_content_triggers, but still follows the journey trigger events", () => {
+    it("ignores the content triggers with disable_auto_content_triggers, and follows the journey trigger events", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: { jt: { e: ["purchase", "[CLY]_session"], v: ["Checkout"] }, jte: ["legacy_start"] } }, { disable_auto_content_triggers: true });
+            var run = initWith({ c: { jte: ["legacy_start"] }, jt: { e: ["purchase", "[CLY]_session"], v: ["Checkout"] } }, { disable_auto_content_triggers: true });
             var before;
             afterZoneEntered(run).then(() => {
                 before = contentRequests(run);
@@ -392,7 +450,7 @@ describe("Content triggers", () => {
         it("ignores content triggers given as " + what + ", with a warning", () => {
             var warnings = [];
             hp.haltAndClearStorage(() => {
-                var run = initWith({ c: { jt: jt } }, {
+                var run = initWith({ c: {}, jt: jt }, {
                     log_listener: (message, level) => {
                         if (level === "warning") {
                             warnings.push(message);
