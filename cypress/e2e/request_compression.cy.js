@@ -89,20 +89,21 @@ function addBigEvent(key) {
 }
 
 /**
- * Waits until a request carrying the marker was sent, decoding compressed bodies on the way.
+ * Waits until requests carrying the marker were sent, decoding compressed bodies on the way.
  * @param {Array} sent - the captured requests
  * @param {String} marker - text the plain body contains
+ * @param {Number} [count] - how many requests to wait for, 1 when left out
  * @returns {Cypress.Chainable} yields the matching requests
  */
-function waitForRequest(sent, marker) {
-    return cy.window({ timeout: 8000 }).should(() => {
+function waitForRequest(sent, marker, count) {
+    return cy.window({ timeout: 10000 }).should(() => {
         var pending = sent.filter((r) => r.body instanceof Uint8Array && !r.decoded);
         pending.forEach((r) => {
             gunzip(r.body).then((text) => {
                 r.decoded = text;
             });
         });
-        expect(requestsWith(sent, marker).length).to.be.greaterThan(0);
+        expect(requestsWith(sent, marker).length).to.be.at.least(count || 1);
     }).then(() => requestsWith(sent, marker));
 }
 
@@ -222,6 +223,51 @@ describe("Request compression", () => {
         });
     });
 
+    it("compresses again once a new settings answer says gzip, after a refused request had stopped compression", () => {
+        var sent = [];
+        serve(SERVER, { readsGzip: true, refuseNextCompressed: true });
+        hp.haltAndClearStorage(() => {
+            captureRequests(sent);
+            initWith({ enable_request_compression: true });
+            waitForSettingsAnswer(sent).then(() => {
+                addBigEvent("big_refused");
+            });
+            waitForRequest(sent, "big_refused", 2).then((attempts) => {
+                expect(attempts[0].url).to.equal(SERVER + "/i?content_encoding=gzip");
+                expect(attempts[1].url).to.equal(SERVER + "/i");
+                Countly.change_id("gzip-device-after-refusal");
+            });
+            cy.window({ timeout: 10000 }).should(() => {
+                expect(settingsRequests(sent).length).to.be.at.least(2);
+            });
+            cy.wait(500).then(() => {
+                addBigEvent("big_after_new_answer");
+            });
+            waitForRequest(sent, "big_after_new_answer").then((found) => {
+                expect(found[0].url).to.equal(SERVER + "/i?content_encoding=gzip");
+                expect(found[0].body).to.be.instanceOf(Uint8Array);
+            });
+        });
+    });
+
+    it("keeps a body plain when the request URL already has a query, where the marker could not be the only query", () => {
+        var sent = [];
+        var serverWithQuery = SERVER + "/?tenant=1";
+        serve(SERVER, { readsGzip: true });
+        hp.haltAndClearStorage(() => {
+            captureRequests(sent);
+            initWith({ enable_request_compression: true, url: serverWithQuery });
+            waitForSettingsAnswer(sent).then(() => {
+                expect(settingsRequests(sent)[0].body).to.contain("gzip=1");
+                addBigEvent("big_query_url");
+            });
+            waitForRequest(sent, "big_query_url").then((found) => {
+                expect(found[0].url).to.equal(serverWithQuery + "/i");
+                expect(typeof found[0].body).to.equal("string");
+            });
+        });
+    });
+
     it("does not store the gzip answer with the behavior settings", () => {
         var sent = [];
         serve(SERVER, { readsGzip: true });
@@ -257,14 +303,22 @@ describe("Request compression", () => {
         });
     });
 
-    it("gzipRequestBody leaves bodies under 1 KB and non-strings alone, and compresses bigger ones", () => {
+    it("gzipRequestBody leaves bodies under 1 KB, over 1 MB and non-strings alone, and compresses the ones between", () => {
         var big = "b".repeat(1024);
+        var biggest = "b".repeat(1048576);
         cy.wrap(Utils.gzipRequestBody("b".repeat(1023))).should("equal", null);
+        cy.wrap(Utils.gzipRequestBody(biggest + "b")).should("equal", null);
         cy.wrap(Utils.gzipRequestBody(null)).should("equal", null);
         cy.wrap(Utils.gzipRequestBody(big)).then((compressed) => {
             expect(compressed).to.be.instanceOf(Uint8Array);
             expect(compressed.length).to.be.lessThan(big.length);
             return gunzip(compressed);
         }).should("equal", big);
+        cy.wrap(Utils.gzipRequestBody(biggest)).then((compressed) => {
+            expect(compressed).to.be.instanceOf(Uint8Array);
+            return gunzip(compressed);
+        }).then((text) => {
+            expect(text === biggest).to.equal(true);
+        });
     });
 });

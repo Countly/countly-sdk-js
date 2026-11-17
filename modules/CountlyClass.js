@@ -560,6 +560,10 @@ class CountlyClass {
                 }
                 if (this.#requestCompressionEnabled) {
                     this.#gzipAcceptingUrl = gzipAccepted ? sentUrl : null;
+                    if (gzipAccepted && this.#requestCompressionBlocked) {
+                        this.#requestCompressionBlocked = false;
+                        this.#log(logLevelEnums.INFO, "server_config, A behavior settings answer says that the server reads compressed bodies, requests are compressed again");
+                    }
                     this.#log(logLevelEnums.DEBUG, "server_config, The server " + (gzipAccepted ? "reads" : "does not say it reads") + " compressed request bodies");
                 }
                 if (config) {
@@ -8909,14 +8913,16 @@ class CountlyClass {
     })
 
     /**
-     *  Compresses a request body when request compression is on, the current server said it reads gzip and no
-     *  compressed request was refused in this run
+     *  Compresses a request body when request compression is on, the current server said it reads gzip, no compressed
+     *  request was refused since that answer, and the request URL has no query: the compression marker has to be the
+     *  only query of the URL
      *  @memberof Countly._internals
      *  @param {String} body - url encoded request body, checksum included
+     *  @param {String} url - URL the request goes to, before the marker is added
      *  @returns {Promise<Uint8Array|null>} the gzip bytes, or null when the body goes plain
      */
-    #compressRequestBody = (body) => {
-        if (!this.#requestCompressionEnabled || this.#requestCompressionBlocked || this.#gzipAcceptingUrl === null || this.#gzipAcceptingUrl !== this.url) {
+    #compressRequestBody = (body, url) => {
+        if (!this.#requestCompressionEnabled || this.#requestCompressionBlocked || this.#gzipAcceptingUrl === null || this.#gzipAcceptingUrl !== this.url || url.indexOf("?") !== -1) {
             return Promise.resolve(null);
         }
         return gzipRequestBody(body).then((compressed) => {
@@ -8928,14 +8934,15 @@ class CountlyClass {
     }
 
     /**
-     *  Stops request compression until the SDK starts again, after the server or something in front of it answered a
-     *  compressed request without accepting it
+     *  Stops request compression after the server or something in front of it answered a compressed request without
+     *  accepting it, until the next behavior settings answer says that the server reads compressed bodies, or the SDK
+     *  starts again
      *  @memberof Countly._internals
      */
     #blockRequestCompression = () => {
         if (!this.#requestCompressionBlocked) {
             this.#requestCompressionBlocked = true;
-            this.#log(logLevelEnums.INFO, "A compressed request was refused, requests are sent uncompressed until the SDK starts again");
+            this.#log(logLevelEnums.INFO, "A compressed request was refused, requests are sent uncompressed until a behavior settings answer says that the server reads compressed bodies, or the SDK starts again");
         }
     }
 
@@ -8983,7 +8990,7 @@ class CountlyClass {
                 paramSource = filtered;
             }
             (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
-                return (isImage ? Promise.resolve(null) : this.#compressRequestBody(saltedData)).then(compressedBody => [saltedData, compressedBody]);
+                return (isImage ? Promise.resolve(null) : this.#compressRequestBody(saltedData, url)).then(compressedBody => [saltedData, compressedBody]);
             }).then(([saltedData, compressedBody]) => {
                 var method = "POST";
                 if (this.force_post || saltedData.length >= 2000) {
@@ -9155,7 +9162,7 @@ class CountlyClass {
             }
             (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
                 var willPost = !isImage && (this.force_post || saltedData.length >= 2000);
-                return (willPost ? this.#compressRequestBody(saltedData) : Promise.resolve(null)).then(compressedBody => [saltedData, compressedBody]);
+                return (willPost ? this.#compressRequestBody(saltedData, url) : Promise.resolve(null)).then(compressedBody => [saltedData, compressedBody]);
             }).then(([saltedData, compressedBody]) => {
                 if (isImage) {
                     method = "POST";

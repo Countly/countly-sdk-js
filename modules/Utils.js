@@ -355,15 +355,16 @@ function calculateChecksum(data, salt) {
 /**
  * Compresses a request body with gzip, for sending it with the request compression marker in the URL.
  * @param {String} body - url encoded request body, checksum included
- * @returns {Promise<Uint8Array|null>} the gzip bytes, or null when the body is smaller than requestCompressionValues.MIN_BYTES,
- * the runtime has no CompressionStream, compressing fails, or the result is not smaller than the body
+ * @returns {Promise<Uint8Array|null>} the gzip bytes, or null when the body is smaller than requestCompressionValues.MIN_BYTES
+ * or larger than requestCompressionValues.MAX_BYTES, the runtime has no CompressionStream, compressing fails, or the
+ * result is not smaller than the body
  */
 function gzipRequestBody(body) {
     if (typeof body !== "string" || typeof CompressionStream === "undefined" || typeof TextEncoder === "undefined" || typeof Response === "undefined" || typeof Blob === "undefined") {
         return Promise.resolve(null);
     }
     var plain = new TextEncoder().encode(body);
-    if (plain.length < requestCompressionValues.MIN_BYTES) {
+    if (plain.length < requestCompressionValues.MIN_BYTES || plain.length > requestCompressionValues.MAX_BYTES) {
         return Promise.resolve(null);
     }
     return Promise.resolve().then(() => new Response(new Blob([plain]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer()).then((buffer) => {

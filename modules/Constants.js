@@ -218,16 +218,18 @@ var configurationDefaultValues = {
 };
 
 /**
- * how long tabs of a site wait for each other around a device ID or profile change, in milliseconds
- */
-/**
- * Request compression: bodies of at least MIN_BYTES are sent gzip-compressed, with URL_MARKER as the URL query
+ * Request compression: bodies of at least MIN_BYTES and at most MAX_BYTES are sent gzip-compressed, with URL_MARKER as
+ * the URL query. The server refuses a compressed body that is larger than MAX_BYTES once decoded.
  */
 var requestCompressionValues = {
     MIN_BYTES: 1024,
+    MAX_BYTES: 1048576,
     URL_MARKER: "content_encoding=gzip",
 };
 
+/**
+ * how long tabs of a site wait for each other around a device ID or profile change, in milliseconds
+ */
 var tabHandoverTimes = {
     // the changing tab waits this long for what the other tabs leave, which it sends before its change
     COLLECT: 500,
