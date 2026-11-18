@@ -225,9 +225,9 @@ describe("Content triggers", () => {
         });
     });
 
-    it("asks for content when a view of any name starts, but not when it ends", () => {
+    it("asks for content when a listed view starts, but not when it ends", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: {}, jt: { e: ["[CLY]_view"] } });
+            var run = initWith({ c: {}, jt: { v: ["First", "Second"] } });
             afterZoneEntered(run).then(() => {
                 Countly.track_pageview("First");
             });
@@ -241,6 +241,103 @@ describe("Content triggers", () => {
             });
             cy.wait(1500).then(() => {
                 expect(matches(run, "[CLY]_view"), "one match for the second view, none for the end of the first").to.equal(2);
+            });
+        });
+    });
+
+    it("asks again for a view of any name only after 60 seconds, also on the next page", () => {
+        var settings = { c: {}, jt: { e: ["[CLY]_view"] } };
+        var offset = 0;
+        var realNow = Date.now.bind(Date);
+        hp.haltAndClearStorage(() => {
+            cy.stub(Date, "now").callsFake(() => realNow() + offset);
+            var run = initWith(settings);
+            afterZoneEntered(run).then(() => {
+                Countly.track_pageview("A");
+            });
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(matches(run, "[CLY]_view"), "matched the first view").to.equal(1);
+            });
+            cy.wait(3000).then(() => {
+                Countly.track_pageview("B");
+            });
+            cy.wait(1000).then(() => {
+                expect(matches(run, "[CLY]_view"), "no match for a view inside the gap").to.equal(1);
+                expect(run.logs.filter((m) => m.indexOf("asked for content less than 60 seconds ago") !== -1).length, "the gap was logged").to.be.greaterThan(0);
+                // the next page of the website
+                Countly.halt();
+                run = initWith(settings);
+            });
+            cy.wait(1000).then(() => {
+                Countly.track_pageview("C");
+            });
+            cy.wait(1000).then(() => {
+                expect(matches(run, "[CLY]_view"), "no match on the next page inside the gap").to.equal(0);
+                offset = 61000;
+                Countly.track_pageview("D");
+            });
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(matches(run, "[CLY]_view"), "matched once the gap passed").to.equal(1);
+            });
+        });
+    });
+
+    it("asks again for the same listed event only after 10 seconds", () => {
+        var offset = 0;
+        var realNow = Date.now.bind(Date);
+        hp.haltAndClearStorage(() => {
+            cy.stub(Date, "now").callsFake(() => realNow() + offset);
+            var run = initWith({ c: {}, jt: { e: ["purchase"] } });
+            afterZoneEntered(run).then(() => {
+                Countly.add_event({ key: "purchase" });
+            });
+            cy.wait(3000).then(() => {
+                expect(matches(run, "purchase"), "matched the first purchase").to.equal(1);
+                Countly.add_event({ key: "purchase" });
+            });
+            cy.wait(1000).then(() => {
+                expect(matches(run, "purchase"), "no match inside the gap").to.equal(1);
+                offset = 11000;
+                Countly.add_event({ key: "purchase" });
+            });
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(matches(run, "purchase"), "matched once the gap passed").to.equal(2);
+            });
+        });
+    });
+
+    it("asks for content for a listed user property, and for other properties only with the key of any change", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWith({ c: {}, jt: { p: ["custom.plan"] } });
+            afterZoneEntered(run).then(() => {
+                Countly.user_details({ name: "Content Trigger" });
+            });
+            cy.wait(2000).then(() => {
+                expect(matches(run, "[CLY]_property_update"), "no match for an unlisted property").to.equal(0);
+                Countly.userData.set("plan", "pro");
+                Countly.userData.save();
+            });
+            cy.window({ timeout: 2500 }).should(() => {
+                expect(matches(run, "[CLY]_property_update"), "matched the listed property").to.equal(1);
+            });
+        });
+    });
+
+    it("lets a newer round's content requests replace those of a round still asking", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWith({ c: {}, jt: { e: ["purchase", "refund"] } });
+            var before;
+            afterZoneEntered(run).then(() => {
+                before = contentRequests(run);
+                Countly.add_event({ key: "purchase" });
+            });
+            cy.wait(200).then(() => {
+                Countly.add_event({ key: "refund" });
+            });
+            cy.wait(4000).then(() => {
+                expect(matches(run, "purchase") + matches(run, "refund"), "matched both").to.equal(2);
+                expect(run.logs.filter((m) => m.indexOf("A newer round asks for the content, so this one stops") !== -1).length, "the older round stopped").to.be.greaterThan(0);
+                expect(contentRequests(run) - before, "content requests: " + run.sent.join(" | ")).to.be.at.most(4);
             });
         });
     });
@@ -281,9 +378,9 @@ describe("Content triggers", () => {
         });
     });
 
-    it("asks for content when user properties are sent, by user_details and by userData.save", () => {
+    it("asks for content when listed user properties are sent, by user_details and by userData.save", () => {
         hp.haltAndClearStorage(() => {
-            var run = initWith({ c: {}, jt: { e: ["[CLY]_property_update"] } });
+            var run = initWith({ c: {}, jt: { p: ["name", "custom.plan"] } });
             var from;
             afterZoneEntered(run).then(() => {
                 from = run.sent.length;
