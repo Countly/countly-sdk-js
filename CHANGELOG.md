@@ -1,6 +1,6 @@
 ## XX.XX.XX
 
-* ! Minor Breaking Change ! With a server that sends content triggers (`jt`) and the content zone in use, the SDK now sends its queue right away and asks for content when it records a listed trigger, so requests go out at those moments instead of in the next batch. The same trigger does this again only after a gap: 60 seconds for one that can happen often (any view, any user property change, any error), 10 seconds for a listed event, view name or user property. The gap is kept in storage, so it holds across the pages of a website. This applies to the journey trigger events (`jte`) too. `disable_auto_content_triggers` turns the content triggers off. Once the server sends content triggers, the journey trigger events (`jte`) are ignored. Journey trigger events no longer send the queue early when content can't be shown (without the content consent, or after `exitContentZone`), and the end of a view no longer counts as a view trigger.
+* ! Minor Breaking Change ! With a server that sends content triggers (`jt`) and the content zone in use, the SDK now sends its queue right away and asks for content when it records a listed trigger, so requests go out at those moments instead of in the next batch. One such round runs at a time: a trigger recorded while one runs is sent with the next round, and a newer round's content requests replace the retries of an older one. The same trigger does this again only after a gap: 60 seconds for one that can happen often (any view, any user property change, any error), 10 seconds for a listed event, view name or user property. The gap is kept in storage (`cly_ct_gaps`), so it holds across the pages of a website. This applies to the journey trigger events (`jte`) too. `disable_auto_content_triggers` turns the content triggers off. Once the server sends content triggers, the journey trigger events (`jte`) are ignored. Journey trigger events no longer send the queue early when content can't be shown (without the content consent, or after `exitContentZone`), and the end of a view no longer counts as a view trigger.
 
 * Added SDK method usage and log codes to the health check.
 * Added `change_server_url` to change the server URL after init.
@@ -16,6 +16,7 @@
 
 * Mitigated an issue where health check counters restarted even when it was not delivered, and what was counted while it was on its way was lost when it was.
 * Mitigated an issue where a journey trigger event (`jte`) recorded while another request was on its way did not ask for content until the content zone timer, when the regular sending delivered the event first.
+* Mitigated an issue where, after `halt`, recording an event listed in the journey trigger events (`jte`) threw an error until the SDK was initialized again.
 
 ## 26.8.1
 

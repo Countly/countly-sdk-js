@@ -204,6 +204,21 @@ describe("Content triggers", () => {
         });
     });
 
+    it("keeps and sends nothing for a journey trigger event recorded through a halted instance", () => {
+        hp.haltAndClearStorage(() => {
+            initWith({ c: { jte: ["legacy_start"] } }, { noZone: true });
+            cy.wait(1000).then(() => {
+                Countly.halt();
+                // until the next init, Countly still calls the halted instance
+                Countly.add_event({ key: "legacy_start" });
+            });
+            cy.wait(1500).then(() => {
+                expect(Object.keys(localStorage).filter((key) => key.indexOf("cly_ct_gaps") !== -1), "trigger times kept after the halt").to.deep.equal([]);
+                expect(Countly._internals.testingGetRequests(), "requests after the halt").to.deep.equal([]);
+            });
+        });
+    });
+
     it("asks for content for a view whose name is listed, and not for other views", () => {
         hp.haltAndClearStorage(() => {
             var run = initWith({ c: {}, jt: { v: ["Checkout"] } });
