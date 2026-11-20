@@ -45,6 +45,26 @@ var internalEventKeyEnums = {
 };
 
 var internalEventKeyEnumsArray = Object.values(internalEventKeyEnums);
+
+/**
+ * Keys the content triggers ("jt") behavior setting uses for what the SDK records besides events
+ */
+var contentTriggerKeys = {
+    SESSION: "[CLY]_session",
+    USER_PROPERTIES: "[CLY]_property_update",
+    CRASH: "[CLY]_crash",
+    CONSENT: "[CLY]_consent",
+};
+
+/**
+ * Least time in milliseconds before the same content trigger makes the SDK ask for content again
+ */
+var contentTriggerGaps = {
+    // a listed event key, view name or user property
+    SPECIFIC: 10000,
+    // any view, any user property change or any error, which can happen often
+    NON_SPECIFIC: 60000,
+};
 /**
  * 
  *log level Enums:
@@ -347,4 +367,4 @@ var contentReservedSegmentationPrefix = "answ";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE };
