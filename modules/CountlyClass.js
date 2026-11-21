@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -162,6 +162,12 @@ class CountlyClass {
     #SCEventSegmentationBlacklist;
     #SCEventSegmentationWhitelist;
     #SCJourneyTriggerEvents;
+    #SCContentTriggers;
+    #autoContentTriggersDisabled;
+    #liveSettingsSettled;
+    #earlyContentTriggers;
+    #contentTriggerGaps;
+    #contentTriggerChain;
     #SCLogGathering;
     #logBuffer;
     #logHeld;
@@ -314,6 +320,7 @@ class CountlyClass {
         this.#SCLimitStackTraceLineLength = getConfig("max_stack_trace_line_length", ob, configurationDefaultValues.MAX_STACKTRACE_LINE_LENGTH);
         this.#SCBackoffMechanismEnabled = !getConfig("disable_backoff_mechanism", ob, false);
         this.#disableHealthCheck = !!getConfig("disable_health_check", ob, false);
+        this.#autoContentTriggersDisabled = !!getConfig("disable_auto_content_triggers", ob, false);
         this.#SCBackoffAcceptedTimeout = 10; // 10 seconds
         this.#SCBackoffRQPercentage = 0.5; // 50% of the request queue
         this.#SCBackoffRequestAge = 24; // 24 hours
@@ -328,6 +335,11 @@ class CountlyClass {
         this.#SCEventSegmentationBlacklist = {};
         this.#SCEventSegmentationWhitelist = {};
         this.#SCJourneyTriggerEvents = [];
+        this.#SCContentTriggers = null;
+        this.#liveSettingsSettled = false;
+        this.#earlyContentTriggers = [];
+        this.#contentTriggerGaps = {};
+        this.#contentTriggerChain = 0;
         // undecided until the server answers, so the init lines below are captured and adopted or dropped later
         this.#resetLogGathering(false);
         this.#requestTimeoutDuration = 30000; // 30 seconds
@@ -514,6 +526,7 @@ class CountlyClass {
         if (this.#isSCDisabled) {
             this.#log(logLevelEnums.INFO, "server_config, SDK behavior sync is disabled, not fetching server config");
             this.#resolveProvisionalLogs("SDK behavior settings sync is disabled");
+            this.#settleEarlyContentTriggers(false);
             return;
         }
         this.#log(logLevelEnums.INFO, "server_config, Fetching server config");
@@ -532,12 +545,16 @@ class CountlyClass {
         if (this.#requestCompressionEnabled) {
             params.gzip = 1;
         }
+        if (!this.#autoContentTriggersDisabled) {
+            params.jt = 1;
+        }
         var scStart = Date.now();
         var sentUrl = this.url;
         this.#makeNetworkRequest("server_config", this.url + this.#readPath, params, (err, params, responseText) => {
             if (err) {
                 // error has been logged by the request function
                 this.#resolveProvisionalLogs("server config request failed");
+                this.#settleEarlyContentTriggers(false);
                 return;
             }
             if (params.app_key !== this.app_key || sentUrl !== this.url) {
@@ -576,10 +593,12 @@ class CountlyClass {
                 if (armed) {
                     this.#runConnectionTest(Date.now() - scStart);
                 }
+                this.#settleEarlyContentTriggers(!!config);
             }
             catch (ex) {
                 this.#log(logLevelEnums.DEBUG, "server_config, Had an issue while parsing the response: " + ex);
                 this.#resolveProvisionalLogs("server config response could not be parsed");
+                this.#settleEarlyContentTriggers(false);
             }
         }, true, true);
         clearTimeout(this.#serverConfigTimer);
@@ -631,7 +650,12 @@ class CountlyClass {
      * @param {Object} mainCache - Server configuration response object
      */
     #populateServerConfig = (mainCache) => {
-        if (!mainCache || !mainCache.c || typeof mainCache.c !== "object") {
+        if (!mainCache || typeof mainCache !== "object") {
+            return;
+        }
+        // the content triggers come next to the settings, also when the settings are empty
+        this.#SCContentTriggers = this.#autoContentTriggersDisabled ? null : this.#readContentTriggers(mainCache.jt);
+        if (!mainCache.c || typeof mainCache.c !== "object") {
             return;
         }
         var cache = mainCache.c;
@@ -748,6 +772,38 @@ class CountlyClass {
         if (cache.hasOwnProperty("jte") && Array.isArray(cache.jte)) {
             this.#SCJourneyTriggerEvents = cache.jte;
         }
+    };
+
+    /**
+     * Reads the content triggers ("jt") that come next to the settings ("c") in a behavior settings answer
+     * @private
+     * @param {Object} value - the "jt" value of the answer: { e: [event keys], v: [view names], p: [user properties] }
+     * @returns {Object|null} { e, v, p }: the event keys, view names and user properties whose recording makes the SDK
+     * ask for content right away; null when the answer has no content triggers or an invalid value, so the journey
+     * trigger events apply
+     */
+    #readContentTriggers = (value) => {
+        var triggers = { e: [], v: [], p: [] };
+        if (typeof value === "undefined") {
+            return null;
+        }
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            this.#log(logLevelEnums.WARNING, "server_config, Content triggers (jt) must be an object, ignoring them: [" + JSON.stringify(value) + "]");
+            return null;
+        }
+        var lists = ["e", "v", "p"];
+        for (var i = 0; i < lists.length; i++) {
+            var list = value[lists[i]];
+            if (typeof list === "undefined") {
+                continue;
+            }
+            if (!Array.isArray(list)) {
+                this.#log(logLevelEnums.WARNING, "server_config, Content triggers (jt) list [" + lists[i] + "] must be an array, ignoring it");
+                continue;
+            }
+            triggers[lists[i]] = list.filter((item) => typeof item === "string" && item !== "");
+        }
+        return triggers;
     };
 
     /**
@@ -1062,6 +1118,9 @@ class CountlyClass {
         }
         if (this.#SCIntervalContent) {
             this.#log(logLevelEnums.DEBUG, "initialize, content_zone_timer_interval:[" + this.#SCIntervalContent + "]");
+        }
+        if (this.#autoContentTriggersDisabled) {
+            this.#log(logLevelEnums.DEBUG, "initialize, Automatic content triggers are disabled: the SDK does not ask for the content triggers (jt), and the journey trigger events (jte) apply");
         }
         // functions, if provided, would be printed as true without revealing their content
         this.#log(logLevelEnums.DEBUG, "initialize, 'getViewName' callback override provided:[" + (this.getViewName !== Countly.getViewName) + "]");
@@ -1876,6 +1935,7 @@ class CountlyClass {
             }
             this.#toRequestQueue({ consent: JSON.stringify(consentMessage) });
             this.#log(logLevelEnums.DEBUG, "Consent update request has been sent to the queue.");
+            this.#handleJourneyTrigger(contentTriggerKeys.CONSENT);
         }, 1000);
     };
 
@@ -2051,6 +2111,8 @@ class CountlyClass {
         this.#fakeRequestHandler = undefined;
         this.#journeyTriggerInProgress = undefined;
         this.#journeyTriggerPending = undefined;
+        this.#contentTriggerGaps = {};
+        this.#contentTriggerChain = 0;
         this.#contentZoneWanted = undefined;
         this.#contentZoneExited = false;
         this.#journeyPendingEventIds = undefined;
@@ -2458,6 +2520,7 @@ class CountlyClass {
                     this.#toRequestQueue(req);
                     this.#renewPushTokenForSession();
                     this.#HealthCheck.sendInstantHCRequest();
+                    this.#handleJourneyTrigger(contentTriggerKeys.SESSION);
                 }
                 this.#setValueInStorage("cly_session", getTimestamp() + (this.#sessionCookieTimeout * 60));
                 return true;
@@ -3466,7 +3529,13 @@ class CountlyClass {
         this.#eventQueue.push(e);
         this.#saveEventQueue();
         this.#log(logLevelEnums.INFO, "With event ID: [" + e.id + "], successfully adding the last event:", e);
-        this.#handleJourneyTrigger(initialKey, e.id);
+        if (e.key !== internalEventKeyEnums.VIEW) {
+            this.#handleJourneyTrigger(initialKey, e.id);
+        }
+        // only the start of a view is a trigger, the event recorded when it ends carries its duration
+        else if (e.segmentation && e.segmentation.visit === 1) {
+            this.#handleJourneyTrigger(initialKey, e.id, e.segmentation.name);
+        }
     }
 
     /**
@@ -3576,31 +3645,185 @@ class CountlyClass {
     }
 
     /**
-     * Handle journey trigger event
-     * @param {String} eventKey - Event key to check for journey trigger
+     * Whether recording this makes the SDK ask for content right away, and how long the same trigger then waits before
+     * it can ask again. When the server sent content triggers ("jt"), only they decide, and only while the app wants
+     * the content zone: a view or user property they list by name is specific; a key they list is specific too, except
+     * any view, any user property change and any error, which can happen often. Otherwise (an older server, or
+     * disable_auto_content_triggers set) a key the journey trigger events ("jte") list, by the same rule
+     * @private
+     * @param {String} key - event key, or the content trigger key of what was recorded
+     * @param {String} [viewName] - name of the recorded view
+     * @param {Array<String>} [properties] - the user properties a user details request sends
+     * @returns {Object|null} { gapKeys, gapMs } when it is a content trigger: the triggers the gap is counted for, and
+     * the gap in milliseconds; null when it is not one
      */
-    #handleJourneyTrigger = (eventKey, eventId) => {
-        if (!Array.isArray(this.#SCJourneyTriggerEvents) || this.#SCJourneyTriggerEvents.length === 0) {
+    #contentTriggerMatch = (key, viewName, properties) => {
+        var triggers = this.#SCContentTriggers;
+        if (triggers) {
+            if (!this.#contentZoneWanted) {
+                return null;
+            }
+            if (key === internalEventKeyEnums.VIEW && typeof viewName === "string" && triggers.v.indexOf(viewName) !== -1) {
+                return { gapKeys: ["v:" + viewName], gapMs: contentTriggerGaps.SPECIFIC };
+            }
+            if (key === contentTriggerKeys.USER_PROPERTIES && Array.isArray(properties)) {
+                var listed = properties.filter((name) => triggers.p.indexOf(name) !== -1);
+                if (listed.length > 0) {
+                    return { gapKeys: listed.map((name) => "p:" + name), gapMs: contentTriggerGaps.SPECIFIC };
+                }
+            }
+            if (triggers.e.indexOf(key) === -1) {
+                return null;
+            }
+        }
+        else if (!Array.isArray(this.#SCJourneyTriggerEvents) || this.#SCJourneyTriggerEvents.indexOf(key) === -1) {
+            return null;
+        }
+        var nonSpecific = key === internalEventKeyEnums.VIEW || key === contentTriggerKeys.USER_PROPERTIES || key === contentTriggerKeys.CRASH;
+        return { gapKeys: [key], gapMs: nonSpecific ? contentTriggerGaps.NON_SPECIFIC : contentTriggerGaps.SPECIFIC };
+    };
+
+    /**
+     * Whether a matched content trigger may ask for content now. When it may, its time is kept, in storage so that the
+     * gap holds across the pages of a website and its tabs
+     * @private
+     * @param {Object} match - { gapKeys, gapMs } of the matched trigger
+     * @returns {Boolean} true when at least one of the triggers is outside its gap
+     */
+    #claimContentTriggerGap = (match) => {
+        var now = Date.now();
+        var stored = this.#getValueFromStorage("cly_ct_gaps");
+        var times = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : this.#contentTriggerGaps;
+        var inGap = (time, gapMs) => typeof time === "number" && now >= time && now - time < gapMs;
+        if (match.gapKeys.every((gapKey) => inGap(times[gapKey], match.gapMs))) {
+            return false;
+        }
+        var kept = {};
+        for (var gapKey in times) {
+            if (inGap(times[gapKey], contentTriggerGaps.NON_SPECIFIC)) {
+                kept[gapKey] = times[gapKey];
+            }
+        }
+        match.gapKeys.forEach((key) => {
+            kept[key] = now;
+        });
+        this.#contentTriggerGaps = kept;
+        this.#setValueInStorage("cly_ct_gaps", kept);
+        return true;
+    };
+
+    /**
+     * The user properties a user details request sends, as content triggers list them: a user detail ("email"), or
+     * "custom." and the key of a custom property
+     * @private
+     * @param {Object} details - the user details the request sends
+     * @returns {Array<String>} the property names
+     */
+    #sentUserProperties = (details) => {
+        var names = [];
+        for (var key in details) {
+            if (key === "custom") {
+                if (details.custom && typeof details.custom === "object") {
+                    for (var customKey in details.custom) {
+                        names.push("custom." + customKey);
+                    }
+                }
+            }
+            else if (typeof details[key] !== "undefined") {
+                names.push(key);
+            }
+        }
+        return names;
+    };
+
+    /**
+     * Keeps what was recorded before the first behavior settings answer of this page load arrived, when the settings in
+     * use did not list it, so that the answer can still make the SDK ask for the content it started
+     * @private
+     * @param {String} key - event key, or the content trigger key of what was recorded
+     * @param {String} [viewName] - name of the recorded view
+     * @param {Array<String>} [properties] - the user properties a user details request sent
+     */
+    #rememberEarlyContentTrigger = (key, viewName, properties) => {
+        if (this.#liveSettingsSettled || this.#earlyContentTriggers.length >= 50) {
             return;
         }
-        if (this.#SCJourneyTriggerEvents.indexOf(eventKey) === -1) {
+        var propertyList = Array.isArray(properties) ? properties.join(",") : "";
+        for (var i = 0; i < this.#earlyContentTriggers.length; i++) {
+            var early = this.#earlyContentTriggers[i];
+            if (early.key === key && early.viewName === viewName && (Array.isArray(early.properties) ? early.properties.join(",") : "") === propertyList) {
+                return;
+            }
+        }
+        this.#earlyContentTriggers.push({ key: key, viewName: viewName, properties: properties });
+    };
+
+    /**
+     * Ends the wait for the first behavior settings answer of this page load. When the answer arrived, what was recorded
+     * before it and is listed by its content triggers makes the SDK ask for content once
+     * @private
+     * @param {Boolean} answered - true when the answer arrived and was applied
+     */
+    #settleEarlyContentTriggers = (answered) => {
+        var early = this.#earlyContentTriggers;
+        this.#earlyContentTriggers = [];
+        if (this.#liveSettingsSettled) {
+            return;
+        }
+        this.#liveSettingsSettled = true;
+        if (!answered) {
+            return;
+        }
+        for (var i = 0; i < early.length; i++) {
+            if (this.#contentTriggerMatch(early[i].key, early[i].viewName, early[i].properties)) {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, [" + early[i].key + "] was recorded before the behavior settings arrived");
+                this.#handleJourneyTrigger(early[i].key, null, early[i].viewName, early[i].properties);
+                return;
+            }
+        }
+    };
+
+    /**
+     * Handle journey trigger event: when what was recorded is a content trigger outside its gap, sends what the SDK
+     * holds and asks for content. While a round of that is running, a new trigger only makes one more round follow it.
+     * A halted instance does neither, also for what is recorded through it until the next init
+     * @param {String} eventKey - Event key to check for journey trigger, or the content trigger key of what was recorded
+     * @param {String} [eventId] - ID of the recorded event
+     * @param {String} [viewName] - name of the recorded view
+     * @param {Array<String>} [properties] - the user properties a user details request sent
+     */
+    #handleJourneyTrigger = (eventKey, eventId, viewName, properties) => {
+        if (!isBrowser || this.#halted) {
+            return;
+        }
+        var match = this.#contentTriggerMatch(eventKey, viewName, properties);
+        if (!match) {
+            this.#rememberEarlyContentTrigger(eventKey, viewName, properties);
+            return;
+        }
+        if (this.#contentZoneExited || !this.check_consent(featureEnums.CONTENT)) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Matched [" + eventKey + "], but content can not be shown now, so it is not asked for");
+            return;
+        }
+        if (!this.#claimContentTriggerGap(match)) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, Matched [" + eventKey + "], but it asked for content less than " + (match.gapMs / 1000) + " seconds ago");
             return;
         }
 
         this.#log(logLevelEnums.DEBUG, "journeyTrigger, Matched journey trigger event: [" + eventKey + "]");
-        this.#processAsyncQueue();
-        this.#sendEventsForced();
         if (eventId) {
             this.#journeyPendingEventIds.add(eventId);
         }
-        
-        // If already processing, mark as pending to re-trigger after current processing completes
+
+        // the round that follows the running one sends what is recorded until then, so nothing is sent early here
         if (this.#journeyTriggerInProgress) {
             this.#log(logLevelEnums.DEBUG, "journeyTrigger, Already processing, marking as pending");
             this.#journeyTriggerPending = true;
             return;
         }
-        
+
+        this.#processAsyncQueue();
+        this.#sendEventsForced();
         this.#processJourneyTriggerQueueAndContent();
     }
 
@@ -3612,7 +3835,7 @@ class CountlyClass {
      * @returns {Promise<void>}
      */
     #processJourneyTriggerQueueAndContent = async () => {
-        if (this.#journeyTriggerInProgress) {
+        if (this.#journeyTriggerInProgress || this.#halted) {
             return;
         }
         this.#journeyTriggerInProgress = true;
@@ -3635,6 +3858,9 @@ class CountlyClass {
                 this.#journeyTriggerPending = false;
                 // Use setTimeout to avoid stack overflow and allow current call to complete
                 setTimeout(() => {
+                    if (this.#halted) {
+                        return;
+                    }
                     this.#processAsyncQueue();
                     this.#sendEventsForced();
                     this.#processJourneyTriggerQueueAndContent();
@@ -3700,6 +3926,12 @@ class CountlyClass {
                 await this.#delay(500);
             }
 
+            if (this.#requestQueue.length === 0) {
+                this.#log(logLevelEnums.DEBUG, "journeyTrigger, The regular sending delivered the queued requests meanwhile");
+                resolve(true);
+                return;
+            }
+
             if (!this.#readyToProcess || this.#isInBackoff || getTimestamp() <= this.#failTimeout) {
                 resolve(false);
                 return;
@@ -3747,10 +3979,19 @@ class CountlyClass {
      * @param {number} [attempt=0] - Current attempt number for retry logic
      * @param {number} [waits=0] - How many times the request already waited for the journey events
      */
-    #triggerJourneyContentRequestWithRetries = (attempt, waits) => {
+    #triggerJourneyContentRequestWithRetries = (attempt, waits, chain) => {
         var currentAttempt = attempt || 0;
         var currentWaits = waits || 0;
         var maxAttempts = 3;
+        if (this.#halted) {
+            return;
+        }
+        // one round asks at a time: a newer round's requests replace the retries of an older one
+        var currentChain = typeof chain === "number" ? chain : ++this.#contentTriggerChain;
+        if (currentChain !== this.#contentTriggerChain) {
+            this.#log(logLevelEnums.DEBUG, "journeyTrigger, A newer round asks for the content, so this one stops");
+            return;
+        }
 
         // Skip if content is already being displayed (iframe exists)
         if (typeof document !== "undefined" && document.getElementById(this.#contentIframeID)) {
@@ -3762,7 +4003,7 @@ class CountlyClass {
             if (currentWaits < maxAttempts) {
                 this.#log(logLevelEnums.DEBUG, "journeyTrigger, Pending journey events not yet confirmed sent. Deferring content refresh.");
                 setTimeout(() => {
-                    this.#triggerJourneyContentRequestWithRetries(currentAttempt, currentWaits + 1);
+                    this.#triggerJourneyContentRequestWithRetries(currentAttempt, currentWaits + 1, currentChain);
                 }, 300);
                 return;
             }
@@ -3774,7 +4015,7 @@ class CountlyClass {
         var handleResult = (success) => {
             if (!success && currentAttempt + 1 < maxAttempts) {
                 setTimeout(() => {
-                    this.#triggerJourneyContentRequestWithRetries(currentAttempt + 1, currentWaits);
+                    this.#triggerJourneyContentRequestWithRetries(currentAttempt + 1, currentWaits, currentChain);
                 }, 1000);
             }
         };
@@ -3959,7 +4200,9 @@ class CountlyClass {
             user.custom = truncateObject(user.custom, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "user_details", this.#log);
             var props = ["name", "username", "email", "organization", "phone", "picture", "gender", "byear", "custom"];
             this.userData.save(); // ensure user data (and events) is saved before sending user details
-            this.#toRequestQueue({ user_details: JSON.stringify(createNewObjectFromProperties(user, props)) });
+            var details = createNewObjectFromProperties(user, props);
+            this.#toRequestQueue({ user_details: JSON.stringify(details) });
+            this.#handleJourneyTrigger(contentTriggerKeys.USER_PROPERTIES, null, null, this.#sentUserProperties(details));
         }
     };
 
@@ -4193,8 +4436,10 @@ class CountlyClass {
                 return;
             }
             this.#log(logLevelEnums.INFO, "[userData] save, will send the following custom data to server: [" + JSON.stringify(this.#customData) + "]");
+            var sentProperties = this.#sentUserProperties({ custom: this.#customData });
             this.#toRequestQueue({ user_details: JSON.stringify({ custom: this.#customData }) });
             this.#customData = {};
+            this.#handleJourneyTrigger(contentTriggerKeys.USER_PROPERTIES, null, null, sentProperties);
         }
     };
 
@@ -6595,6 +6840,7 @@ class CountlyClass {
             req.crash = JSON.stringify(obj);
 
             this.#toRequestQueue(req);
+            this.#handleJourneyTrigger(contentTriggerKeys.CRASH);
         }
     };
 

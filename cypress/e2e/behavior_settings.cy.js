@@ -526,7 +526,7 @@ describe("Journey trigger behavior settings", () => {
         });
     });
 
-    it("multiple journey events trigger content request each time", () => {
+    it("journey events repeated within the gap ask for content once and leave the rest to the regular sending", () => {
         hp.haltAndClearStorage(() => {
             var fakeServer = hp.createFakeRequestHandler({
                 onRequest: function(req) {
@@ -558,20 +558,22 @@ describe("Journey trigger behavior settings", () => {
             cy.wait(4000).then(() => {
                 var requests = fakeServer.requests;
                 cy.log(requests);
-                // Expected: hc + sc + journey_event (with all 3 events separate) + 1 content = 6
-                expect(requests.length).to.equal(6);
+                // hc + sc + the first journey event sent right away + 1 content request; the same event again within
+                // its gap neither sends the queue nor asks, so the other two wait for the regular sending
+                expect(requests.length).to.equal(4);
                 const healthReq = requests.find((r) => r.functionName.includes("[healthCheck]"));
                 const sbsReq = requests.find((r) => r.functionName.includes("server_config"));
                 const journeyReq = requests.find((r) => r.functionName.includes("journey_trigger_send_request"));
                 const journeyReqs = requests.filter((r) => r.functionName.includes("journey_trigger_send_request"));
-                expect(journeyReqs.length).to.equal(3);
+                expect(journeyReqs.length).to.equal(1);
                 const contentReqs = requests.filter((r) => r.functionName.includes("sendContentRequest"));
                 expect(healthReq).to.exist;
                 expect(sbsReq).to.exist;
                 expect(journeyReq).to.exist;
-                expect(contentReqs.length).to.equal(1); // only 1 content request despite 3 journey events
+                expect(contentReqs.length).to.equal(1);
                 // Verify content request comes after journey request
                 expect(requests.indexOf(contentReqs[0])).to.be.greaterThan(requests.indexOf(journeyReq));
+                expect(Countly._internals.getLocalQueues().eventQ.length, "the repeated events wait for the regular sending").to.equal(2);
             });
         });
     });

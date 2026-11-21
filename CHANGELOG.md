@@ -1,5 +1,7 @@
 ## XX.XX.XX
 
+* ! Minor Breaking Change ! With a server that sends content triggers (`jt`) and the content zone in use, the SDK now sends its queue right away and asks for content when it records a listed trigger, so requests go out at those moments instead of in the next batch. One such round runs at a time: a trigger recorded while one runs is sent with the next round, and a newer round's content requests replace the retries of an older one. The same trigger does this again only after a gap: 60 seconds for one that can happen often (any view, any user property change, any error), 10 seconds for a listed event, view name or user property. The gap is kept in storage (`cly_ct_gaps`), so it holds across the pages of a website. This applies to the journey trigger events (`jte`) too. `disable_auto_content_triggers` turns the content triggers off. Once the server sends content triggers, the journey trigger events (`jte`) are ignored. Journey trigger events no longer send the queue early when content can't be shown (without the content consent, or after `exitContentZone`), and the end of a view no longer counts as a view trigger.
+
 * Added SDK method usage and log codes to the health check.
 * Added `change_server_url` to change the server URL after init.
 * Added `change_app_key` to change the app key after init.
@@ -8,10 +10,14 @@
 * Added `remove_different_app_keys_from_queue` to drop queued requests with another app key.
 * Added `enable_request_compression` init option. Request bodies between 1 KB and 1 MB are then sent gzip-compressed, once the server's SDK behavior settings answer says it reads them. Browsers without `CompressionStream` keep sending plain bodies.
 * Added `log_listener` init option, a function that receives every log message of the SDK and its level ("error", "warning", "info", "debug" or "verbose"), also while `debug` is off. It is called inside the SDK's own calls, so it should return quickly and must not call the SDK.
+* Added support for content triggers (`jt`), which the SDK asks for in its behavior settings request (`jt=1`) and the server fills from the app's journeys and campaigns, also while behavior settings are off: while the app is in the content zone (`enterContentZone` or the `ecz` setting), when the SDK records a listed event, the start of a view with a listed name, a new session, a listed user property or any user property change (as the server lists them), an error or a consent change, it sends what it holds right away and asks for content, without waiting for the content zone timer.
+* Added `disable_auto_content_triggers` init option, which stops the SDK from asking for the content triggers (`jt`) and ignores them (default `false`). The journey trigger events (`jte`) then apply.
 * Improved internal logging.
 * Improved health check send count. It is now sent once per visit, when a new session begins, and once per page load only on pages that track no session.
 
 * Mitigated an issue where health check counters restarted even when it was not delivered, and what was counted while it was on its way was lost when it was.
+* Mitigated an issue where a journey trigger event (`jte`) recorded while another request was on its way did not ask for content until the content zone timer, when the regular sending delivered the event first.
+* Mitigated an issue where, after `halt`, recording an event listed in the journey trigger events (`jte`) threw an error until the SDK was initialized again.
 
 ## 26.8.1
 
