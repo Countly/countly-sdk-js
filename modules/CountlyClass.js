@@ -3760,14 +3760,15 @@ class CountlyClass {
 
     /**
      * Handle journey trigger event: when what was recorded is a content trigger outside its gap, sends what the SDK
-     * holds and asks for content. While a round of that is running, a new trigger only makes one more round follow it
+     * holds and asks for content. While a round of that is running, a new trigger only makes one more round follow it.
+     * A halted instance does neither, also for what is recorded through it until the next init
      * @param {String} eventKey - Event key to check for journey trigger, or the content trigger key of what was recorded
      * @param {String} [eventId] - ID of the recorded event
      * @param {String} [viewName] - name of the recorded view
      * @param {Array<String>} [properties] - the user properties a user details request sent
      */
     #handleJourneyTrigger = (eventKey, eventId, viewName, properties) => {
-        if (!isBrowser) {
+        if (!isBrowser || this.#halted) {
             return;
         }
         var match = this.#contentTriggerMatch(eventKey, viewName, properties);
@@ -3809,7 +3810,7 @@ class CountlyClass {
      * @returns {Promise<void>}
      */
     #processJourneyTriggerQueueAndContent = async () => {
-        if (this.#journeyTriggerInProgress) {
+        if (this.#journeyTriggerInProgress || this.#halted) {
             return;
         }
         this.#journeyTriggerInProgress = true;
@@ -3832,6 +3833,9 @@ class CountlyClass {
                 this.#journeyTriggerPending = false;
                 // Use setTimeout to avoid stack overflow and allow current call to complete
                 setTimeout(() => {
+                    if (this.#halted) {
+                        return;
+                    }
                     this.#processAsyncQueue();
                     this.#sendEventsForced();
                     this.#processJourneyTriggerQueueAndContent();
@@ -3954,6 +3958,9 @@ class CountlyClass {
         var currentAttempt = attempt || 0;
         var currentWaits = waits || 0;
         var maxAttempts = 3;
+        if (this.#halted) {
+            return;
+        }
         // one round asks at a time: a newer round's requests replace the retries of an older one
         var currentChain = typeof chain === "number" ? chain : ++this.#contentTriggerChain;
         if (currentChain !== this.#contentTriggerChain) {
