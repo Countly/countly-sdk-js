@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -42,6 +42,7 @@ import {
     hideLoader,
     getUserAgentClientHints,
     calculateChecksum,
+    gzipRequestBody,
     base64ToBytes,
     parseUrlParts
 } from "./Utils.js";
@@ -176,6 +177,9 @@ class CountlyClass {
     #initContentSent;
     #initTimestamp;
     #isSCDisabled;
+    #requestCompressionEnabled;
+    #gzipAcceptingUrl;
+    #requestCompressionBlocked;
     #connectionTestRunning = false;
     #standingInForAnotherUser = false;
     #lastRequestDuration;
@@ -356,6 +360,9 @@ class CountlyClass {
         this.serialize = getConfig("serialize", ob, Countly.serialize);
         this.deserialize = getConfig("deserialize", ob, Countly.deserialize);
         this.#isSCDisabled = getConfig("disable_sdk_behavior_settings_updates", ob, false);
+        this.#requestCompressionEnabled = getConfig("enable_request_compression", ob, false) === true;
+        this.#gzipAcceptingUrl = null;
+        this.#requestCompressionBlocked = false;
         this.#backOffLogShown = false;
         this.#testModeTime = getConfig("test_mode_time", ob, 0); 
         try {
@@ -535,6 +542,9 @@ class CountlyClass {
         params.dow = date.getDay();
         params.av = this.app_version;
         params.method = "sc";
+        if (this.#requestCompressionEnabled) {
+            params.gzip = 1;
+        }
         if (!this.#autoContentTriggersDisabled) {
             params.jt = 1;
         }
@@ -560,6 +570,18 @@ class CountlyClass {
                 var armed = !!(config && config.ct);
                 if (config && typeof config.ct !== "undefined") {
                     delete config.ct;
+                }
+                var gzipAccepted = !!(config && config.gzip === true);
+                if (config && typeof config.gzip !== "undefined") {
+                    delete config.gzip;
+                }
+                if (this.#requestCompressionEnabled) {
+                    this.#gzipAcceptingUrl = gzipAccepted ? sentUrl : null;
+                    if (gzipAccepted && this.#requestCompressionBlocked) {
+                        this.#requestCompressionBlocked = false;
+                        this.#log(logLevelEnums.INFO, "server_config, A behavior settings answer says that the server reads compressed bodies, requests are compressed again");
+                    }
+                    this.#log(logLevelEnums.DEBUG, "server_config, The server " + (gzipAccepted ? "reads" : "does not say it reads") + " compressed request bodies");
                 }
                 if (config) {
                     this.#populateServerConfig(config);
@@ -2049,6 +2071,9 @@ class CountlyClass {
         this.ip_address = undefined;
         this.ignore_bots = undefined;
         this.force_post = undefined;
+        this.#requestCompressionEnabled = false;
+        this.#gzipAcceptingUrl = null;
+        this.#requestCompressionBlocked = false;
         this.rcAutoOptinAb = undefined;
         this.useExplicitRcApi = undefined;
         this.remote_config = undefined;
@@ -9134,6 +9159,40 @@ class CountlyClass {
     })
 
     /**
+     *  Compresses a request body when request compression is on, the current server said it reads gzip, no compressed
+     *  request was refused since that answer, and the request URL has no query: the compression marker has to be the
+     *  only query of the URL
+     *  @memberof Countly._internals
+     *  @param {String} body - url encoded request body, checksum included
+     *  @param {String} url - URL the request goes to, before the marker is added
+     *  @returns {Promise<Uint8Array|null>} the gzip bytes, or null when the body goes plain
+     */
+    #compressRequestBody = (body, url) => {
+        if (!this.#requestCompressionEnabled || this.#requestCompressionBlocked || this.#gzipAcceptingUrl === null || this.#gzipAcceptingUrl !== this.url || url.indexOf("?") !== -1) {
+            return Promise.resolve(null);
+        }
+        return gzipRequestBody(body).then((compressed) => {
+            if (compressed) {
+                this.#log(logLevelEnums.DEBUG, "The request body is sent gzip-compressed, [" + body.length + "] -> [" + compressed.length + "] bytes");
+            }
+            return compressed;
+        });
+    }
+
+    /**
+     *  Stops request compression after the server or something in front of it answered a compressed request without
+     *  accepting it, until the next behavior settings answer says that the server reads compressed bodies, or the SDK
+     *  starts again
+     *  @memberof Countly._internals
+     */
+    #blockRequestCompression = () => {
+        if (!this.#requestCompressionBlocked) {
+            this.#requestCompressionBlocked = true;
+            this.#log(logLevelEnums.INFO, "A compressed request was refused, requests are sent uncompressed until a behavior settings answer says that the server reads compressed bodies, or the SDK starts again");
+        }
+    }
+
+    /**
      *  Making xml HTTP request
      *  @memberof Countly._internals
      *  @param {String} functionName - Name of the function making the request for more detailed logging
@@ -9177,6 +9236,8 @@ class CountlyClass {
                 paramSource = filtered;
             }
             (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
+                return (isImage ? Promise.resolve(null) : this.#compressRequestBody(saltedData, url)).then(compressedBody => [saltedData, compressedBody]);
+            }).then(([saltedData, compressedBody]) => {
                 var method = "POST";
                 if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
@@ -9188,7 +9249,7 @@ class CountlyClass {
                     xhr.open("GET", url + "?" + saltedData, true);
                 }
                 else {
-                    xhr.open("POST", url, true);
+                    xhr.open("POST", compressedBody ? url + "?" + requestCompressionValues.URL_MARKER : url, true);
                     xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
                 }
                 try {
@@ -9237,6 +9298,9 @@ class CountlyClass {
                         }
                         else {
                             this.#log(logLevelEnums.DEBUG, functionName + " Invalid response from server");
+                            if (compressedBody && xhr.status !== 0) {
+                                this.#blockRequestCompression();
+                            }
                             answer(true, params, xhr.status, xhr.responseText);
                         }
                     }
@@ -9253,7 +9317,7 @@ class CountlyClass {
                     xhr.send();
                 }
                 else {
-                    xhr.send(saltedData);
+                    xhr.send(compressedBody || saltedData);
                 }
             }).catch((err) => this.#forRequest(params, () => {
                 this.#log(logLevelEnums.ERROR, functionName + " Could not make the XML HTTP request: " + err);
@@ -9343,12 +9407,18 @@ class CountlyClass {
                 paramSource = filtered;
             }
             (isImage ? prepareFormFields(paramSource, this.salt) : prepareParams(paramSource, this.salt)).then(saltedData => {
+                var willPost = !isImage && (this.force_post || saltedData.length >= 2000);
+                return (willPost ? this.#compressRequestBody(saltedData, url) : Promise.resolve(null)).then(compressedBody => [saltedData, compressedBody]);
+            }).then(([saltedData, compressedBody]) => {
                 if (isImage) {
                     method = "POST";
                 }
                 else if (this.force_post || saltedData.length >= 2000) {
                     method = "POST";
-                    body = saltedData;
+                    body = compressedBody || saltedData;
+                    if (compressedBody) {
+                        url += "?" + requestCompressionValues.URL_MARKER;
+                    }
                 }
                 else {
                     url += "?" + saltedData;
@@ -9418,6 +9488,9 @@ class CountlyClass {
                     }
                     else {
                         this.#log(logLevelEnums.DEBUG, functionName + " Invalid response from server");
+                        if (compressedBody) {
+                            this.#blockRequestCompression();
+                        }
                         if (typeof callback === "function") {
                             callback(true, params, response.status, data);
                         }

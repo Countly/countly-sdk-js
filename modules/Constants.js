@@ -238,6 +238,16 @@ var configurationDefaultValues = {
 };
 
 /**
+ * Request compression: bodies of at least MIN_BYTES and at most MAX_BYTES are sent gzip-compressed, with URL_MARKER as
+ * the URL query. The server refuses a compressed body that is larger than MAX_BYTES once decoded.
+ */
+var requestCompressionValues = {
+    MIN_BYTES: 1024,
+    MAX_BYTES: 1048576,
+    URL_MARKER: "content_encoding=gzip",
+};
+
+/**
  * how long tabs of a site wait for each other around a device ID or profile change, in milliseconds
  */
 var tabHandoverTimes = {
@@ -367,4 +377,4 @@ var contentReservedSegmentationPrefix = "answ";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE };
