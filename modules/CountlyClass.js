@@ -130,6 +130,10 @@ class CountlyClass {
     #contentIframeID;
     #crashFilterCallback;
     #logListener = null;
+    #initialConsents = [];
+    #giveAllConsents = false;
+    #initialConsentsGiven = false;
+    #replayTime = null;
     #serverConfigCache;
     #SCNetwork;
     #SCSizeReqQueue;
@@ -317,6 +321,8 @@ class CountlyClass {
         this.#SCEnableContent = false;
         this.#SCEnableRefreshContentZone = true;    
         this.#SCEnableConsentRequired = getConfig("require_consent", ob, false);
+        this.#initialConsents = getConfig("consents", ob, []);
+        this.#giveAllConsents = getConfig("give_all_consents", ob, false) === true;
         this.#SCLimitKeyLength = getConfig("max_key_length", ob, configurationDefaultValues.MAX_KEY_LENGTH);
         this.#SCLimitValueSize = getConfig("max_value_size", ob, configurationDefaultValues.MAX_VALUE_SIZE);
         this.#SCLimitSegmentationValues = getConfig("max_segmentation_values", ob, configurationDefaultValues.MAX_SEGMENTATION_VALUES);
@@ -422,11 +428,30 @@ class CountlyClass {
                 }
             });
         }
+        this.#giveInitialConsents();
         if (this.#SCEnableContent) {
             this.#enterContentZoneInternal();
             this.#initContentSent = true;
         }
         this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
+    };
+
+    /**
+     * Gives the consent of the consents and give_all_consents init options, once consent is required: at init, or when
+     * the server's behavior settings start requiring it later. While consent is not required they have no effect.
+     */
+    #giveInitialConsents = () => {
+        var features = this.#giveAllConsents ? Countly.features : this.#initialConsents;
+        if (this.#initialConsentsGiven || !features || !features.length) {
+            return;
+        }
+        if (!this.#SCEnableConsentRequired) {
+            this.#log(logLevelEnums.INFO, "initialize, Consent is not required, so the consent of the init options has no effect for now");
+            return;
+        }
+        this.#initialConsentsGiven = true;
+        this.#log(logLevelEnums.INFO, "initialize, Giving the consent of the init options for [" + features + "]");
+        this.#addConsent(features);
     };
 
     /**
@@ -692,6 +717,7 @@ class CountlyClass {
         if (cache.hasOwnProperty("cr")) {
             this.#SCEnableConsentRequired = cache.cr;
             this.#releaseHeldLogLines();
+            this.#giveInitialConsents();
         }
         if (cache.hasOwnProperty("st")) {
             this.#SCTrackingSession = cache.st;
@@ -2269,17 +2295,29 @@ class CountlyClass {
     * @param {string|array} feature - name of the feature, possible values, "sessions","events","views","scrolls","clicks","forms","crashes","attribution","users", etc or custom provided through {@link Countly.group_features}
     */
     add_consent = (feature) => {
+        this.#addConsent(feature);
+        if (Countly.q.length > 0) {
+            this.#processAsyncQueue();
+        }
+    };
+
+    /**
+     * Gives consent for a feature or group and the features in it; the calls waiting in Countly.q run after it, so that
+     * the calls made before init get the consent an app gives right after init
+     * @param {string|array} feature - name of the feature, or an array of them
+     */
+    #addConsent = (feature) => {
         this.#log(logLevelEnums.INFO, "add_consent, Adding consent for [" + feature + "]");
         if (Array.isArray(feature)) {
             for (var i = 0; i < feature.length; i++) {
-                this.add_consent(feature[i]);
+                this.#addConsent(feature[i]);
             }
         }
         else if (this.#consents[feature]) {
             if (this.#consents[feature].features) {
                 this.#consents[feature].optin = true;
                 // this is added group, let's iterate through sub features
-                this.add_consent(this.#consents[feature].features);
+                this.#addConsent(this.#consents[feature].features);
             }
             else {
                 // this is core feature
@@ -3508,8 +3546,9 @@ class CountlyClass {
         event.segmentation = truncateObject(event.segmentation, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "add_cly_event", this.#log);
         var props = ["key", "count", "sum", "dur", "segmentation"];
         var e = createNewObjectFromProperties(event, props);
-        e.timestamp = timestampOverride || getMsTimestamp();
-        var date = timestampOverride ? new Date(timestampOverride) : new Date();
+        var eventTime = timestampOverride || this.#replayTime;
+        e.timestamp = eventTime || getMsTimestamp();
+        var date = eventTime ? new Date(eventTime) : new Date();
         e.hour = date.getHours();
         e.dow = date.getDay();
         e.id = eventIdOverride || secureRandom();
@@ -4055,7 +4094,7 @@ class CountlyClass {
             this.#HealthCheck.recordLogCode("w722", "events");
             return;
         }
-        this.#timedEvents[key] = getTimestamp();
+        this.#timedEvents[key] = this.#callTime();
     };
 
     /**
@@ -4110,7 +4149,7 @@ class CountlyClass {
             this.#HealthCheck.recordLogCode("w720", "events");
             return;
         }
-        event.dur = getTimestamp() - this.#timedEvents[event.key];
+        event.dur = this.#callTime() - this.#timedEvents[event.key];
         this.#addEvent(event);
         delete this.#timedEvents[event.key];
     };
@@ -5031,7 +5070,7 @@ class CountlyClass {
                 segmentation: segments
             }, this.#currentViewId);
             this.#lastView = page;
-            this.#lastViewTime = getTimestamp();
+            this.#lastViewTime = this.#callTime();
             this.#lastViewStoredDuration = 0;
             this.#log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + this.#lastView + "]");
         }
@@ -8372,6 +8411,13 @@ class CountlyClass {
     }
 
     /**
+     * The time of the call the SDK is running, in seconds: the time it was made for a call that waited in Countly.q before
+     * init, otherwise now
+     * @returns {number} seconds since epoch
+     */
+    #callTime = () => (this.#replayTime ? Math.floor(this.#replayTime / 1000) : getTimestamp());
+
+    /**
      * Process queued calls
      * @memberof Countly._internals
      */
@@ -8393,7 +8439,13 @@ class CountlyClass {
             this.#log(logLevelEnums.DEBUG, "Processing queued calls:" + req);
             try {
                 if (typeof req === "function") {
-                    req();
+                    this.#replayTime = typeof req.clyCalledAt === "number" ? req.clyCalledAt : null;
+                    try {
+                        req();
+                    }
+                    finally {
+                        this.#replayTime = null;
+                    }
                 }
                 else if (Array.isArray(req) && req.length > 0) {
                     var inst = this;

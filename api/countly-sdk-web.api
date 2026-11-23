@@ -118,6 +118,7 @@ user_details
 "countly-sdk-web".Countly.InitConfig.behavior_settings: behavior_settings?: Record<string, unknown>;
 "countly-sdk-web".Countly.InitConfig.city: city?: string | null;
 "countly-sdk-web".Countly.InitConfig.clear_stored_id: clear_stored_id?: boolean;
+"countly-sdk-web".Countly.InitConfig.consents: consents?: string[];
 "countly-sdk-web".Countly.InitConfig.content_theme: content_theme?: "light" | "dark" | null;
 "countly-sdk-web".Countly.InitConfig.content_whitelist: content_whitelist?: string[];
 "countly-sdk-web".Countly.InitConfig.content_zone_timer_interval: content_zone_timer_interval?: number;
@@ -138,6 +139,7 @@ user_details
 "countly-sdk-web".Countly.InitConfig.getSearchQuery: getSearchQuery?: () => string;
 "countly-sdk-web".Countly.InitConfig.getViewName: getViewName?: () => string;
 "countly-sdk-web".Countly.InitConfig.getViewUrl: getViewUrl?: () => string;
+"countly-sdk-web".Countly.InitConfig.give_all_consents: give_all_consents?: boolean;
 "countly-sdk-web".Countly.InitConfig.global_content_segmentation: global_content_segmentation?: Record<string, unknown> | null;
 "countly-sdk-web".Countly.InitConfig.headers: headers?: Record<string, string>;
 "countly-sdk-web".Countly.InitConfig.heatmap_whitelist: heatmap_whitelist?: string[];

@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import ts from "typescript";
 import { addToJobSummary, apiDifference, apiReport, differenceReport, publicFunctions as functionsOf } from "../../scripts/api-report.mjs";
+import { preInitQueuedFunctions, preInitValueFunctions } from "../../modules/Constants.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const typesPath = join(root, "types", "countly-sdk-web.d.ts");
@@ -205,6 +206,18 @@ test("every public function a site can queue is stubbed by the quick loader, or 
     const sdk = await publicFunctions();
     assert.deepEqual(minus(minus(sdk, loaderStubs()), NOT_QUEUED), [], "add these to " + loaderPath + ", or to NOT_QUEUED with the reason");
     assert.deepEqual(minus(NOT_QUEUED, sdk), [], "listed in NOT_QUEUED, but no longer in the SDK");
+});
+
+test("every public function of the SDK exists before init: queued, answered, or left out on purpose", async() => {
+    const sdk = await publicFunctions();
+    const beforeInit = preInitQueuedFunctions.concat(Object.keys(preInitValueFunctions));
+    const staticOnes = ["init", "getViewName", "getViewUrl", "getSearchQuery"];
+    assert.deepEqual(minus(minus(minus(sdk, beforeInit), INTERNAL), staticOnes), [], "add these to preInitQueuedFunctions or preInitValueFunctions in modules/Constants.js");
+    assert.deepEqual(minus(beforeInit, sdk), [], "listed for before init, but no longer in the SDK");
+});
+
+test("every name the quick loader stubs is queued before init by the SDK too, or belongs to a plugin", () => {
+    assert.deepEqual(minus(minus(loaderStubs(), preInitQueuedFunctions), FROM_PLUGINS), []);
 });
 
 test("the public API is the one api/countly-sdk-web.api records", async() => {
