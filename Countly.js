@@ -181,6 +181,9 @@ Countly.getViewUrl = function () {
     }
     return window.location.pathname;
 };
+// automatic view tracking tells these defaults from an app's own functions, which win over automatic_view_tracking_mode
+Object.defineProperty(Countly.getViewName, "clyDefault", { value: true });
+Object.defineProperty(Countly.getViewUrl, "clyDefault", { value: true });
 
 /**
 * Overwrite a way to get search query

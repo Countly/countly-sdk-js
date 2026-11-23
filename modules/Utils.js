@@ -500,6 +500,44 @@ function add_event_listener(element, type, listener) {
 };
 
 /**
+ * Name of the event the SDK dispatches on window after history.pushState and history.replaceState ran, the calls
+ * single-page apps use to move to another page without loading one
+ * @memberof Countly._internals
+ */
+var locationChangeEvent = "cly_locationchange";
+
+/**
+ * Makes history.pushState and history.replaceState dispatch locationChangeEvent on window after they ran, once per
+ * page. The browser fires no event of its own for these calls: popstate is only for the back and forward buttons.
+ * @memberof Countly._internals
+ */
+function watchHistory() {
+    if (!isBrowser || !window.history || window.history.__clyWatched) {
+        return;
+    }
+    ["pushState", "replaceState"].forEach(function (name) {
+        var original = window.history[name];
+        if (typeof original !== "function") {
+            return;
+        }
+        window.history[name] = function () {
+            var result = original.apply(this, arguments);
+            var event;
+            if (typeof Event === "function") {
+                event = new Event(locationChangeEvent);
+            }
+            else {
+                event = document.createEvent("Event");
+                event.initEvent(locationChangeEvent, false, false);
+            }
+            window.dispatchEvent(event);
+            return result;
+        };
+    });
+    Object.defineProperty(window.history, "__clyWatched", { value: true });
+}
+
+/**
  *  Stop listening to an event added with add_event_listener
  *  @memberof Countly._internals
  *  @param {HTMLElement} element - HTML element the listener was added to
@@ -1199,6 +1237,8 @@ export {
     sdkClearInterval,
     add_event_listener,
     remove_event_listener,
+    locationChangeEvent,
+    watchHistory,
     get_event_target,
     currentUserAgentString,
     userAgentDeviceDetection,
