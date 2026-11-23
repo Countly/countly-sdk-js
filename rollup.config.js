@@ -43,6 +43,25 @@ export default [
                 // plugins : ["istanbul"] // use for code coverage
             }),
         ],
+    },
+    {
+        input: "./loader.js",
+        external: ["countly-sdk-web"],
+        output: {
+            file: "dist/countly_loader.js",
+            format: "esm",
+            sourcemap: true,
+        },
+        plugins: [
+            resolve({
+                preferBuiltins: true,
+            }),
+            babel({
+                babelrc: false,
+                presets: ["@babel/preset-env"],
+                babelHelpers: "bundled",
+            }),
+        ],
     }
 
 ];

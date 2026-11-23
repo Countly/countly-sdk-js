@@ -1,0 +1,32 @@
+<!-- Used in loader tests: a page that imports the loader, calls the SDK before init and starts it a moment later, which
+     loads the SDK file. The import map resolves countly-sdk-web to the SDK, as a bundler resolves the package -->
+<html>
+<head>
+  <script type="importmap">{ "imports": { "countly-sdk-web": "../../Countly.js" } }</script>
+  <script type='module'>
+    import Countly from '../../loader.js';
+
+    var sdkLoaded = function () {
+      return performance.getEntriesByType("resource").some(function (entry) {
+        return /\/countly\.js$/i.test(entry.name);
+      });
+    };
+    window.localStorage.clear();
+    window.beforeInit = { addEvent: typeof Countly.add_event, deviceId: Countly.get_device_id(), sdkLoaded: sdkLoaded() };
+    window.calledAt = Date.now();
+    Countly.add_event({ key: "early", count: 1 });
+    setTimeout(function () {
+      window.sdkLoadedBeforeInit = sdkLoaded();
+      window.initAt = Date.now();
+      Countly.init({ app_key: "LOADER_APP_KEY", url: "https://your.domain.count.ly", debug: true, test_mode: true });
+      Countly.add_event({ key: "after_init", count: 1 });
+      setTimeout(function () {
+        window.afterLoad = { sdkLoaded: sdkLoaded(), sameObject: Countly === window.Countly, deviceId: typeof Countly.get_device_id() };
+      }, 1000);
+    }, 300);
+  </script>
+</head>
+<body>
+  <h1>Loader</h1>
+</body>
+</html>
