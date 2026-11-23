@@ -1,0 +1,29 @@
+<!-- Used in initial consent tests: the consents init option is given while consent is not required, and the server's
+     behavior settings answer cr (consent required) from window.serverCr -->
+<html>
+<head>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    window.serverCr = false;
+    window.localStorage.clear();
+    Countly.init({
+      app_key: "INITIAL_CONSENT_APP_KEY",
+      url: "https://your.domain.count.ly",
+      debug: true,
+      test_mode_eq: true,
+      consents: ["events"],
+      fake_request_handler: function (req) {
+        if (req.functionName === "server_config") {
+          return { status: 200, responseText: JSON.stringify({ v: 2, t: Date.now(), c: { cr: window.serverCr } }) };
+        }
+        return { status: 200, responseText: "{\"result\":\"Success\"}" };
+      }
+    });
+    window.Countly = Countly;
+  </script>
+</head>
+<body>
+  <h1>Initial consent and the server's consent requirement</h1>
+</body>
+</html>

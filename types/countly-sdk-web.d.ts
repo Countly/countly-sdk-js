@@ -36,6 +36,13 @@ declare module "countly-sdk-web" {
 
       /** Records nothing until consent is given with add_consent. (default: false) */
       require_consent?: boolean;
+      /**
+       * Gives consent for these features at init while consent is required, or once the server's behavior settings start
+       * requiring it; the features not listed start without it. The SDK does not store consent, so give it on every page load. (default: [])
+       */
+      consents?: string[];
+      /** Gives consent for every feature at init while consent is required, as consents does for a list. (default: false) */
+      give_all_consents?: boolean;
       /** Records nothing for this visitor. (default: false) */
       ignore_visitor?: boolean;
       /** Records nothing for known bots and crawlers. (default: true) */
@@ -187,7 +194,8 @@ declare module "countly-sdk-web" {
     }
 
     /**
-     * Initializes the SDK and exposes it to the window object.
+     * Initializes the SDK and exposes it to the window object. In a page or a web worker, the calls made before it wait
+     * and run once it is done.
      * @param {InitConfig} config - the options; only app_key and url are required. For more about them, see
      * https://support.count.ly/hc/en-us/articles/360037441932-Web-analytics-JavaScript#h_01HABTQ439HZN7Y6A6F07Y6G0K
      */
