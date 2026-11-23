@@ -1,0 +1,56 @@
+<!-- Used in zone.js tests: a stand-in for zone.js, which Angular loads. It keeps the browser's own timer and listener
+     functions under the names Zone.__symbol__ gives and counts the calls that reach the patched ones and the originals -->
+<html>
+<head>
+  <script>
+    window.zoned = { timers: 0, listeners: [] };
+    window.zoneFree = { timers: 0, listeners: [] };
+    var nativeSetTimeout = window.setTimeout;
+    var nativeSetInterval = window.setInterval;
+    var nativeAddEventListener = EventTarget.prototype.addEventListener;
+    window.Zone = { __symbol__: function (name) { return "__zone_symbol__" + name; } };
+    window.__zone_symbol__setTimeout = function () {
+      window.zoneFree.timers++;
+      return nativeSetTimeout.apply(window, arguments);
+    };
+    window.__zone_symbol__setInterval = function () {
+      window.zoneFree.timers++;
+      return nativeSetInterval.apply(window, arguments);
+    };
+    window.setTimeout = function () {
+      window.zoned.timers++;
+      return nativeSetTimeout.apply(window, arguments);
+    };
+    window.setInterval = function () {
+      window.zoned.timers++;
+      return nativeSetInterval.apply(window, arguments);
+    };
+    EventTarget.prototype.__zone_symbol__addEventListener = function (type) {
+      window.zoneFree.listeners.push(type);
+      return nativeAddEventListener.apply(this, arguments);
+    };
+    EventTarget.prototype.addEventListener = function (type) {
+      window.zoned.listeners.push(type);
+      return nativeAddEventListener.apply(this, arguments);
+    };
+  </script>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    window.localStorage.clear();
+    window.zoned.listeners.length = 0;
+    Countly.init({
+      app_key: "ZONE_FREE_APP_KEY",
+      url: "https://your.domain.count.ly",
+      debug: true,
+      test_mode: true
+    });
+    Countly.track_sessions();
+    Countly.track_scrolls();
+    Countly.track_clicks();
+  </script>
+</head>
+<body>
+  <h1>zone.js</h1>
+</body>
+</html>

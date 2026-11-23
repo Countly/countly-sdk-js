@@ -24,7 +24,12 @@ import {
     truncateObject,
     truncateSingleValue,
     get_closest_element,
+    sdkSetTimeout,
+    sdkClearTimeout,
+    sdkSetInterval,
+    sdkClearInterval,
     add_event_listener,
+    remove_event_listener,
     get_event_target,
     currentUserAgentString,
     currentUserAgentDataString,
@@ -389,7 +394,7 @@ class CountlyClass {
         // start SDK
         this.#notifyLoaders();
 
-        setTimeout(() => {
+        sdkSetTimeout(() => {
             if (!Countly.noHeartBeat) {
                 this.#heartBeat();
             } else {
@@ -449,7 +454,7 @@ class CountlyClass {
         this.#pendingRequestBuffer = []; // enable request buffering until hints resolve
 
         // Safety timeout: flush buffer even if hints never resolve (e.g. API blocked)
-        this.#clientHintsBufferTimeoutId = setTimeout(() => {
+        this.#clientHintsBufferTimeoutId = sdkSetTimeout(() => {
             if (this.#pendingRequestBuffer !== null) {
                 this.#log(logLevelEnums.WARNING, "ua_logic, client hints resolution timed out after 1s, flushing pending requests with available metrics");
                 this.#flushPendingRequestBuffer();
@@ -485,7 +490,7 @@ class CountlyClass {
     #flushPendingRequestBuffer = () => {
         // Clear safety timeout
         if (this.#clientHintsBufferTimeoutId) {
-            clearTimeout(this.#clientHintsBufferTimeoutId);
+            sdkClearTimeout(this.#clientHintsBufferTimeoutId);
             this.#clientHintsBufferTimeoutId = null;
         }
 
@@ -601,8 +606,8 @@ class CountlyClass {
                 this.#settleEarlyContentTriggers(false);
             }
         }, true, true);
-        clearTimeout(this.#serverConfigTimer);
-        this.#serverConfigTimer = setTimeout(() => {
+        sdkClearTimeout(this.#serverConfigTimer);
+        this.#serverConfigTimer = sdkSetTimeout(() => {
             this.#getAndSetServerConfig();
         }, this.#SCInterval * 60 * 60 * 1000);
     }
@@ -1363,7 +1368,7 @@ class CountlyClass {
             this.#log(logLevelEnums.ERROR, "initPushMessageListener, Failed to register service worker message listener: " + e);
         }
 
-        setTimeout(() => {
+        sdkSetTimeout(() => {
             this.#autoRegisterPush();
         }, 1);
     };
@@ -1920,10 +1925,10 @@ class CountlyClass {
     #updateConsent = () => {
         if (this.#consentTimer) {
             // delay syncing consents
-            clearTimeout(this.#consentTimer);
+            sdkClearTimeout(this.#consentTimer);
             this.#consentTimer = null;
         }
-        this.#consentTimer = setTimeout(() => {
+        this.#consentTimer = sdkSetTimeout(() => {
             var consentMessage = {};
             for (var i = 0; i < Countly.features.length; i++) {
                 if (this.#consents[Countly.features[i]].optin === true) {
@@ -1977,8 +1982,8 @@ class CountlyClass {
         this.#lastViewStoredDuration = 0;
         this.#failTimeout = 0;
         this.#failTimeoutAmount = 60;
-        clearTimeout(this.#collectTimer);
-        clearTimeout(this.#pauseTimer);
+        sdkClearTimeout(this.#collectTimer);
+        sdkClearTimeout(this.#pauseTimer);
         this.#collectUntil = 0;
         this.#pausedUntil = 0;
         this.#deferredRequests = [];
@@ -2117,7 +2122,7 @@ class CountlyClass {
         this.#contentZoneExited = false;
         this.#journeyPendingEventIds = undefined;
         if (this.#clientHintsBufferTimeoutId) {
-            clearTimeout(this.#clientHintsBufferTimeoutId);
+            sdkClearTimeout(this.#clientHintsBufferTimeoutId);
             this.#clientHintsBufferTimeoutId = null;
         }
         this.#serverConfigAfterMerge = false;
@@ -2282,7 +2287,7 @@ class CountlyClass {
                     this.#consents[feature].optin = true;
                     this.#releaseHeldLogLines();
                     this.#updateConsent();
-                    setTimeout(() => {
+                    sdkSetTimeout(() => {
                         if (feature === featureEnums.SESSIONS && this.#lastParams.begin_session) {
                             var pendingSession = this.#lastParams.begin_session;
                             this.#lastParams.begin_session = null;
@@ -2493,8 +2498,8 @@ class CountlyClass {
                         this.#orientationListening = true;
                         let orientationTimeout;
                         add_event_listener(window, "resize", () => {
-                            clearTimeout(orientationTimeout);
-                            orientationTimeout = setTimeout(() => {
+                            sdkClearTimeout(orientationTimeout);
+                            orientationTimeout = sdkSetTimeout(() => {
                                 this.#report_orientation();
                             }, 200);
                         });
@@ -3857,7 +3862,7 @@ class CountlyClass {
                 this.#log(logLevelEnums.DEBUG, "journeyTrigger, Processing pending journey trigger");
                 this.#journeyTriggerPending = false;
                 // Use setTimeout to avoid stack overflow and allow current call to complete
-                setTimeout(() => {
+                sdkSetTimeout(() => {
                     if (this.#halted) {
                         return;
                     }
@@ -4002,7 +4007,7 @@ class CountlyClass {
         if (this.#journeyPendingEventIds && this.#journeyPendingEventIds.size > 0) {
             if (currentWaits < maxAttempts) {
                 this.#log(logLevelEnums.DEBUG, "journeyTrigger, Pending journey events not yet confirmed sent. Deferring content refresh.");
-                setTimeout(() => {
+                sdkSetTimeout(() => {
                     this.#triggerJourneyContentRequestWithRetries(currentAttempt, currentWaits + 1, currentChain);
                 }, 300);
                 return;
@@ -4014,7 +4019,7 @@ class CountlyClass {
 
         var handleResult = (success) => {
             if (!success && currentAttempt + 1 < maxAttempts) {
-                setTimeout(() => {
+                sdkSetTimeout(() => {
                     this.#triggerJourneyContentRequestWithRetries(currentAttempt + 1, currentWaits, currentChain);
                 }, 1000);
             }
@@ -4028,7 +4033,7 @@ class CountlyClass {
      * @param {number} ms - Number of milliseconds to delay
      * @returns {Promise} Promise that resolves after the specified delay
      */
-    #delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    #delay = (ms) => new Promise((resolve) => sdkSetTimeout(resolve, ms));
 
     /**
     * Start timed event, which will fill in duration property upon ending automatically
@@ -4496,7 +4501,7 @@ class CountlyClass {
             window.cly_crashes = true;
             this.#crashSegments = segments;
             // override global 'uncaught error' handler
-            window.addEventListener("error", (event) => {
+            add_event_listener(window, "error", (event) => {
                 if (event.error) {
                     dispatchErrors(event.error, false); // false indicates fatal error
                 } else {
@@ -4525,7 +4530,7 @@ class CountlyClass {
             });
 
             // error handling for 'uncaught rejections'
-            window.addEventListener("unhandledrejection", (event) => {
+            add_event_listener(window, "unhandledrejection", (event) => {
                 // true indicates non fatal error (as in non_fatal: true)
                 dispatchErrors(new Error("Unhandled rejection (reason: " + (event.reason && event.reason.stack ? this.#stackWithMessage(event.reason) : event.reason) + ")."), true);
             });
@@ -4843,19 +4848,19 @@ class CountlyClass {
 
         // Page Visibility API for changing tabs and minimizing browser
         if (hidden in document) {
-            document.addEventListener("visibilitychange", onchange);
+            add_event_listener(document, "visibilitychange", onchange);
         }
         else if ("mozHidden" in document) {
             hidden = "mozHidden";
-            document.addEventListener("mozvisibilitychange", onchange);
+            add_event_listener(document, "mozvisibilitychange", onchange);
         }
         else if ("webkitHidden" in document) {
             hidden = "webkitHidden";
-            document.addEventListener("webkitvisibilitychange", onchange);
+            add_event_listener(document, "webkitvisibilitychange", onchange);
         }
         else if ("msHidden" in document) {
             hidden = "msHidden";
-            document.addEventListener("msvisibilitychange", onchange);
+            add_event_listener(document, "msvisibilitychange", onchange);
         }
 
         /**
@@ -4874,7 +4879,7 @@ class CountlyClass {
         add_event_listener(window, "scroll", resetInactivity);
 
         // track user inactivity
-        setInterval(() => {
+        sdkSetInterval(() => {
             this.#inactivityCounter++;
             if (this.#inactivityCounter >= this.#inactivityTime) {
                 this.#stop_time();
@@ -5097,7 +5102,7 @@ class CountlyClass {
                         });
                     }
                 }
-                setTimeout(() => {
+                sdkSetTimeout(() => {
                     shouldProcess = true;
                 }, 1000);
             }
@@ -6461,8 +6466,8 @@ class CountlyClass {
 
             let resizeTimeout;
             add_event_listener(window,'resize', () => {
-                clearTimeout(resizeTimeout);
-                resizeTimeout = setTimeout(() => {
+                sdkClearTimeout(resizeTimeout);
+                resizeTimeout = sdkSetTimeout(() => {
                     const width = window.innerWidth;
                     const height = window.innerHeight;
                     const feedbackWidgetIframe = document.getElementById("countly-" + feedbackWidgetFamily + "-iframe");
@@ -6549,7 +6554,7 @@ class CountlyClass {
                         break;
 
                     case "afterConstantDelay":
-                        setTimeout(() => {
+                        sdkSetTimeout(() => {
                             if (!surveyShown) {
                                 surveyShown = true;
                                 showSurvey(presentableFeedback);
@@ -7063,8 +7068,8 @@ class CountlyClass {
         if (!this.#initTimestamp || (getMsTimestamp() - this.#initTimestamp) < 4000 ) {
             // settimeout
             this.#log(logLevelEnums.DEBUG, "content.enterContentZone, Not enough time passed since initialization");
-            clearTimeout(this.#contentZoneEntryTimer);
-            this.#contentZoneEntryTimer = setTimeout(() => {
+            sdkClearTimeout(this.#contentZoneEntryTimer);
+            this.#contentZoneEntryTimer = sdkSetTimeout(() => {
                 this.#contentZoneEntryTimer = null;
                 this.#enterContentZoneInternal();
             }, 4001);
@@ -7075,7 +7080,7 @@ class CountlyClass {
         if (!forced) {
             this.#sendContentRequest();
         }
-        this.#contentZoneTimer = setInterval(() => {
+        this.#contentZoneTimer = sdkSetInterval(() => {
             this.#sendContentRequest();
         }, this.#SCIntervalContent);
     };
@@ -7094,7 +7099,7 @@ class CountlyClass {
         this.#exitContentZoneInternal();
         this.#processAsyncQueue();
         this.#sendEventsForced();
-        this.#contentZoneEntryTimer = setTimeout(() => {
+        this.#contentZoneEntryTimer = sdkSetTimeout(() => {
             this.#contentZoneEntryTimer = null;
             this.#enterContentZoneInternal();
         }, 1000);
@@ -7107,7 +7112,7 @@ class CountlyClass {
      */
     #exitContentZoneInternal = () => {
         if (this.#contentZoneEntryTimer) {
-            clearTimeout(this.#contentZoneEntryTimer);
+            sdkClearTimeout(this.#contentZoneEntryTimer);
             this.#contentZoneEntryTimer = null;
         }
         if (!this.#inContentZone) {
@@ -7117,7 +7122,7 @@ class CountlyClass {
         this.#log(logLevelEnums.INFO, "content.exitContentZone, Exiting content zone");
         this.#inContentZone = false;
         if (this.#contentZoneTimer) {
-            clearInterval(this.#contentZoneTimer);
+            sdkClearInterval(this.#contentZoneTimer);
             this.#log(logLevelEnums.DEBUG, "content.exitContentZone, content zone exited");
         }
     };
@@ -7219,16 +7224,16 @@ class CountlyClass {
                 return;
             }
             this.#displayContent(response);
-            clearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
+            sdkClearInterval(this.#contentZoneTimer); // prevent multiple content requests while one is on
             this.#removeContentListeners();
             this.#contentMessageListener = (event) => {
                 this.#interpretContentMessage(event);
             };
-            window.addEventListener('message', this.#contentMessageListener);
+            add_event_listener(window, 'message', this.#contentMessageListener);
             let resizeTimeout;
             this.#contentResizeListener = () => {
-                clearTimeout(resizeTimeout);
-                resizeTimeout = setTimeout(() => {
+                sdkClearTimeout(resizeTimeout);
+                resizeTimeout = sdkSetTimeout(() => {
                     const width = window.innerWidth;
                     const height = window.innerHeight;
                     const iframe = document.getElementById(this.#contentIframeID);
@@ -7241,7 +7246,7 @@ class CountlyClass {
                     );
                 }, 200);
             };
-            window.addEventListener('resize', this.#contentResizeListener);
+            add_event_listener(window, 'resize', this.#contentResizeListener);
             finalizeContentRequest(true);
         }, true);
     };
@@ -7388,11 +7393,11 @@ class CountlyClass {
      */
     #removeContentListeners = () => {
         if (this.#contentMessageListener) {
-            window.removeEventListener('message', this.#contentMessageListener);
+            remove_event_listener(window, 'message', this.#contentMessageListener);
             this.#contentMessageListener = null;
         }
         if (this.#contentResizeListener) {
-            window.removeEventListener('resize', this.#contentResizeListener);
+            remove_event_listener(window, 'resize', this.#contentResizeListener);
             this.#contentResizeListener = null;
         }
     };
@@ -7816,15 +7821,15 @@ class CountlyClass {
      */
     #withPushTimeout = (attempt, ms) => {
         return new Promise((resolve, reject) => {
-            var timer = setTimeout(() => {
+            var timer = sdkSetTimeout(() => {
                 this.#log(logLevelEnums.ERROR, "enable_push_notifications, The browser did not finish subscribing within [" + ms + "] ms, giving up on this attempt");
                 resolve({ subscribed: false, reason: "timeout" });
             }, ms);
             attempt.then((result) => {
-                clearTimeout(timer);
+                sdkClearTimeout(timer);
                 resolve(result);
             }, (err) => {
-                clearTimeout(timer);
+                sdkClearTimeout(timer);
                 reject(err);
             });
         });
@@ -8112,7 +8117,7 @@ class CountlyClass {
             }
         }
 
-        setTimeout(() => {
+        sdkSetTimeout(() => {
             this.#heartBeat();
         }, this.#beatInterval);
     }
@@ -9434,7 +9439,7 @@ class CountlyClass {
 
                 const controller = new AbortController();
                 const signal = controller.signal;
-                const timeoutId = setTimeout(() => controller.abort(), this.#requestTimeoutDuration);
+                const timeoutId = sdkSetTimeout(() => controller.abort(), this.#requestTimeoutDuration);
 
                 // Make the fetch request
                 var fetchBody = body;
@@ -9442,7 +9447,7 @@ class CountlyClass {
                 if (isImage) {
                     var formData = this.#prepareImageUploadFormData(params, saltedData);
                     if (!formData) {
-                        clearTimeout(timeoutId);
+                        sdkClearTimeout(timeoutId);
                         if (typeof callback === 'function') { callback(true, params, 'invalid_formdata'); }
                         return;
                     }
@@ -9459,7 +9464,7 @@ class CountlyClass {
                     body: fetchBody,
                     signal: signal
                 }).then((res) => {
-                    clearTimeout(timeoutId);
+                    sdkClearTimeout(timeoutId);
                     response = res;
                     return response.text();
                 }).then((data) => this.#forRequest(params, () => {
@@ -9496,7 +9501,7 @@ class CountlyClass {
                         }
                     }
                 })).catch((error) => this.#forRequest(params, () => {
-                    clearTimeout(timeoutId);
+                    sdkClearTimeout(timeoutId);
                     if (error.name === 'AbortError') {
                         this.#log(logLevelEnums.DEBUG, functionName + " timed out after 30 seconds");
                         if (typeof callback === "function") {
@@ -10121,8 +10126,8 @@ class CountlyClass {
             return;
         }
         this.#collectUntil = signal.at + tabHandoverTimes.COLLECT;
-        clearTimeout(this.#collectTimer);
-        this.#collectTimer = setTimeout(() => {
+        sdkClearTimeout(this.#collectTimer);
+        this.#collectTimer = sdkSetTimeout(() => {
             this.#collectTimer = null;
             this.#collectUntil = 0;
             if (this.#halted) {
@@ -10187,8 +10192,8 @@ class CountlyClass {
             return;
         }
         this.#pausedUntil = getMsTimestamp() + tabHandoverTimes.PAUSE;
-        clearTimeout(this.#pauseTimer);
-        this.#pauseTimer = setTimeout(() => {
+        sdkClearTimeout(this.#pauseTimer);
+        this.#pauseTimer = sdkSetTimeout(() => {
             this.#pauseTimer = null;
             this.#pausedUntil = 0;
             if (this.#halted) {
