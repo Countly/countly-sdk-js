@@ -258,6 +258,8 @@ write(join(web, "lib", "countly.js"), toWebBundle(read(join(root, "dist", "count
 console.log("sync:web, lib/countly.min.js: " + minify(opts.closure, web, "lib/countly.js", "lib/countly.min.js"));
 copyFileSync(join(root, "countly_sw.js"), join(web, "lib", "countly_sw.js"));
 copyFileSync(join(root, "types", "countly-sdk-web.d.ts"), join(web, "lib", "countly.d.ts"));
+write(join(web, "loader.js"), read(join(root, "dist", "countly_loader.js")));
+write(join(web, "loader.d.ts"), read(join(root, "types", "loader.d.ts")).replace("./countly-sdk-web.d.ts", "./lib/countly.d.ts"));
 write(join(web, "api", "countly-sdk-web.api"), read(join(root, "api", "countly-sdk-web.api")));
 write(join(web, "test", "consumers", "helpers", "api-report.mjs"), read(join(root, "scripts", "api-report.mjs")));
 rmSync(join(web, "api", "requests"), { recursive: true, force: true });

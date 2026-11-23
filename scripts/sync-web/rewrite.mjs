@@ -90,6 +90,7 @@ export function toWebTest(text, folder) {
  */
 export function toWebFixture(html) {
     const importLine = /^[ \t]*import Countly from (["'])\.\.\/\.\.\/Countly\.js\1;[ \t]*\r?\n/m;
+    html = html.replace(/"countly-sdk-web": "\.\.\/\.\.\/Countly\.js"/, "\"countly-sdk-web\": \"./countly_sdk_module.js\"");
     if (!importLine.test(html)) {
         return html;
     }
