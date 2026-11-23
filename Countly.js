@@ -1,6 +1,6 @@
 import CountlyClass from "./modules/CountlyClass.js";
 import { featureList, DeviceIdTypeInternalEnums, CDN } from "./modules/Constants.js";
-import { checkIfLoggingIsOn, stripTrailingSlash } from "./modules/Utils.js";
+import { add_event_listener, sdkClearInterval, sdkSetInterval, stripTrailingSlash } from "./modules/Utils.js";
 import { isBrowser, Countly } from "./modules/Platform.js";
 
 var apmLibrariesNotLoaded = true; // used to prevent loading apm scripts multiple times.
@@ -64,7 +64,7 @@ function initAfterLoadingAPM(conf) {
     var intervalDuration = 50;
     var timeoutLimit = 1500; // TODO: Configurable? Mb with Countly.apmScriptLoadTimeout?
     // init Countly only after boomerang is loaded
-    var intervalID = setInterval(function () {
+    var intervalID = sdkSetInterval(function () {
         timeoutCounter += intervalDuration;
         if ((boomLoaded && countlyBoomLoaded) || (timeoutCounter >= timeoutLimit)) {
             if (Countly.debug) {
@@ -81,7 +81,7 @@ function initAfterLoadingAPM(conf) {
                 }
             }
             Countly.init(conf);
-            clearInterval(intervalID);
+            sdkClearInterval(intervalID);
         }
     }, intervalDuration);
 }
@@ -170,7 +170,7 @@ Countly.DeviceIdType = {
  *  Monitor parallel storage changes like other opened tabs
  */
 if (isBrowser) {
-    window.addEventListener("storage", function (e) {
+    add_event_listener(window, "storage", function (e) {
         try {
             // each tab keeps its queues in its own sessionStorage, which other frames of that tab can change too
             if (e.storageArea && e.storageArea !== window.localStorage) {

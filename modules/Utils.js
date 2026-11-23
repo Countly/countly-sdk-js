@@ -413,7 +413,67 @@ function get_closest_element(el, nodeName) {
 };
 
 /**
- *  Listen to specific browser event
+ * The value a property had before zone.js patched it. Angular apps load zone.js, which wraps timers and event
+ * listeners so that each of them runs Angular's change detection and keeps the app from being stable while it is
+ * pending. The SDK's own background timers and listeners use the originals, so that they do neither. zone.js keeps
+ * each original under the name Zone.__symbol__ gives; without zone.js, or for what it did not patch, this is the
+ * property itself.
+ * @memberof Countly._internals
+ * @param {Object} target - the object holding the property, for example the global object
+ * @param {string} name - the property name, for example "setTimeout"
+ * @returns {*} the original value
+ */
+function getZoneJsOriginal(target, name) {
+    var zone = globalThis.Zone;
+    var original;
+    if (zone && typeof zone.__symbol__ === "function") {
+        original = target[zone.__symbol__(name)];
+    }
+    return original || target[name];
+}
+
+/**
+ * setTimeout for the SDK's own work, outside any zone.js zone (see getZoneJsOriginal)
+ * @memberof Countly._internals
+ * @param {Function} callback - function to run
+ * @param {number} delay - milliseconds to wait
+ * @returns {*} the timer id
+ */
+function sdkSetTimeout(callback, delay) {
+    return getZoneJsOriginal(globalThis, "setTimeout").call(globalThis, callback, delay);
+}
+
+/**
+ * clearTimeout for timers started with sdkSetTimeout
+ * @memberof Countly._internals
+ * @param {*} id - the timer id
+ */
+function sdkClearTimeout(id) {
+    getZoneJsOriginal(globalThis, "clearTimeout").call(globalThis, id);
+}
+
+/**
+ * setInterval for the SDK's own work, outside any zone.js zone (see getZoneJsOriginal)
+ * @memberof Countly._internals
+ * @param {Function} callback - function to run
+ * @param {number} delay - milliseconds between the runs
+ * @returns {*} the timer id
+ */
+function sdkSetInterval(callback, delay) {
+    return getZoneJsOriginal(globalThis, "setInterval").call(globalThis, callback, delay);
+}
+
+/**
+ * clearInterval for timers started with sdkSetInterval
+ * @memberof Countly._internals
+ * @param {*} id - the timer id
+ */
+function sdkClearInterval(id) {
+    getZoneJsOriginal(globalThis, "clearInterval").call(globalThis, id);
+}
+
+/**
+ *  Listen to specific browser event, outside any zone.js zone (see getZoneJsOriginal)
  *  @memberof Countly._internals
  *  @param {HTMLElement} element - HTML element that should listen to event
  *  @param {String} type - event name or action
@@ -431,11 +491,30 @@ function add_event_listener(element, type, listener) {
         return;
     }
     if (typeof element.addEventListener !== "undefined") {
-        element.addEventListener(type, listener, false);
+        getZoneJsOriginal(element, "addEventListener").call(element, type, listener, false);
     }
     // for old browser use attachEvent instead
     else {
         element.attachEvent("on" + type, listener);
+    }
+};
+
+/**
+ *  Stop listening to an event added with add_event_listener
+ *  @memberof Countly._internals
+ *  @param {HTMLElement} element - HTML element the listener was added to
+ *  @param {String} type - event name or action
+ *  @param {Function} listener - the listener that was added
+ */
+function remove_event_listener(element, type, listener) {
+    if (!isBrowser || element === null || typeof element === "undefined") {
+        return;
+    }
+    if (typeof element.removeEventListener !== "undefined") {
+        getZoneJsOriginal(element, "removeEventListener").call(element, type, listener, false);
+    }
+    else if (typeof element.detachEvent !== "undefined") {
+        element.detachEvent("on" + type, listener);
     }
 };
 
@@ -1113,7 +1192,13 @@ export {
     truncateObject,
     truncateSingleValue,
     get_closest_element,
+    getZoneJsOriginal,
+    sdkSetTimeout,
+    sdkClearTimeout,
+    sdkSetInterval,
+    sdkClearInterval,
     add_event_listener,
+    remove_event_listener,
     get_event_target,
     currentUserAgentString,
     userAgentDeviceDetection,
