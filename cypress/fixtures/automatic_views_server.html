@@ -1,0 +1,34 @@
+<!-- Used in automatic view tracking tests: the server's behavior settings turn automatic view tracking on or off.
+     ?auto=1 turns the init option on, ?avt=1 or ?avt=0 is what the server answers first; window.serverAvt changes
+     what it answers to the next behavior settings request; ?manual=1 records the page with track_pageview after init -->
+<html>
+<head>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    var params = new URLSearchParams(window.location.search);
+    window.serverAvt = params.get("avt") === "1";
+    window.localStorage.clear();
+    Countly.init({
+      app_key: "AVT_APP_KEY",
+      url: "https://your.domain.count.ly",
+      debug: true,
+      test_mode_eq: true,
+      enable_automatic_view_tracking: params.get("auto") === "1",
+      fake_request_handler: function (req) {
+        if (req.functionName === "server_config") {
+          return { status: 200, responseText: JSON.stringify({ v: 2, t: Date.now(), c: { avt: window.serverAvt } }) };
+        }
+        return { status: 200, responseText: "{\"result\":\"Success\"}" };
+      }
+    });
+    if (params.get("manual") === "1") {
+      Countly.track_pageview();
+    }
+    window.Countly = Countly;
+  </script>
+</head>
+<body>
+  <h1>Automatic view tracking from behavior settings</h1>
+</body>
+</html>

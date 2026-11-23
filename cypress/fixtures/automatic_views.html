@@ -1,0 +1,62 @@
+<!-- Used in automatic view tracking tests: a page that moves like a single-page app. With ?auto=0 the option stays off,
+     with ?names=pattern getViewName names a page by a route pattern, with ?names=router by the route a router shows,
+     ?mode= sets automatic_view_tracking_mode and ?url=path gives getViewUrl as the page path -->
+
+<html>
+<head>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    var params = new URLSearchParams(window.location.search);
+    var config = {
+      app_key: "AUTO_VIEWS_APP_KEY",
+      url: "https://your.domain.count.ly",
+      debug: true,
+      test_mode: true,
+      test_mode_eq: true,
+      enable_automatic_view_tracking: params.get("auto") !== "0",
+      automatic_view_tracking_exclusions: ["^/private"]
+    };
+    if (params.get("mode")) {
+      config.automatic_view_tracking_mode = params.get("mode");
+    }
+    if (params.get("url") === "path") {
+      config.getViewUrl = function () {
+        return window.location.pathname;
+      };
+    }
+    if (params.get("names") === "pattern") {
+      // names views the way a router's route pattern would, as /products/:id
+      config.getViewName = function () {
+        return window.location.pathname.replace(/\/\d+$/, "/:id");
+      };
+    }
+    if (params.get("names") === "router") {
+      // a router that updates the route it shows just after it changes the address, as React Router and Vue Router do
+      // for a link, and a moment after the browser changed it, as Angular does for the back button
+      var routeOf = function (path) {
+        return /^\/products\/\d+$/.test(path) ? "/products/:id" : path;
+      };
+      window.currentRoute = routeOf(window.location.pathname);
+      window.routerNavigate = function (path) {
+        window.history.pushState({}, "", path);
+        window.currentRoute = routeOf(path);
+      };
+      window.addEventListener("popstate", function () {
+        setTimeout(function () {
+          window.currentRoute = routeOf(window.location.pathname);
+        }, 0);
+      });
+      config.getViewName = function () {
+        return window.currentRoute;
+      };
+    }
+    window.localStorage.clear();
+    Countly.init(config);
+    window.Countly = Countly;
+  </script>
+</head>
+<body>
+  <h1>Automatic view tracking</h1>
+</body>
+</html>

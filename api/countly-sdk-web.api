@@ -115,6 +115,8 @@ user_details
 "countly-sdk-web".Countly.Feedback: interface Feedback { }
 "countly-sdk-web".Countly.InitConfig.app_key: app_key: string;
 "countly-sdk-web".Countly.InitConfig.app_version: app_version?: string;
+"countly-sdk-web".Countly.InitConfig.automatic_view_tracking_exclusions: automatic_view_tracking_exclusions?: (string | RegExp)[];
+"countly-sdk-web".Countly.InitConfig.automatic_view_tracking_mode: automatic_view_tracking_mode?: "auto" | "history" | "hash";
 "countly-sdk-web".Countly.InitConfig.behavior_settings: behavior_settings?: Record<string, unknown>;
 "countly-sdk-web".Countly.InitConfig.city: city?: string | null;
 "countly-sdk-web".Countly.InitConfig.clear_stored_id: clear_stored_id?: boolean;
@@ -131,6 +133,7 @@ user_details
 "countly-sdk-web".Countly.InitConfig.disable_backoff_mechanism: disable_backoff_mechanism?: boolean;
 "countly-sdk-web".Countly.InitConfig.disable_health_check: disable_health_check?: boolean;
 "countly-sdk-web".Countly.InitConfig.disable_sdk_behavior_settings_updates: disable_sdk_behavior_settings_updates?: boolean;
+"countly-sdk-web".Countly.InitConfig.enable_automatic_view_tracking: enable_automatic_view_tracking?: boolean;
 "countly-sdk-web".Countly.InitConfig.enable_orientation_tracking: enable_orientation_tracking?: boolean;
 "countly-sdk-web".Countly.InitConfig.enable_request_compression: enable_request_compression?: boolean;
 "countly-sdk-web".Countly.InitConfig.fail_timeout: fail_timeout?: number;

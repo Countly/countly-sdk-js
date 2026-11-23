@@ -109,6 +109,19 @@ declare module "countly-sdk-web" {
       /** The longest a stack trace line can be; longer ones are cut. (default: 200) */
       max_stack_trace_line_length?: number;
 
+      /**
+       * Records a view for the page at init and a new one each time a single-page app moves to another page. track_pageview
+       * and track_view calls are ignored while it is on. The server's behavior settings (avt) can turn it on or off. (default: false)
+       */
+      enable_automatic_view_tracking?: boolean;
+      /**
+       * How automatic view tracking tells pages apart and names them: "history" by the page path, "hash" by the route after #
+       * (for an app with addresses like /#/products/42), "auto" by that route when there is one and by the page path
+       * otherwise. getViewUrl and getViewName, when given, win over it. (default: "auto")
+       */
+      automatic_view_tracking_mode?: "auto" | "history" | "hash";
+      /** Pages automatic view tracking leaves out: a view name matching any of these is not recorded. (default: []) */
+      automatic_view_tracking_exclusions?: (string | RegExp)[];
       /** Gives the name of the page the visitor is on, such as a route pattern. (default: the page path) */
       getViewName?: () => string;
       /** Gives the address views and heatmaps tell the page by. (default: the page path) */

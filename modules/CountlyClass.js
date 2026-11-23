@@ -30,6 +30,8 @@ import {
     sdkClearInterval,
     add_event_listener,
     remove_event_listener,
+    locationChangeEvent,
+    watchHistory,
     get_event_target,
     currentUserAgentString,
     currentUserAgentDataString,
@@ -130,10 +132,17 @@ class CountlyClass {
     #contentIframeID;
     #crashFilterCallback;
     #logListener = null;
+    #autoViewTracking = false;
+    #autoViewExclusions = [];
+    #autoViewMode = "auto";
+    #lastViewUrl = null;
+    #autoViewListener = null;
+    #autoViewTimer = null;
     #initialConsents = [];
     #giveAllConsents = false;
     #initialConsentsGiven = false;
     #replayTime = null;
+    #autoViewReady = false;
     #serverConfigCache;
     #SCNetwork;
     #SCSizeReqQueue;
@@ -272,6 +281,7 @@ class CountlyClass {
         this.#lastBeat;
         this.#storedDuration = 0;
         this.#lastView = null;
+        this.#lastViewUrl = null;
         this.#lastViewTime = 0;
         this.#lastViewStoredDuration = 0;
         this.#failTimeout = 0;
@@ -433,6 +443,7 @@ class CountlyClass {
             this.#enterContentZoneInternal();
             this.#initContentSent = true;
         }
+        this.#startAutomaticViewTracking();
         this.#log(logLevelEnums.INFO, "initialize, Countly initialized");
     };
 
@@ -452,6 +463,115 @@ class CountlyClass {
         this.#initialConsentsGiven = true;
         this.#log(logLevelEnums.INFO, "initialize, Giving the consent of the init options for [" + features + "]");
         this.#addConsent(features);
+    };
+
+    /**
+     * Records a view for the page the visitor is on, and a new one each time a single-page app moves to another page:
+     * history.pushState and history.replaceState calls, the back and forward buttons and hash changes. A page is told
+     * apart and named as #automaticViewPage says, so a change that keeps the page, such as a new query string, records
+     * no view. Pages whose name matches automatic_view_tracking_exclusions are not recorded.
+     * A page change is recorded once the code that changed the address has finished, so several changes made in one go,
+     * as a redirect makes, record only the page the app ends on.
+     */
+    #startAutomaticViewTracking = () => {
+        this.#autoViewReady = true;
+        if (!this.#autoViewTracking || this.#autoViewListener) {
+            return;
+        }
+        this.#log(logLevelEnums.INFO, "initialize, Automatic view tracking is on, recording a view for each page the visitor opens");
+        watchHistory();
+        this.#autoViewListener = () => {
+            if (this.#autoViewTimer !== null) {
+                return;
+            }
+            // routers update the route getViewName reads after the address changes: just after it for a link, a moment after it for the back button
+            this.#autoViewTimer = sdkSetTimeout(() => {
+                this.#autoViewTimer = null;
+                this.#trackAutomaticView();
+            }, 0);
+        };
+        add_event_listener(window, locationChangeEvent, this.#autoViewListener);
+        add_event_listener(window, "popstate", this.#autoViewListener);
+        add_event_listener(window, "hashchange", this.#autoViewListener);
+        this.#trackAutomaticView();
+    };
+
+    /**
+     * Records the page the visitor is on as an automatic view, unless the open view is already this page's, whether
+     * the SDK or a track_pageview call before automatic view tracking turned on recorded it
+     */
+    #trackAutomaticView = () => {
+        if (this.#halted || !this.#autoViewTracking) {
+            return;
+        }
+        var page = this.#automaticViewPage();
+        if (page.url === this.#lastViewUrl) {
+            return;
+        }
+        this.#lastViewUrl = page.url;
+        this.#HealthCheck.recordUsage("views", "start");
+        this.#trackPageview(page.name, this.#autoViewExclusions, undefined, page.url);
+    };
+
+    /**
+     * The address and the name of the page the visitor is on, for automatic view tracking. They come from the getViewUrl
+     * and getViewName the app gives, and otherwise from automatic_view_tracking_mode: "history" takes the page path,
+     * "hash" the route after # or #! without its query, and "auto" that route when it starts with /, as a hash
+     * router's does, and the page path otherwise, so a link to an anchor on the page is not a page
+     * @returns {Object} url and name of the page
+     */
+    #automaticViewPage = () => {
+        var hash = window.location.hash;
+        var prefix = hash.indexOf("#!") === 0 ? "#!" : "#";
+        var route = null;
+        if (this.#autoViewMode === "hash" || (this.#autoViewMode === "auto" && hash.indexOf(prefix + "/") === 0)) {
+            route = hash.slice(prefix.length).split("?")[0] || "/";
+        }
+        return {
+            url: route && this.getViewUrl.clyDefault ? window.location.pathname + prefix + route : this.getViewUrl(),
+            name: route && this.getViewName.clyDefault ? route : this.getViewName()
+        };
+    };
+
+    /**
+     * Turns automatic view tracking on or off as the server's behavior settings say ("avt"), over the init option.
+     * While init runs it only sets the option; afterwards it starts or stops recording page changes.
+     * @param {boolean} on - whether the SDK records the pages itself
+     */
+    #setAutomaticViewTracking = (on) => {
+        if (!isBrowser) {
+            return;
+        }
+        if (!this.#autoViewReady) {
+            this.#autoViewTracking = on;
+            return;
+        }
+        if (on && !this.#autoViewListener) {
+            this.#log(logLevelEnums.INFO, "server_config, Behavior settings turned automatic view tracking on");
+            this.#autoViewTracking = true;
+            this.#startAutomaticViewTracking();
+        }
+        else if (!on && this.#autoViewListener) {
+            this.#log(logLevelEnums.INFO, "server_config, Behavior settings turned automatic view tracking off");
+            this.#stopAutomaticViewTracking();
+        }
+    };
+
+    /**
+     * Stops recording a view for each page change
+     */
+    #stopAutomaticViewTracking = () => {
+        if (this.#autoViewListener) {
+            remove_event_listener(window, locationChangeEvent, this.#autoViewListener);
+            remove_event_listener(window, "popstate", this.#autoViewListener);
+            remove_event_listener(window, "hashchange", this.#autoViewListener);
+            this.#autoViewListener = null;
+        }
+        if (this.#autoViewTimer !== null) {
+            sdkClearTimeout(this.#autoViewTimer);
+            this.#autoViewTimer = null;
+        }
+        this.#autoViewTracking = false;
     };
 
     /**
@@ -728,6 +848,9 @@ class CountlyClass {
         if (cache.hasOwnProperty("vt")) {
             this.#SCTrackingViews = cache.vt;
         }
+        if (Object.prototype.hasOwnProperty.call(cache, "avt")) {
+            this.#setAutomaticViewTracking(cache.avt === true);
+        }
         if (cache.hasOwnProperty("cet")) {
             this.#SCTrackingEvents = cache.cet;
         }
@@ -888,6 +1011,13 @@ class CountlyClass {
             this.#lsSupport = false;
         }
         this.enableOrientationTracking = !isBrowser ? undefined : getConfig("enable_orientation_tracking", ob, true);
+        this.#autoViewTracking = isBrowser && getConfig("enable_automatic_view_tracking", ob, false) === true;
+        this.#autoViewExclusions = getConfig("automatic_view_tracking_exclusions", ob, []);
+        this.#autoViewMode = getConfig("automatic_view_tracking_mode", ob, "auto");
+        if (["auto", "history", "hash"].indexOf(this.#autoViewMode) === -1) {
+            this.#log(logLevelEnums.WARNING, "initialize, automatic_view_tracking_mode is \"auto\", \"history\" or \"hash\", not [" + this.#autoViewMode + "], so \"auto\" is used");
+            this.#autoViewMode = "auto";
+        }
         this.heatmapWhitelist = getConfig("heatmap_whitelist", ob, []);
         this.contentWhitelist = getConfig("content_whitelist", ob, []);
         var globalContentSegmentation = getConfig("global_content_segmentation", ob, null);
@@ -1980,6 +2110,7 @@ class CountlyClass {
     halt = () => {
         this.#log(logLevelEnums.WARNING, "halt, Resetting Countly");
         this.#halted = true;
+        this.#stopAutomaticViewTracking();
         Countly.i = undefined;
         if (Array.isArray(Countly.q)) {
             Countly.q.length = 0;
@@ -2004,6 +2135,7 @@ class CountlyClass {
         this.#autoExtend = true;
         this.#storedDuration = 0;
         this.#lastView = null;
+        this.#lastViewUrl = null;
         this.#lastViewTime = 0;
         this.#lastViewStoredDuration = 0;
         this.#failTimeout = 0;
@@ -2752,6 +2884,11 @@ class CountlyClass {
         else if (this.#autoSessionTracking) {
             // only automatic session tracking starts a session for the new ID, manual sessions are left to the developer
             this.#beginSession(!this.#autoExtend, true, true);
+        }
+        if (!merge && this.#autoViewTracking) {
+            // the page that is shown starts a view for the new ID; while consent is required it waits for the "views" consent
+            this.#lastViewUrl = null;
+            this.#trackAutomaticView();
         }
         this.#handlePushOnDeviceIdChange(merge, oldId);
         // the behavior settings and remote config can differ for the new ID. A fetch creates the user of an ID the server has not seen,
@@ -4933,6 +5070,10 @@ class CountlyClass {
     * @param {object=} viewSegments - optional key value object with segments to report with the view
     * */
     track_pageview = (page, ignoreList, viewSegments) => {
+        if (this.#autoViewTracking) {
+            this.#log(logLevelEnums.WARNING, "track_pageview, Automatic view tracking is on, so the SDK records the pages itself and this call is ignored");
+            return;
+        }
         this.#HealthCheck.recordUsage("views", "start");
         this.#trackPageview(page, ignoreList, viewSegments);
     };
@@ -4942,8 +5083,9 @@ class CountlyClass {
      * @param {string=} page - optional name of the page, by default uses current url path
      * @param {array=} ignoreList - optional array of strings or regexps to test for the url/view name to ignore and not report
      * @param {object=} viewSegments - optional key value object with segments to report with the view
+     * @param {string=} viewUrl - the address of the page, by default what getViewUrl gives
      */
-    #trackPageview = (page, ignoreList, viewSegments) => {
+    #trackPageview = (page, ignoreList, viewSegments, viewUrl) => {
         if (!isBrowser && !page) {
             this.#log(logLevelEnums.WARNING, "track_pageview, window object is not available. Not tracking page views as page name is not provided.");
             return;
@@ -4999,10 +5141,12 @@ class CountlyClass {
                 }
             }
         }
+        viewUrl = viewUrl || this.getViewUrl();
+        this.#lastViewUrl = viewUrl;
         var segments = {
             name: page,
             visit: 1,
-            view: this.getViewUrl()
+            view: viewUrl
         };
         // truncate new segment
         segments = truncateObject(segments, this.#SCLimitKeyLength, this.#SCLimitValueSize , this.#SCLimitSegmentationValues, "track_pageview", this.#log);
@@ -5075,7 +5219,7 @@ class CountlyClass {
             this.#log(logLevelEnums.VERBOSE, "track_pageview, last view is assigned:[" + this.#lastView + "]");
         }
         else {
-            this.#lastParams.track_pageview = [page, ignoreList, viewSegments];
+            this.#lastParams.track_pageview = [page, ignoreList, viewSegments, viewUrl];
         }
     };
 
@@ -5087,6 +5231,10 @@ class CountlyClass {
     * */
     track_view = (page, ignoreList, segments) => {
         this.#log(logLevelEnums.INFO, "track_view, Initiating tracking page views");
+        if (this.#autoViewTracking) {
+            this.#log(logLevelEnums.WARNING, "track_view, Automatic view tracking is on, so the SDK records the pages itself and this call is ignored");
+            return;
+        }
         this.#HealthCheck.recordUsage("views", "start");
         this.#trackPageview(page, ignoreList, segments);
     };
