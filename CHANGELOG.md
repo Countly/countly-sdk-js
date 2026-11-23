@@ -2,6 +2,7 @@
 
 * ! Minor Breaking Change ! With a server that sends content triggers (`jt`) and the content zone in use, the SDK now sends its queue right away and asks for content when it records a listed trigger, so requests go out at those moments instead of in the next batch. One such round runs at a time: a trigger recorded while one runs is sent with the next round, and a newer round's content requests replace the retries of an older one. The same trigger does this again only after a gap: 60 seconds for one that can happen often (any view, any user property change, any error), 10 seconds for a listed event, view name or user property. The gap is kept in storage (`cly_ct_gaps`), so it holds across the pages of a website. This applies to the journey trigger events (`jte`) too. `disable_auto_content_triggers` turns the content triggers off. Once the server sends content triggers, the journey trigger events (`jte`) are ignored. Journey trigger events no longer send the queue early when content can't be shown (without the content consent, or after `exitContentZone`), and the end of a view no longer counts as a view trigger.
 * ! Minor Breaking Change ! On pages with zone.js, as in Angular apps, the SDK's own timers and event listeners now run outside Angular's zone, so they no longer run change detection or keep the app from becoming stable. Callbacks the SDK calls from them, such as `log_listener` and the content zone filter, run outside the zone too: to change what Angular shows from them, use a signal or `NgZone.run`. Angular unit tests that run the real SDK inside `fakeAsync` no longer control its timers with `tick()`.
+* ! Minor Breaking Change ! The TypeScript definitions now type every init option in `Countly.InitConfig`, with its meaning and default, so editors list them as you type. A misspelled option or a value of the wrong type in `init` no longer compiles, where it was accepted before.
 
 * Added SDK method usage and log codes to the health check.
 * Added `change_server_url` to change the server URL after init.
@@ -16,6 +17,7 @@
 * Improved internal logging.
 * Improved health check send count. It is now sent once per visit, when a new session begins, and once per page load only on pages that track no session.
 
+* Mitigated an issue where the TypeScript definitions required the `merge` argument of `change_id`, which is optional.
 * Mitigated an issue where health check counters restarted even when it was not delivered, and what was counted while it was on its way was lost when it was.
 * Mitigated an issue where a journey trigger event (`jte`) recorded while another request was on its way did not ask for content until the content zone timer, when the regular sending delivered the event first.
 * Mitigated an issue where, after `halt`, recording an event listed in the journey trigger events (`jte`) threw an error until the SDK was initialized again.

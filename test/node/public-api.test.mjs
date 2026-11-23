@@ -133,12 +133,46 @@ function runLoader() {
     };
 }
 
+/**
+ * The options init reads, from the getConfig calls of modules/CountlyClass.js.
+ * @returns {string[]} names
+ */
+function readOptions() {
+    const text = readFileSync(join(root, "modules", "CountlyClass.js"), "utf8");
+    return Array.from(new Set(Array.from(text.matchAll(/getConfig\("([A-Za-z_]+)", ob\b/g), (m) => m[1]))).sort();
+}
+
+/**
+ * The options the definitions type in interface InitConfig.
+ * @returns {string[]} names
+ */
+function typedOptions() {
+    const file = ts.createSourceFile(typesPath, readFileSync(typesPath, "utf8"), ts.ScriptTarget.Latest, true);
+    let names = null;
+    const find = (node) => {
+        if (ts.isInterfaceDeclaration(node) && node.name.text === "InitConfig") {
+            names = node.members.filter((member) => member.name).map((member) => member.name.getText());
+            return;
+        }
+        ts.forEachChild(node, find);
+    };
+    find(file);
+    assert.ok(names, "interface InitConfig in " + typesPath);
+    return names.sort();
+}
+
 const minus = (a, b) => a.filter((name) => b.indexOf(name) === -1);
 
 test("the definitions compile", () => {
     const program = ts.createProgram([typesPath], { noEmit: true, strict: true, lib: ["lib.es2020.d.ts", "lib.dom.d.ts"], types: [] });
     const problems = ts.getPreEmitDiagnostics(program).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
     assert.deepEqual(problems, []);
+});
+
+test("the init options the definitions type are the options the SDK reads", () => {
+    const sdk = readOptions();
+    const typed = typedOptions();
+    assert.deepEqual({ untyped: minus(sdk, typed), notRead: minus(typed, sdk) }, { untyped: [], notRead: [] });
 });
 
 test("every function the definitions declare is one of the SDK", async() => {
