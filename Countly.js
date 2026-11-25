@@ -207,9 +207,11 @@ Countly.DeviceIdType = {
 };
 
 /**
- *  Monitor parallel storage changes like other opened tabs
+ *  Monitor parallel storage changes like other opened tabs, once for each Countly object: another copy of the SDK on
+ *  the page, as from the script tag and a bundle, shares this object and its instances through the global Countly
  */
-if (isBrowser) {
+if (isBrowser && !Countly.clyWatchesStorage) {
+    Object.defineProperty(Countly, "clyWatchesStorage", { value: true });
     add_event_listener(window, "storage", function (e) {
         try {
             // each tab keeps its queues in its own sessionStorage, which other frames of that tab can change too

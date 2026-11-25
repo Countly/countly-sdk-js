@@ -6,6 +6,7 @@ import { toWebBundle, toWebTest, toWebFixture, toWebWorker, toWebChangelog, with
 test("a spec loads the bundle and the copies of the SDK modules it reads", () => {
     const spec = [
         "var Countly = require(\"../../Countly.js\");",
+        "var secondCopy = require(\"../../Countly.js?second_copy\");",
         "const { SDK_VERSION } = require(\"../../modules/Constants.js\");",
         "import { SDK_NAME } from \"../../modules/Constants.js\";",
         "var ct = require('../../modules/ConnectionTest.js');",
@@ -15,6 +16,7 @@ test("a spec loads the bundle and the copies of the SDK modules it reads", () =>
     const web = toWebTest(spec, "e2e");
     assert.equal(web, [
         "var Countly = require(\"../../lib/countly\");",
+        "var secondCopy = require(\"../../lib/countly?second_copy\");",
         "const { SDK_VERSION } = require(\"../support/sdk-modules/Constants.js\");",
         "import { SDK_NAME } from \"../support/sdk-modules/Constants.js\";",
         "var ct = require('../support/sdk-modules/ConnectionTest.js');",

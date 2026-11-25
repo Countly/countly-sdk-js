@@ -1,0 +1,37 @@
+<!-- Used in page footprint tests: a page that loads the SDK and makes the calls of the scenario its query string names.
+     page_footprint_probe.js, its first script, records what the SDK leaves on the page -->
+<html>
+<head>
+  <script src="page_footprint_probe.js"></script>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    var scenario = new URLSearchParams(window.location.search).get("scenario");
+    var config = { app_key: "PAGE_FOOTPRINT_APP_KEY", url: "https://page-footprint.count.ly" };
+    // loaded: the SDK is loaded and called, but not initialized
+    Countly.add_event({ key: "before_init" });
+    if (scenario === "started") {
+      Countly.init(config);
+    }
+    else if (scenario === "tracking") {
+      Countly.init(config);
+      Countly.track_sessions();
+      Countly.track_pageview();
+      Countly.track_errors();
+      Countly.track_clicks();
+      Countly.track_scrolls();
+      Countly.track_links();
+      Countly.track_forms();
+    }
+    else if (scenario === "views") {
+      config.enable_automatic_view_tracking = true;
+      Countly.init(config);
+      Countly.track_sessions();
+    }
+    window.pageFootprint.ready = true;
+  </script>
+</head>
+<body>
+  <h1>Page footprint</h1>
+</body>
+</html>

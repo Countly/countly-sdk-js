@@ -1,0 +1,14 @@
+{
+  "globals": [
+    "Countly"
+  ],
+  "listeners": [],
+  "replaced": [],
+  "timers": [],
+  "localStorage": [],
+  "sessionStorage": [],
+  "cookies": [],
+  "elements": [],
+  "attributes": [],
+  "console": []
+}
