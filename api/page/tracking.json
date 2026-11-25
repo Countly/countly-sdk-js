@@ -1,5 +1,6 @@
 {
   "globals": [
+    "Countly",
     "cly_crashes"
   ],
   "listeners": [

@@ -16,4 +16,16 @@ describe("Loader", () => {
             });
         });
     });
+
+    it("Is the SDK itself on a page whose code imported the SDK first, and runs the calls made through it", () => {
+        cy.visit("./cypress/fixtures/loader_after_sdk.html");
+        cy.window().its("done").should("equal", true);
+        cy.window().then((win) => {
+            expect(win.sameObject, "the loader's Countly is the SDK's").to.equal(true);
+            cy.fetch_local_request_queue("LOADER_ORDER_APP_KEY").then((rq) => {
+                var keys = rq.filter((r) => r.events).reduce((all, r) => all.concat(JSON.parse(r.events).map((e) => e.key)), []);
+                expect(keys.filter((key) => key.indexOf("[CLY]") !== 0), "the events made through the loader").to.deep.equal(["loader_before_init", "loader_after_init"]);
+            });
+        });
+    });
 });
