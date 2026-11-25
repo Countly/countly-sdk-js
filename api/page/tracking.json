@@ -1,0 +1,62 @@
+{
+  "globals": [
+    "cly_crashes"
+  ],
+  "listeners": [
+    "ServiceWorkerContainer: message",
+    "document: click",
+    "document: click",
+    "document: submit",
+    "document: visibilitychange",
+    "document: visibilitychange",
+    "document: visibilitychange",
+    "window: beforeunload",
+    "window: beforeunload",
+    "window: blur",
+    "window: click",
+    "window: error",
+    "window: focus",
+    "window: keydown",
+    "window: mousemove",
+    "window: pagehide",
+    "window: pagehide",
+    "window: pagehide",
+    "window: pageshow",
+    "window: pageshow",
+    "window: resize",
+    "window: scroll",
+    "window: scroll",
+    "window: storage",
+    "window: unhandledrejection"
+  ],
+  "replaced": [],
+  "timers": [
+    "setInterval 60000",
+    "setTimeout 14400000",
+    "setTimeout 500"
+  ],
+  "localStorage": [
+    "<app_key>/cly_config",
+    "<app_key>/cly_hc_backoff_count",
+    "<app_key>/cly_hc_consecutive_backoff_count",
+    "<app_key>/cly_hc_error_count",
+    "<app_key>/cly_hc_error_message",
+    "<app_key>/cly_hc_log_codes",
+    "<app_key>/cly_hc_method_usage",
+    "<app_key>/cly_hc_status_code",
+    "<app_key>/cly_hc_warning_count",
+    "<app_key>/cly_id",
+    "<app_key>/cly_id_type",
+    "<app_key>/cly_session"
+  ],
+  "sessionStorage": [
+    "<app_key>/cly_event",
+    "<app_key>/cly_queue"
+  ],
+  "cookies": [],
+  "elements": [],
+  "attributes": [
+    "html[data-countly-useragent]"
+  ],
+  "console": []
+}

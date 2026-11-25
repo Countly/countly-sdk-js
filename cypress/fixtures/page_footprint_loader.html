@@ -1,0 +1,18 @@
+<!-- Used in page footprint tests: a page that imports the loader and calls the SDK, but does not initialize it, so the
+     SDK file is not loaded. The import map resolves countly-sdk-web to the SDK, as a bundler resolves the package.
+     page_footprint_probe.js, its first script, records what the loader leaves on the page -->
+<html>
+<head>
+  <script src="page_footprint_probe.js"></script>
+  <script type="importmap">{ "imports": { "countly-sdk-web": "../../Countly.js" } }</script>
+  <script type='module'>
+    import Countly from '../../loader.js';
+
+    Countly.add_event({ key: "before_init" });
+    window.pageFootprint.ready = true;
+  </script>
+</head>
+<body>
+  <h1>Page footprint</h1>
+</body>
+</html>
