@@ -12,6 +12,7 @@
     "build": "rollup -c",
     "sync:web": "node scripts/sync-web.mjs",
     "api:update": "node scripts/api-update.mjs",
+    "page:update": "cypress run --spec cypress/e2e/page_footprint.cy.js --env updatePageRecords=true,coverage=false",
     "cy:run": "cypress run",
     "cy:open": "cypress open"
   },

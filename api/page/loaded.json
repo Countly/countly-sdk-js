@@ -1,0 +1,14 @@
+{
+  "globals": [],
+  "listeners": [
+    "window: storage"
+  ],
+  "replaced": [],
+  "timers": [],
+  "localStorage": [],
+  "sessionStorage": [],
+  "cookies": [],
+  "elements": [],
+  "attributes": [],
+  "console": []
+}

@@ -1,0 +1,13 @@
+<!-- Used in page footprint tests: the page without the SDK, which shows what the browser and Cypress leave on a page.
+     page_footprint_probe.js, its first script, records it -->
+<html>
+<head>
+  <script src="page_footprint_probe.js"></script>
+  <script type='module'>
+    window.pageFootprint.ready = true;
+  </script>
+</head>
+<body>
+  <h1>Page footprint</h1>
+</body>
+</html>
