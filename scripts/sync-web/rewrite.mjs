@@ -74,7 +74,7 @@ export function toWebBundle(umd, banner) {
 export function toWebTest(text, folder) {
     const modulesPath = folder === "support" ? "./sdk-modules/" : "../support/sdk-modules/";
     return text
-        .replace(/require\((["'])\.\.\/\.\.\/Countly\.js\1\)/g, "require($1../../lib/countly$1)")
+        .replace(/require\((["'])\.\.\/\.\.\/Countly\.js(\?[^"']*)?\1\)/g, "require($1../../lib/countly$2$1)")
         .replace(/import (["'])\.\.\/\.\.\/Countly\.js\1;/g, "import $1../../lib/countly.js$1;")
         .replace(/(["'])\.\.\/\.\.\/modules\//g, "$1" + modulesPath)
         .replace(/^import ["']@cypress\/code-coverage\/support["'];?\r?\n/m, "")
