@@ -180,9 +180,12 @@ class CountlyClass {
     #SCEventSegmentationBlacklist;
     #SCEventSegmentationWhitelist;
     #SCJourneyTriggerEvents;
+    #SCJourneyTriggerViews;
     #SCContentTriggers;
     #autoContentTriggersDisabled;
     #liveSettingsSettled;
+    #settingsStoredAtInit;
+    #contentZoneEnabledAtInit;
     #earlyContentTriggers;
     #contentTriggerGaps;
     #contentTriggerChain;
@@ -356,8 +359,11 @@ class CountlyClass {
         this.#SCEventSegmentationBlacklist = {};
         this.#SCEventSegmentationWhitelist = {};
         this.#SCJourneyTriggerEvents = [];
+        this.#SCJourneyTriggerViews = [];
         this.#SCContentTriggers = null;
         this.#liveSettingsSettled = false;
+        this.#settingsStoredAtInit = false;
+        this.#contentZoneEnabledAtInit = false;
         this.#earlyContentTriggers = [];
         this.#contentTriggerGaps = {};
         this.#contentTriggerChain = 0;
@@ -439,7 +445,7 @@ class CountlyClass {
             });
         }
         this.#giveInitialConsents();
-        if (this.#SCEnableContent) {
+        if (this.#contentZoneEnabledAtInit) {
             this.#enterContentZoneInternal();
             this.#initContentSent = true;
         }
@@ -828,11 +834,9 @@ class CountlyClass {
         if (cache.hasOwnProperty("czi") && cache.czi > 14) {
             this.#SCIntervalContent = cache.czi * 1000;
         }
+        // "ecz" decides only the content zone entry at init, on the first answer of a first start, or when offline mode ends
         if (cache.hasOwnProperty("ecz")) {
             this.#SCEnableContent = cache.ecz;
-            if (!this.#initContentSent && this.#SCEnableContent) {
-                this.#enterContentZoneInternal();
-            }
         }
         if (cache.hasOwnProperty("cr")) {
             this.#SCEnableConsentRequired = cache.cr;
@@ -925,6 +929,9 @@ class CountlyClass {
         }
         if (cache.hasOwnProperty("jte") && Array.isArray(cache.jte)) {
             this.#SCJourneyTriggerEvents = cache.jte;
+        }
+        if (Array.isArray(cache.jtv)) {
+            this.#SCJourneyTriggerViews = cache.jtv;
         }
     };
 
@@ -1046,7 +1053,10 @@ class CountlyClass {
             this.#serverConfigCache = getConfig("behavior_settings", ob, {});
             this.#setValueInStorage("cly_config", JSON.stringify(this.#serverConfigCache));
         }
+        this.#settingsStoredAtInit = !!(this.#serverConfigCache && this.#serverConfigCache.c && typeof this.#serverConfigCache.c === "object");
         this.#populateServerConfig(this.#serverConfigCache);
+        // the settings in use at init decide the entry, also when an answer arrives before init ends
+        this.#contentZoneEnabledAtInit = this.#SCEnableContent;
 
         if (!this.rcAutoOptinAb && !this.useExplicitRcApi) {
             this.#log(logLevelEnums.WARNING, "initialize, Auto opting is disabled, switching to explicit RC API");
@@ -3673,6 +3683,8 @@ class CountlyClass {
         }
         
         const initialKey = event.key;
+        // a view name is matched as the app passed it, before the limits cut it
+        const initialViewName = event.key === internalEventKeyEnums.VIEW && event.segmentation ? event.segmentation.name : undefined;
         // we omit the internal event keys from truncation. TODO: This is not perfect as it would omit a key that includes an internal event key and more too. But that possibility seems negligible. 
         if (!internalEventKeyEnumsArray.includes(event.key)) {
             event.key = truncateSingleValue(event.key, this.#SCLimitKeyLength, "add_cly_event", this.#log, "w201");
@@ -3713,9 +3725,8 @@ class CountlyClass {
         if (e.key !== internalEventKeyEnums.VIEW) {
             this.#handleJourneyTrigger(initialKey, e.id);
         }
-        // only the start of a view is a trigger, the event recorded when it ends carries its duration
-        else if (e.segmentation && e.segmentation.visit === 1) {
-            this.#handleJourneyTrigger(initialKey, e.id, e.segmentation.name);
+        else if (e.segmentation) {
+            this.#handleJourneyTrigger(initialKey, e.id, initialViewName, undefined, e.segmentation.visit !== 1);
         }
     }
 
@@ -3830,38 +3841,63 @@ class CountlyClass {
      * it can ask again. When the server sent content triggers ("jt"), only they decide, and only while the app wants
      * the content zone: a view or user property they list by name is specific; a key they list is specific too, except
      * any view, any user property change and any error, which can happen often. Otherwise (an older server, or
-     * disable_auto_content_triggers set) a key the journey trigger events ("jte") list, by the same rule
+     * disable_auto_content_triggers set) the journey trigger events ("jte") and views ("jtv") decide. The start and the
+     * end of a view are separate triggers, each with its own gap
      * @private
      * @param {String} key - event key, or the content trigger key of what was recorded
-     * @param {String} [viewName] - name of the recorded view
+     * @param {String} [viewName] - name of the recorded view, as the app passed it
      * @param {Array<String>} [properties] - the user properties a user details request sends
+     * @param {Boolean} [viewEnd] - true for the view event recorded when the view ends
      * @returns {Object|null} { gapKeys, gapMs } when it is a content trigger: the triggers the gap is counted for, and
      * the gap in milliseconds; null when it is not one
      */
-    #contentTriggerMatch = (key, viewName, properties) => {
+    #contentTriggerMatch = (key, viewName, properties, viewEnd) => {
+        var isView = key === internalEventKeyEnums.VIEW;
+        var suffix = isView && viewEnd ? ":end" : "";
         var triggers = this.#SCContentTriggers;
-        if (triggers) {
-            if (!this.#contentZoneWanted) {
-                return null;
-            }
-            if (key === internalEventKeyEnums.VIEW && typeof viewName === "string" && triggers.v.indexOf(viewName) !== -1) {
-                return { gapKeys: ["v:" + viewName], gapMs: contentTriggerGaps.SPECIFIC };
-            }
-            if (key === contentTriggerKeys.USER_PROPERTIES && Array.isArray(properties)) {
-                var listed = properties.filter((name) => triggers.p.indexOf(name) !== -1);
-                if (listed.length > 0) {
-                    return { gapKeys: listed.map((name) => "p:" + name), gapMs: contentTriggerGaps.SPECIFIC };
-                }
-            }
-            if (triggers.e.indexOf(key) === -1) {
-                return null;
-            }
+        if (!triggers) {
+            return this.#journeyTriggerMatch(key, viewName, suffix);
         }
-        else if (!Array.isArray(this.#SCJourneyTriggerEvents) || this.#SCJourneyTriggerEvents.indexOf(key) === -1) {
+        if (!this.#contentZoneWanted) {
             return null;
         }
-        var nonSpecific = key === internalEventKeyEnums.VIEW || key === contentTriggerKeys.USER_PROPERTIES || key === contentTriggerKeys.CRASH;
-        return { gapKeys: [key], gapMs: nonSpecific ? contentTriggerGaps.NON_SPECIFIC : contentTriggerGaps.SPECIFIC };
+        if (isView && typeof viewName === "string" && triggers.v.indexOf(viewName) !== -1) {
+            return { gapKeys: ["v:" + viewName + suffix], gapMs: contentTriggerGaps.SPECIFIC };
+        }
+        if (key === contentTriggerKeys.USER_PROPERTIES && Array.isArray(properties)) {
+            var listed = properties.filter((name) => triggers.p.indexOf(name) !== -1);
+            if (listed.length > 0) {
+                return { gapKeys: listed.map((name) => "p:" + name), gapMs: contentTriggerGaps.SPECIFIC };
+            }
+        }
+        if (triggers.e.indexOf(key) === -1) {
+            return null;
+        }
+        var nonSpecific = isView || key === contentTriggerKeys.USER_PROPERTIES || key === contentTriggerKeys.CRASH;
+        return { gapKeys: [key + suffix], gapMs: nonSpecific ? contentTriggerGaps.NON_SPECIFIC : contentTriggerGaps.SPECIFIC };
+    };
+
+    /**
+     * The match against the deprecated journey trigger events ("jte") and views ("jtv"): an event of the app whose key
+     * the events list, or a view, when it starts and when it ends, whose whole name the views list. They apply also
+     * while the app does not want the content zone
+     * @private
+     * @param {String} key - event key, or the content trigger key of what was recorded
+     * @param {String} [viewName] - name of the recorded view, as the app passed it
+     * @param {String} suffix - what the gap key of the view event recorded when the view ends ends with, else empty
+     * @returns {Object|null} { gapKeys, gapMs } when it is a journey trigger, null when it is not one
+     */
+    #journeyTriggerMatch = (key, viewName, suffix) => {
+        if (key === internalEventKeyEnums.VIEW) {
+            if (typeof viewName !== "string" || !Array.isArray(this.#SCJourneyTriggerViews) || this.#SCJourneyTriggerViews.indexOf(viewName) === -1) {
+                return null;
+            }
+            return { gapKeys: ["v:" + viewName + suffix], gapMs: contentTriggerGaps.SPECIFIC };
+        }
+        if (typeof key !== "string" || key.indexOf("[CLY]_") === 0 || !Array.isArray(this.#SCJourneyTriggerEvents) || this.#SCJourneyTriggerEvents.indexOf(key) === -1) {
+            return null;
+        }
+        return { gapKeys: [key], gapMs: contentTriggerGaps.SPECIFIC };
     };
 
     /**
@@ -3924,24 +3960,26 @@ class CountlyClass {
      * @param {String} key - event key, or the content trigger key of what was recorded
      * @param {String} [viewName] - name of the recorded view
      * @param {Array<String>} [properties] - the user properties a user details request sent
+     * @param {Boolean} [viewEnd] - true for the view event recorded when the view ends
      */
-    #rememberEarlyContentTrigger = (key, viewName, properties) => {
+    #rememberEarlyContentTrigger = (key, viewName, properties, viewEnd) => {
         if (this.#liveSettingsSettled || this.#earlyContentTriggers.length >= 50) {
             return;
         }
         var propertyList = Array.isArray(properties) ? properties.join(",") : "";
         for (var i = 0; i < this.#earlyContentTriggers.length; i++) {
             var early = this.#earlyContentTriggers[i];
-            if (early.key === key && early.viewName === viewName && (Array.isArray(early.properties) ? early.properties.join(",") : "") === propertyList) {
+            if (early.key === key && early.viewName === viewName && early.viewEnd === !!viewEnd && (Array.isArray(early.properties) ? early.properties.join(",") : "") === propertyList) {
                 return;
             }
         }
-        this.#earlyContentTriggers.push({ key: key, viewName: viewName, properties: properties });
+        this.#earlyContentTriggers.push({ key: key, viewName: viewName, properties: properties, viewEnd: !!viewEnd });
     };
 
     /**
-     * Ends the wait for the first behavior settings answer of this page load. When the answer arrived, what was recorded
-     * before it and is listed by its content triggers makes the SDK ask for content once
+     * Ends the wait for the first behavior settings answer of this page load. When the answer arrived and no settings
+     * were stored at init (a first start), its "ecz" decides the content zone entry; and what was recorded before it and
+     * is listed by its content triggers makes the SDK ask for content once
      * @private
      * @param {Boolean} answered - true when the answer arrived and was applied
      */
@@ -3955,10 +3993,15 @@ class CountlyClass {
         if (!answered) {
             return;
         }
+        if (!this.#settingsStoredAtInit && this.#SCEnableContent && !this.#initContentSent && !this.#contentZoneWanted && !this.#contentZoneExited) {
+            this.#log(logLevelEnums.DEBUG, "server_config, No behavior settings were stored at init, and the first answer has 'ecz' on, entering the content zone");
+            this.#enterContentZoneInternal();
+            this.#initContentSent = true;
+        }
         for (var i = 0; i < early.length; i++) {
-            if (this.#contentTriggerMatch(early[i].key, early[i].viewName, early[i].properties)) {
+            if (this.#contentTriggerMatch(early[i].key, early[i].viewName, early[i].properties, early[i].viewEnd)) {
                 this.#log(logLevelEnums.DEBUG, "journeyTrigger, [" + early[i].key + "] was recorded before the behavior settings arrived");
-                this.#handleJourneyTrigger(early[i].key, null, early[i].viewName, early[i].properties);
+                this.#handleJourneyTrigger(early[i].key, null, early[i].viewName, early[i].properties, early[i].viewEnd);
                 return;
             }
         }
@@ -3970,16 +4013,17 @@ class CountlyClass {
      * A halted instance does neither, also for what is recorded through it until the next init
      * @param {String} eventKey - Event key to check for journey trigger, or the content trigger key of what was recorded
      * @param {String} [eventId] - ID of the recorded event
-     * @param {String} [viewName] - name of the recorded view
+     * @param {String} [viewName] - name of the recorded view, as the app passed it
      * @param {Array<String>} [properties] - the user properties a user details request sent
+     * @param {Boolean} [viewEnd] - true for the view event recorded when the view ends
      */
-    #handleJourneyTrigger = (eventKey, eventId, viewName, properties) => {
+    #handleJourneyTrigger = (eventKey, eventId, viewName, properties, viewEnd) => {
         if (!isBrowser || this.#halted) {
             return;
         }
-        var match = this.#contentTriggerMatch(eventKey, viewName, properties);
+        var match = this.#contentTriggerMatch(eventKey, viewName, properties, viewEnd);
         if (!match) {
-            this.#rememberEarlyContentTrigger(eventKey, viewName, properties);
+            this.#rememberEarlyContentTrigger(eventKey, viewName, properties, viewEnd);
             return;
         }
         if (this.#contentZoneExited || !this.check_consent(featureEnums.CONTENT)) {

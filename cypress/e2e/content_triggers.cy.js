@@ -204,6 +204,47 @@ describe("Content triggers", () => {
         });
     });
 
+    it("follows only the events of the app in the journey trigger events", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWith({ c: { jte: ["[CLY]_session", "legacy_start"] } }, { noZone: true });
+            cy.wait(1000).then(() => {
+                Countly.begin_session();
+            });
+            cy.wait(1500).then(() => {
+                expect(matches(run, "[CLY]_session"), "matched the session").to.equal(0);
+                expect(contentRequests(run), "content requests for the session").to.equal(0);
+                Countly.add_event({ key: "legacy_start" });
+            });
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(matches(run, "legacy_start"), "matched the event of the app").to.equal(1);
+            });
+        });
+    });
+
+    it("follows the journey trigger views of a server that sends no content triggers, when a view starts and when it ends", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWith({ c: { jtv: ["Checkout"] } }, { noZone: true });
+            cy.wait(1000).then(() => {
+                Countly.track_pageview("Home");
+            });
+            cy.wait(1500).then(() => {
+                expect(matches(run, "[CLY]_view"), "matched another view").to.equal(0);
+                Countly.track_pageview("Checkout");
+            });
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(matches(run, "[CLY]_view"), "matched the start of the listed view").to.equal(1);
+                expect(contentRequests(run), "content requests for the listed view").to.be.greaterThan(0);
+            });
+            // the asking ends after its third answer without content
+            cy.wait(3000).then(() => {
+                Countly.track_pageview("Home");
+            });
+            cy.window({ timeout: 2000 }).should(() => {
+                expect(matches(run, "[CLY]_view"), "matched the end of the listed view").to.equal(2);
+            });
+        });
+    });
+
     it("keeps and sends nothing for a journey trigger event recorded through a halted instance", () => {
         hp.haltAndClearStorage(() => {
             initWith({ c: { jte: ["legacy_start"] } }, { noZone: true });
@@ -240,14 +281,14 @@ describe("Content triggers", () => {
         });
     });
 
-    it("asks for content when a listed view starts, but not when it ends", () => {
+    it("asks for content when a listed view starts and again when it ends, each with its own gap", () => {
         hp.haltAndClearStorage(() => {
             var run = initWith({ c: {}, jt: { v: ["First", "Second"] } });
             afterZoneEntered(run).then(() => {
                 Countly.track_pageview("First");
             });
             cy.window({ timeout: 2000 }).should(() => {
-                expect(matches(run, "[CLY]_view"), "matched the first view").to.equal(1);
+                expect(matches(run, "[CLY]_view"), "matched the start of the first view").to.equal(1);
             });
             // the asking ends after its third answer without content
             cy.wait(3000).then(() => {
@@ -255,7 +296,12 @@ describe("Content triggers", () => {
                 Countly.track_pageview("Second");
             });
             cy.wait(1500).then(() => {
-                expect(matches(run, "[CLY]_view"), "one match for the second view, none for the end of the first").to.equal(2);
+                expect(matches(run, "[CLY]_view"), "a match for the end of the first view and one for the start of the second").to.equal(3);
+                // ends the second view and starts the first one again, inside the gap of its start
+                Countly.track_pageview("First");
+            });
+            cy.wait(1500).then(() => {
+                expect(matches(run, "[CLY]_view"), "a match for the end of the second view only").to.equal(4);
             });
         });
     });
@@ -277,7 +323,7 @@ describe("Content triggers", () => {
                 Countly.track_pageview("B");
             });
             cy.wait(1000).then(() => {
-                expect(matches(run, "[CLY]_view"), "no match for a view inside the gap").to.equal(1);
+                expect(matches(run, "[CLY]_view"), "a match for the end of the first view, which has its own gap, and none for the start of a view inside the gap").to.equal(2);
                 expect(run.logs.filter((m) => m.indexOf("asked for content less than 60 seconds ago") !== -1).length, "the gap was logged").to.be.greaterThan(0);
                 // the next page of the website
                 Countly.halt();
@@ -292,7 +338,7 @@ describe("Content triggers", () => {
                 Countly.track_pageview("D");
             });
             cy.window({ timeout: 2000 }).should(() => {
-                expect(matches(run, "[CLY]_view"), "matched once the gap passed").to.equal(1);
+                expect(matches(run, "[CLY]_view"), "matched the end of a view and the start of the next once the gaps passed").to.equal(2);
             });
         });
     });
@@ -494,6 +540,55 @@ describe("Content triggers", () => {
             cy.window({ timeout: 3000 }).should(() => {
                 expect(askedForTriggers, "the settings request asked for the content triggers").to.equal("1");
                 expect(content, "content requests once the settings arrived").to.be.greaterThan(0);
+            });
+        });
+    });
+
+    // starts the SDK with the given behavior settings, if any, and a server whose behavior settings answer has "ecz" on
+    function initWithEczAnswer(storedSettings) {
+        var run = { sent: [], logs: [] };
+        var options = {
+            app_key: "YOUR_APP_KEY",
+            url: "https://your.domain.count.ly",
+            debug: true,
+            log_listener: (message) => {
+                run.logs.push(message);
+            },
+            fake_request_handler: (req) => {
+                run.sent.push(kindOf(req));
+                if (req.params && req.params.method === "sc") {
+                    return { status: 200, responseText: JSON.stringify({ v: 2, t: Date.now(), c: { ecz: true } }) };
+                }
+                if (req.params && req.params.method === "queue") {
+                    return { status: 200, responseText: "{}" };
+                }
+                return { status: 200, responseText: "{\"result\":\"Success\"}" };
+            }
+        };
+        if (storedSettings) {
+            options.behavior_settings = storedSettings;
+        }
+        Countly.init(options);
+        return run;
+    }
+
+    it("enters the content zone when the first behavior settings answer of a first start has ecz on", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWithEczAnswer();
+            // nothing was stored at init, so the first answer decides the entry
+            afterZoneEntered(run).then(() => {
+                expect(run.sent.indexOf("settings"), "the settings were fetched").to.not.equal(-1);
+            });
+        });
+    });
+
+    it("does not enter the content zone when a later behavior settings answer turns ecz on", () => {
+        hp.haltAndClearStorage(() => {
+            var run = initWithEczAnswer({ c: { ecz: false } });
+            // the zone's own first fetch would come about 4 s after init
+            cy.wait(6000).then(() => {
+                expect(run.sent.indexOf("settings"), "the settings were fetched").to.not.equal(-1);
+                expect(contentRequests(run), "content requests: " + run.sent.join(" | ")).to.equal(0);
             });
         });
     });
