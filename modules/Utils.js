@@ -1,5 +1,5 @@
 import { isBrowser, Countly } from "./Platform.js";
-import { logLevelEnums, urlParseRE } from "./Constants.js";
+import { logLevelEnums, requestCompressionValues, urlParseRE } from "./Constants.js";
 
 /**
  *  Get selected values from multi select input
@@ -353,6 +353,27 @@ function calculateChecksum(data, salt) {
 }
 
 /**
+ * Compresses a request body with gzip, for sending it with the request compression marker in the URL.
+ * @param {String} body - url encoded request body, checksum included
+ * @returns {Promise<Uint8Array|null>} the gzip bytes, or null when the body is smaller than requestCompressionValues.MIN_BYTES
+ * or larger than requestCompressionValues.MAX_BYTES, the runtime has no CompressionStream, compressing fails, or the
+ * result is not smaller than the body
+ */
+function gzipRequestBody(body) {
+    if (typeof body !== "string" || typeof CompressionStream === "undefined" || typeof TextEncoder === "undefined" || typeof Response === "undefined" || typeof Blob === "undefined") {
+        return Promise.resolve(null);
+    }
+    var plain = new TextEncoder().encode(body);
+    if (plain.length < requestCompressionValues.MIN_BYTES || plain.length > requestCompressionValues.MAX_BYTES) {
+        return Promise.resolve(null);
+    }
+    return Promise.resolve().then(() => new Response(new Blob([plain]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer()).then((buffer) => {
+        var compressed = new Uint8Array(buffer);
+        return compressed.length < plain.length ? compressed : null;
+    }, () => null);
+}
+
+/**
  * Decodes standard base64 text into bytes, with atob or, in runtimes without it, Buffer.
  * Buffer is read from globalThis: Parcel replaces a bare Buffer in browser bundles with the npm buffer package, which
  * every site would then have to install.
@@ -392,7 +413,67 @@ function get_closest_element(el, nodeName) {
 };
 
 /**
- *  Listen to specific browser event
+ * The value a property had before zone.js patched it. Angular apps load zone.js, which wraps timers and event
+ * listeners so that each of them runs Angular's change detection and keeps the app from being stable while it is
+ * pending. The SDK's own background timers and listeners use the originals, so that they do neither. zone.js keeps
+ * each original under the name Zone.__symbol__ gives; without zone.js, or for what it did not patch, this is the
+ * property itself.
+ * @memberof Countly._internals
+ * @param {Object} target - the object holding the property, for example the global object
+ * @param {string} name - the property name, for example "setTimeout"
+ * @returns {*} the original value
+ */
+function getZoneJsOriginal(target, name) {
+    var zone = globalThis.Zone;
+    var original;
+    if (zone && typeof zone.__symbol__ === "function") {
+        original = target[zone.__symbol__(name)];
+    }
+    return original || target[name];
+}
+
+/**
+ * setTimeout for the SDK's own work, outside any zone.js zone (see getZoneJsOriginal)
+ * @memberof Countly._internals
+ * @param {Function} callback - function to run
+ * @param {number} delay - milliseconds to wait
+ * @returns {*} the timer id
+ */
+function sdkSetTimeout(callback, delay) {
+    return getZoneJsOriginal(globalThis, "setTimeout").call(globalThis, callback, delay);
+}
+
+/**
+ * clearTimeout for timers started with sdkSetTimeout
+ * @memberof Countly._internals
+ * @param {*} id - the timer id
+ */
+function sdkClearTimeout(id) {
+    getZoneJsOriginal(globalThis, "clearTimeout").call(globalThis, id);
+}
+
+/**
+ * setInterval for the SDK's own work, outside any zone.js zone (see getZoneJsOriginal)
+ * @memberof Countly._internals
+ * @param {Function} callback - function to run
+ * @param {number} delay - milliseconds between the runs
+ * @returns {*} the timer id
+ */
+function sdkSetInterval(callback, delay) {
+    return getZoneJsOriginal(globalThis, "setInterval").call(globalThis, callback, delay);
+}
+
+/**
+ * clearInterval for timers started with sdkSetInterval
+ * @memberof Countly._internals
+ * @param {*} id - the timer id
+ */
+function sdkClearInterval(id) {
+    getZoneJsOriginal(globalThis, "clearInterval").call(globalThis, id);
+}
+
+/**
+ *  Listen to specific browser event, outside any zone.js zone (see getZoneJsOriginal)
  *  @memberof Countly._internals
  *  @param {HTMLElement} element - HTML element that should listen to event
  *  @param {String} type - event name or action
@@ -410,11 +491,68 @@ function add_event_listener(element, type, listener) {
         return;
     }
     if (typeof element.addEventListener !== "undefined") {
-        element.addEventListener(type, listener, false);
+        getZoneJsOriginal(element, "addEventListener").call(element, type, listener, false);
     }
     // for old browser use attachEvent instead
     else {
         element.attachEvent("on" + type, listener);
+    }
+};
+
+/**
+ * Name of the event the SDK dispatches on window after history.pushState and history.replaceState ran, the calls
+ * single-page apps use to move to another page without loading one
+ * @memberof Countly._internals
+ */
+var locationChangeEvent = "cly_locationchange";
+
+/**
+ * Makes history.pushState and history.replaceState dispatch locationChangeEvent on window after they ran, once per
+ * page. The browser fires no event of its own for these calls: popstate is only for the back and forward buttons.
+ * @memberof Countly._internals
+ */
+function watchHistory() {
+    if (!isBrowser || !window.history || window.history.__clyWatched) {
+        return;
+    }
+    ["pushState", "replaceState"].forEach(function (name) {
+        var original = window.history[name];
+        if (typeof original !== "function") {
+            return;
+        }
+        window.history[name] = function () {
+            var result = original.apply(this, arguments);
+            var event;
+            if (typeof Event === "function") {
+                event = new Event(locationChangeEvent);
+            }
+            else {
+                event = document.createEvent("Event");
+                event.initEvent(locationChangeEvent, false, false);
+            }
+            window.dispatchEvent(event);
+            return result;
+        };
+    });
+    Object.defineProperty(window.history, "__clyWatched", { value: true });
+}
+
+/**
+ *  Stop listening to an event added with add_event_listener
+ *  @memberof Countly._internals
+ *  @param {HTMLElement} element - HTML element the listener was added to
+ *  @param {String} type - event name or action
+ *  @param {Function} listener - the listener that was added
+ */
+function remove_event_listener(element, type, listener) {
+    if (!isBrowser || element === null || typeof element === "undefined") {
+        return;
+    }
+    if (typeof element.removeEventListener !== "undefined") {
+        getZoneJsOriginal(element, "removeEventListener").call(element, type, listener, false);
+    }
+    else if (typeof element.detachEvent !== "undefined") {
+        element.detachEvent("on" + type, listener);
     }
 };
 
@@ -1134,7 +1272,15 @@ export {
     truncateObject,
     truncateSingleValue,
     get_closest_element,
+    getZoneJsOriginal,
+    sdkSetTimeout,
+    sdkClearTimeout,
+    sdkSetInterval,
+    sdkClearInterval,
     add_event_listener,
+    remove_event_listener,
+    locationChangeEvent,
+    watchHistory,
     get_event_target,
     currentUserAgentString,
     userAgentDeviceDetection,
@@ -1153,6 +1299,7 @@ export {
     getUserAgentClientHints,
     parseWindowsVersionFromPlatformVersion,
     calculateChecksum,
+    gzipRequestBody,
     base64ToBytes,
     parseUrlParts,
     parseQueryPairs,

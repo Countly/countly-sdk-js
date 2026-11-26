@@ -1,0 +1,29 @@
+<!-- Used in pre-init tests: a page that calls the SDK many times and never initializes it; with ?init=1 it initializes it
+     afterwards and keeps what the SDK logs in window.logs -->
+<html>
+<head>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    for (var i = 0; i < 1005; i++) {
+      Countly.add_log("breadcrumb " + i);
+    }
+    window.waitingCalls = Countly.q.length;
+    if (new URLSearchParams(window.location.search).get("init") === "1") {
+      window.logs = [];
+      window.localStorage.clear();
+      Countly.init({
+        app_key: "PRE_INIT_LIMIT_APP_KEY",
+        url: "https://your.domain.count.ly",
+        test_mode: true,
+        log_listener: function (message, level) {
+          window.logs.push(level + ": " + message);
+        }
+      });
+    }
+  </script>
+</head>
+<body>
+  <h1>Calls before an init that never comes</h1>
+</body>
+</html>

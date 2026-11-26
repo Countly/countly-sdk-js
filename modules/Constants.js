@@ -50,6 +50,28 @@ var internalEventKeyEnumsArray = Object.values(internalEventKeyEnums);
 
 // click ids ad platforms add to a landing URL; the server reads which platform the click came from
 var paidClickIdParams = ["gclid", "fbclid", "msclkid", "ttclid", "twclid", "li_fat_id"];
+// the most landing addresses a tab remembers having sent, so that it does not send one of them again
+var landingsKeptPerTab = 20;
+
+/**
+ * Keys the content triggers ("jt") behavior setting uses for what the SDK records besides events
+ */
+var contentTriggerKeys = {
+    SESSION: "[CLY]_session",
+    USER_PROPERTIES: "[CLY]_property_update",
+    CRASH: "[CLY]_crash",
+    CONSENT: "[CLY]_consent",
+};
+
+/**
+ * Least time in milliseconds before the same content trigger makes the SDK ask for content again
+ */
+var contentTriggerGaps = {
+    // a listed event key, view name or user property
+    SPECIFIC: 10000,
+    // any view, any user property change or any error, which can happen often
+    NON_SPECIFIC: 60000,
+};
 /**
  * 
  *log level Enums:
@@ -226,6 +248,16 @@ var configurationDefaultValues = {
 };
 
 /**
+ * Request compression: bodies of at least MIN_BYTES and at most MAX_BYTES are sent gzip-compressed, with URL_MARKER as
+ * the URL query. The server refuses a compressed body that is larger than MAX_BYTES once decoded.
+ */
+var requestCompressionValues = {
+    MIN_BYTES: 1024,
+    MAX_BYTES: 1048576,
+    URL_MARKER: "content_encoding=gzip",
+};
+
+/**
  * how long tabs of a site wait for each other around a device ID or profile change, in milliseconds
  */
 var tabHandoverTimes = {
@@ -355,4 +387,48 @@ var contentReservedSegmentationPrefix = "answ";
 // 17: "#fragment"
 var urlParseRE = /^(((([^:\/#\?]+:)?(?:(\/\/)((?:(([^:@\/#\?]+)(?:\:([^:@\/#\?]+))?)@)?(([^:\/#\?\]\[]+|\[[^\/\]@#?]+\])(?:\:([0-9]+))?))?)?)?((\/?(?:[^\/\?#]+\/+)*)([^\?#]*)))?(\?[^#]+)?)(#.*)?/;
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, paidClickIdParams, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, tabHandoverTimes, urlParseRE };
+/**
+ * The SDK's public functions that record or change something, as "function" or "object.function". Before init, a call
+ * to one of them waits in Countly.q and runs after init, in order. The quick async loader stubs the same functions,
+ * and the deprecated ones besides.
+ */
+var preInitQueuedFunctions = [
+    "track_sessions", "track_pageview", "add_event", "user_details", "track_errors", "track_forms", "track_clicks",
+    "track_scrolls", "track_links", "recordError", "change_id", "set_id", "uploadUserProfilePicture", "add_consent",
+    "remove_consent", "group_features", "opt_in", "opt_out", "begin_session", "end_session", "session_duration",
+    "start_event", "end_event", "track_view", "add_log", "log_error", "report_trace", "enable_offline_mode",
+    "disable_offline_mode", "attempt_to_send_stored_requests", "change_server_url", "change_app_key", "flush_queues",
+    "replace_all_app_keys_in_queue_with_current_app_key", "remove_different_app_keys_from_queue", "fetch_remote_config",
+    "enrollUserToAb", "recordDirectAttribution", "recordAdRevenue", "collect_from_forms", "collect_from_facebook",
+    "get_available_feedback_widgets", "getFeedbackWidgetData", "present_feedback_widget", "reportFeedbackWidgetManually",
+    "recordRatingWidgetWithID", "content.enterContentZone", "content.refreshContentZone", "content.exitContentZone",
+    "content.setGlobalContentSegmentation", "content.setTheme", "feedback.showNPS", "feedback.showSurvey",
+    "feedback.showRating", "userData.set", "userData.set_once", "userData.increment", "userData.increment_by",
+    "userData.multiply", "userData.max", "userData.min", "userData.push", "userData.push_unique", "userData.pull",
+    "userData.unset", "userData.save", "enable_push_notifications", "disable_push_notifications", "record_push_action",
+    "set_push_notification_listener", "enableRatingWidgets", "enable_feedback", "initializeRatingWidgets",
+    "initialize_feedback_popups", "presentRatingWidgetWithID", "show_feedback_popup", "report_conversion", "report_feedback"
+];
+
+/**
+ * The most calls made before init that wait in Countly.q, so that a page that never initializes the SDK keeps no more
+ */
+var preInitCallLimit = 1000;
+
+/**
+ * The SDK's public functions that return a value, with the value they return before init
+ */
+var preInitValueFunctions = {
+    check_consent: false,
+    check_any_consent: false,
+    get_device_id: undefined,
+    get_device_id_type: undefined,
+    get_remote_config: undefined,
+    cancel_event: false,
+    sdk_name: SDK_NAME,
+    sdk_version: SDK_VERSION,
+    // a link needs the server URL and the options init gives
+    "attribution.appLink": null
+};
+
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, landingsKeptPerTab, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, paidClickIdParams, preInitCallLimit, preInitQueuedFunctions, preInitValueFunctions, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE };

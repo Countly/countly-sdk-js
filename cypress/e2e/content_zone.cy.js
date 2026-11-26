@@ -302,7 +302,7 @@ describe("Journey content", () => {
                 url: "https://your.domain.count.ly",
                 debug: true,
                 fail_timeout: 1,
-                behavior_settings: { c: { jte: ["journey_start"] } },
+                behavior_settings: { c: { jte: ["journey_start", "journey_next"] } },
                 disable_sdk_behavior_settings_updates: true,
                 fake_request_handler: (req) => {
                     if (req.params && req.params.method === "queue") {
@@ -322,7 +322,8 @@ describe("Journey content", () => {
                 cy.wait(4000).then(() => {
                     expect(Countly._internals.getLocalQueues().requestQ.length, "the failed request was delivered later").to.equal(0);
                     var before = counts.content;
-                    Countly.add_event({ key: "journey_start" });
+                    // another listed key, so the gap after the first trigger does not hold this one back
+                    Countly.add_event({ key: "journey_next" });
                     cy.wait(2500).then(() => {
                         expect(counts.content - before, "journey content requests").to.be.greaterThan(0);
                     });

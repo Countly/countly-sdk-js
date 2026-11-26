@@ -1,0 +1,46 @@
+<!-- Used in pre-init tests: calls made before init on a page that requires consent. ?consent=before gives it before init,
+     ?consent=init in the consents init option, ?consent=init-all with give_all_consents, ?consent=right-after right after
+     init, ?consent=later a second after init, ?consent=never not at all. ?required=0 does not require consent -->
+<html>
+<head>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    var params = new URLSearchParams(window.location.search);
+    var consent = params.get("consent");
+    var config = {
+      app_key: "PRE_INIT_CONSENT_APP_KEY",
+      url: "https://your.domain.count.ly",
+      debug: true,
+      test_mode: true,
+      require_consent: params.get("required") !== "0"
+    };
+    if (consent === "init") {
+      config.consents = ["sessions", "events"];
+    }
+    if (consent === "init-all") {
+      config.give_all_consents = true;
+    }
+    window.localStorage.clear();
+    if (consent === "before") {
+      Countly.add_consent(["sessions", "events"]);
+    }
+    Countly.track_sessions();
+    Countly.add_event({ key: "early", count: 1 });
+    Countly.init(config);
+    if (consent === "right-after") {
+      Countly.add_consent(["sessions", "events"]);
+    }
+    Countly.add_event({ key: "after_init", count: 1 });
+    if (consent === "later") {
+      setTimeout(function () {
+        Countly.add_consent(["sessions", "events"]);
+        Countly.add_event({ key: "later", count: 1 });
+      }, 1000);
+    }
+  </script>
+</head>
+<body>
+  <h1>Calls before init with consent required</h1>
+</body>
+</html>

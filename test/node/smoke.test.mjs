@@ -60,6 +60,28 @@ test("a bundled copy that finds an older copy's global, with a listed Countly.de
     }
 });
 
+test("outside a page and a web worker, the functions exist before init, ignore the calls and keep nothing", async () => {
+    const copies = [(await import(pathToFileURL(join(dist, "countly_esm.js")).href + "?before-init")).default];
+    for (const file of ["countly_cjs.js", "countly_umd.js"]) {
+        const copy = join(consumer, "before_init_" + file);
+        copyFileSync(join(dist, file), copy);
+        copies.push(require(copy));
+    }
+    for (const Countly of copies) {
+        assert.equal(typeof Countly.add_event, "function");
+        assert.equal(typeof Countly.userData.set, "function");
+        assert.equal(typeof Countly.content.enterContentZone, "function");
+        assert.equal(Countly.get_device_id(), undefined);
+        assert.equal(Countly.check_consent("events"), false);
+        assert.match(Countly.sdk_version(), /^\d+\.\d+\.\d+$/);
+        const kept = Countly.q.length;
+        Countly.add_event({ key: "before_init", count: 1 });
+        Countly.userData.set("plan", "pro");
+        Countly.track_pageview("page");
+        assert.equal(Countly.q.length, kept, "a call made where the SDK never starts is not kept");
+    }
+});
+
 test("an ES module importing the CommonJS and UMD bundles gets the SDK as the default export", async () => {
     for (const file of ["countly_cjs.js", "countly_umd.js"]) {
         const imported = (await import(pathToFileURL(join(consumer, file)).href)).default;

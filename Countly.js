@@ -1,7 +1,8 @@
 import CountlyClass from "./modules/CountlyClass.js";
-import { featureList, DeviceIdTypeInternalEnums, CDN } from "./modules/Constants.js";
-import { checkIfLoggingIsOn, defaultGetSearchQuery, stripTrailingSlash } from "./modules/Utils.js";
+import { featureList, DeviceIdTypeInternalEnums, CDN, logLevelEnums, preInitCallLimit } from "./modules/Constants.js";
+import { add_event_listener, defaultGetSearchQuery, sdkClearInterval, sdkSetInterval, stripTrailingSlash } from "./modules/Utils.js";
 import { isBrowser, Countly } from "./modules/Platform.js";
+import { addPreInitFunctions, preInitCalls } from "./modules/PreInit.js";
 
 var apmLibrariesNotLoaded = true; // used to prevent loading apm scripts multiple times.
 
@@ -27,9 +28,45 @@ Countly.init = function (conf) {
             }
         }
         Countly.i[appKey] = inst;
+        var calls = preInitCalls(Countly);
+        if (calls.ignored > 0) {
+            inst._internals.log(logLevelEnums.WARNING, "init, " + calls.ignored + " calls made before init were ignored, as " + preInitCallLimit + " were waiting already");
+            calls.ignored = 0;
+        }
+        if (!inst.check_any_consent()) {
+            runQueuedConsentCalls();
+        }
+        // made before init, they run ahead of the calls made after it, but wait for the consent an app gives right after init
+        if (inst.check_any_consent()) {
+            inst._internals.processAsyncQueue();
+        }
     }
     return Countly.i[appKey];
 };
+
+/**
+ * Runs the consent calls waiting in Countly.q ahead of the other calls there, so that the consent an app gave before init
+ * applies to every call it made before init. Countly.q stays the same array, as a tag that pushes to it may keep it.
+ */
+function runQueuedConsentCalls() {
+    var consentCalls = ["group_features", "add_consent", "remove_consent"];
+    var others = [];
+    Countly.q.splice(0, Countly.q.length).forEach(function (call) {
+        var name = typeof call === "function" ? call.clyName : Array.isArray(call) && call[0];
+        if (consentCalls.indexOf(name) === -1) {
+            others.push(call);
+        }
+        else if (typeof call === "function") {
+            call();
+        }
+        else {
+            Countly[name].apply(Countly, call.slice(1));
+        }
+    });
+    Countly.q.push.apply(Countly.q, others);
+}
+
+addPreInitFunctions(Countly, isBrowser || (typeof WorkerGlobalScope !== "undefined" && globalThis instanceof WorkerGlobalScope));
 
 function initAfterLoadingAPM(conf) {
     // TODO: We assume we are in browser context. If browser context checks at top are removed this code should have its own check.
@@ -64,7 +101,7 @@ function initAfterLoadingAPM(conf) {
     var intervalDuration = 50;
     var timeoutLimit = 1500; // TODO: Configurable? Mb with Countly.apmScriptLoadTimeout?
     // init Countly only after boomerang is loaded
-    var intervalID = setInterval(function () {
+    var intervalID = sdkSetInterval(function () {
         timeoutCounter += intervalDuration;
         if ((boomLoaded && countlyBoomLoaded) || (timeoutCounter >= timeoutLimit)) {
             if (Countly.debug) {
@@ -81,7 +118,7 @@ function initAfterLoadingAPM(conf) {
                 }
             }
             Countly.init(conf);
-            clearInterval(intervalID);
+            sdkClearInterval(intervalID);
         }
     }, intervalDuration);
 }
@@ -144,6 +181,9 @@ Countly.getViewUrl = function () {
     }
     return window.location.pathname;
 };
+// automatic view tracking tells these defaults from an app's own functions, which win over automatic_view_tracking_mode
+Object.defineProperty(Countly.getViewName, "clyDefault", { value: true });
+Object.defineProperty(Countly.getViewUrl, "clyDefault", { value: true });
 
 /**
 * Overwrite a way to get search query
@@ -165,7 +205,7 @@ Countly.DeviceIdType = {
  *  Monitor parallel storage changes like other opened tabs
  */
 if (isBrowser) {
-    window.addEventListener("storage", function (e) {
+    add_event_listener(window, "storage", function (e) {
         try {
             // each tab keeps its queues in its own sessionStorage, which other frames of that tab can change too
             if (e.storageArea && e.storageArea !== window.localStorage) {

@@ -1,32 +1,226 @@
 declare module "countly-sdk-web" {
   namespace Countly {
     /**
-     * It initializes the SDK and exposes it to the window object. It should be called before any other SDK methods in sync implementations.
-     * @param {object} config - Configuration object. Determines the SDK behavior. Some essential keys are:
-     *
-     * app_key : "app key" from your Countly server application. (MANDATORY!)
-     *
-     * url : Your Countly server URL. You may also use your own server URL or IP here. (MANDATORY!)
-     *
-     * debug : Enables SDK logs to be printed into the browser console. (default: false)
-     *
-     * push_vapid_public_key : Base64-URL VAPID public key from Management > Applications > Push Notifications > Web (VAPID). Required for web push.
-     *
-     * push_service_worker_path : URL of the Countly service worker on your origin. (default: "/countly_sw.js")
-     *
-     * push_service_worker_scope : Scope the worker is registered under. (default: the folder countly-push/ next to the worker file)
-     *
-     * push_service_worker_registration : An existing ServiceWorkerRegistration, or the promise register() returns for it, to subscribe through instead of registering countly_sw.js. Use it when your own worker imports countly_sw.js.
-     *
-     * push_auto_register : Re-registers the push subscription silently on every load once notification permission is granted. Never prompts. (default: true)
-     *
-     * push_subscribe_timeout : Milliseconds to wait for the browser to create the push subscription before enable_push_notifications gives up on that attempt with reason "timeout". (default: 30000)
-     *
-     * push_notification_listener : Function called with a PushNotificationEvent when a notification is received, clicked or closed. Same as set_push_notification_listener.
-     *
-     * For the full list of configuration options, see https://support.count.ly/hc/en-us/articles/360037441932-Web-analytics-JavaScript#h_01HABTQ439HZN7Y6A6F07Y6G0K
+     * The options of init. Only app_key and url are required.
      */
-    function init(config: object): void;
+    interface InitConfig {
+      /** App key of your app, from the Countly dashboard. */
+      app_key: string;
+      /** Address of your Countly server, such as "https://example.count.ly". */
+      url: string;
+
+      /** Your own ID for this device or user. Without it, the SDK makes one and keeps it. */
+      device_id?: string;
+      /** Forgets the device ID kept from an earlier visit, so the one given here, or a new one, is used. (default: false) */
+      clear_stored_id?: boolean;
+      /** Starts without a device ID: requests wait until disable_offline_mode gives one. (default: false) */
+      offline_mode?: boolean;
+      /** Version of your app. (default: "0.0") */
+      app_version?: string;
+      /** Device details to send instead of the ones the SDK detects, such as _os or _app_version. (default: {}) */
+      metrics?: Record<string, string>;
+      /** Country of the visitor, as a two-letter code. */
+      country_code?: string | null;
+      /** City of the visitor. */
+      city?: string | null;
+      /** IP address of the visitor, to find their location from. */
+      ip_address?: string | null;
+
+      /** Prints the SDK's logs in the browser console. (default: false) */
+      debug?: boolean;
+      /**
+       * Receives every log message of the SDK and its level, also while debug is off. It is called inside the SDK's own
+       * calls, so it should return quickly and must not call the SDK.
+       */
+      log_listener?: ((message: string, level: "error" | "warning" | "info" | "debug" | "verbose") => void) | null;
+
+      /** Records nothing until consent is given with add_consent. (default: false) */
+      require_consent?: boolean;
+      /**
+       * Gives consent for these features at init while consent is required, or once the server's behavior settings start
+       * requiring it; the features not listed start without it. The SDK does not store consent, so give it on every page load. (default: [])
+       */
+      consents?: string[];
+      /** Gives consent for every feature at init while consent is required, as consents does for a list. (default: false) */
+      give_all_consents?: boolean;
+      /** Records nothing for this visitor. (default: false) */
+      ignore_visitor?: boolean;
+      /** Records nothing for known bots and crawlers. (default: true) */
+      ignore_bots?: boolean;
+      /** Records nothing while the browser only prefetches or prerenders the page. (default: true) */
+      ignore_prefetch?: boolean;
+      /** A referrer that contains any of these texts is not recorded as where the visitor came from. (default: []) */
+      ignore_referrers?: string[];
+      /** Records the values entered in the forms track_forms records; false records the submissions without them. (default: true) */
+      track_form_values?: boolean;
+      /** Secret the SDK adds a checksum of each request with, so that the server can refuse a changed request. */
+      salt?: string | null;
+
+      /** Seconds between the session's duration updates. (default: 60) */
+      session_update?: number;
+      /** Continues a session over the page loads of a site. (default: true) */
+      use_session_cookie?: boolean;
+      /** Minutes a session continues after the visitor's last action, with use_session_cookie. (default: 30) */
+      session_cookie_timeout?: number;
+      /** Minutes without the visitor's activity after which the session pauses. (default: 20) */
+      inactivity_time?: number;
+      /** Milliseconds between the SDK's checks for what to send. (default: 500) */
+      interval?: number;
+      /** Seconds the SDK waits after a failed request before it tries again. (default: 60) */
+      fail_timeout?: number;
+
+      /** Sends every request with POST. (default: true) */
+      force_post?: boolean;
+      /** HTTP headers to add to every request. (default: {}) */
+      headers?: Record<string, string>;
+      /** The most requests the SDK keeps while it cannot send them; the oldest ones go first. (default: 1000) */
+      queue_size?: number;
+      /** The most events the SDK sends in one request. (default: 100) */
+      max_events?: number;
+      /** Keeps sending at the usual pace when the server answers slowly. (default: false) */
+      disable_backoff_mechanism?: boolean;
+      /**
+       * Sends request bodies between 1 KB and 1 MB gzip-compressed, once the server's behavior settings answer says it
+       * reads them. Browsers without CompressionStream keep sending plain bodies. (default: false)
+       */
+      enable_request_compression?: boolean;
+      /**
+       * Where the SDK keeps its data: "localstorage", "cookie", "none" (memory only, gone with the page), "default"
+       * (localStorage, or cookies where it is missing), or your own object with getItem, setItem and removeItem. (default: "default")
+       */
+      storage?: "default" | "localstorage" | "cookie" | "none" | { getItem(key: string): unknown; setItem(key: string, value: unknown): void; removeItem(key: string): void };
+      /** Prefix of the keys the SDK stores, so that several setups on one site keep their data apart. (default: "") */
+      namespace?: string;
+      /** Turns a value the SDK stores into text. (default: JSON.stringify) */
+      serialize?: (value: unknown) => string;
+      /** Turns stored text back into a value. (default: JSON.parse) */
+      deserialize?: (text: string) => unknown;
+
+      /** The longest an event key, segmentation key or other name can be; longer ones are cut. (default: 128) */
+      max_key_length?: number;
+      /** The longest a segmentation or user property value can be; longer ones are cut. (default: 256) */
+      max_value_size?: number;
+      /** The most segmentation keys an event or view can have. (default: 100) */
+      max_segmentation_values?: number;
+      /** The most logs add_log keeps for the next crash report. (default: 100) */
+      max_breadcrumb_count?: number;
+      /** The most stack trace lines a crash report keeps. (default: 30) */
+      max_stack_trace_lines_per_thread?: number;
+      /** The longest a stack trace line can be; longer ones are cut. (default: 200) */
+      max_stack_trace_line_length?: number;
+
+      /**
+       * Records a view for the page at init and a new one each time a single-page app moves to another page. track_pageview
+       * and track_view calls are ignored while it is on. The server's behavior settings (avt) can turn it on or off. (default: false)
+       */
+      enable_automatic_view_tracking?: boolean;
+      /**
+       * How automatic view tracking tells pages apart and names them: "history" by the page path, "hash" by the route after #
+       * (for an app with addresses like /#/products/42), "auto" by that route when there is one and by the page path
+       * otherwise. getViewUrl and getViewName, when given, win over it. (default: "auto")
+       */
+      automatic_view_tracking_mode?: "auto" | "history" | "hash";
+      /** Pages automatic view tracking leaves out: a view name matching any of these is not recorded. (default: []) */
+      automatic_view_tracking_exclusions?: (string | RegExp)[];
+      /** Gives the name of the page the visitor is on, such as a route pattern. (default: the page path) */
+      getViewName?: () => string;
+      /** Gives the address views and heatmaps tell the page by. (default: the page path) */
+      getViewUrl?: () => string;
+      /** Gives the search query of the page, which is not recorded with the view. (default: the page's query string) */
+      getSearchQuery?: () => string;
+      /** Adds the site's domain to every view, to tell sites apart in one app. (default: true) */
+      track_domains?: boolean;
+      /** Records the orientation of the device and its changes. (default: true) */
+      enable_orientation_tracking?: boolean;
+      /** Which UTM tags of the address the visitor arrived with the SDK records. (default: all of them) */
+      utm?: { source?: boolean; medium?: boolean; campaign?: boolean; term?: boolean; content?: boolean };
+      /** More address parameters that mark a campaign landing, such as ["ref"], besides utm_*, cly_clk and ad click ids. (default: []) */
+      attribution_landing_params?: string[];
+      /** Host of the smart links Countly.attribution.appLink builds, such as "https://go.example.com". (default: url) */
+      attribution_link_host?: string;
+      /** Countly app id the smart links carry, so that they open the installed app. (default: none, a plain tracking link) */
+      attribution_app_id?: string;
+      /** Android package the intent:// form of the smart links names. (default: none) */
+      attribution_android_package?: string;
+      /** Other Countly addresses this site may show heatmaps from; the server's is always allowed. (default: []) */
+      heatmap_whitelist?: string[];
+
+      /** Fetches remote config at init; a function is called with the values when they arrive. (default: false) */
+      remote_config?: boolean | ((error: unknown, configs: Record<string, unknown>) => void);
+      /** Enrolls the visitor in the A/B tests of the values remote config fetches. (default: true) */
+      rc_automatic_optin_for_ab?: boolean;
+      /** Uses the current remote config API; false keeps the legacy one. (default: true) */
+      use_explicit_rc_api?: boolean;
+
+      /** Other origins the content the SDK shows may come from; the server's is always allowed. (default: []) */
+      content_whitelist?: string[];
+      /** Seconds between a content zone's checks for new content, at least 15. (default: 30) */
+      content_zone_timer_interval?: number;
+      /** Theme of the content the SDK shows. (default: the page's theme) */
+      content_theme?: "light" | "dark" | null;
+      /** Segmentation sent with every content request. */
+      global_content_segmentation?: Record<string, unknown> | null;
+      /**
+       * Stops the SDK from asking for the content triggers (jt) of the server's journeys, and ignores them; the journey
+       * trigger events (jte) then apply. (default: false)
+       */
+      disable_auto_content_triggers?: boolean;
+
+      /** Changes a crash report before it is recorded; returning nothing drops it. */
+      crash_filter_callback?: ((crash: Record<string, unknown>) => Record<string, unknown> | null | undefined) | null;
+
+      /** Behavior settings to use until the server's arrive. (default: {}) */
+      behavior_settings?: Record<string, unknown>;
+      /** Uses the behavior settings given here and does not fetch the server's. (default: false) */
+      disable_sdk_behavior_settings_updates?: boolean;
+      /** Sends no health check to the server. (default: false) */
+      disable_health_check?: boolean;
+
+      /** Base64-URL VAPID public key from Management > Applications > Push Notifications > Web (VAPID). Required for web push. */
+      push_vapid_public_key?: string | null;
+      /** URL of the Countly service worker on your origin. (default: "/countly_sw.js") */
+      push_service_worker_path?: string;
+      /** Scope the worker is registered under. (default: the folder countly-push/ next to the worker file) */
+      push_service_worker_scope?: string | null;
+      /**
+       * An existing ServiceWorkerRegistration, or the promise register() returns for it, to subscribe through instead of
+       * registering countly_sw.js. Use it when your own worker imports countly_sw.js.
+       */
+      push_service_worker_registration?: ServiceWorkerRegistration | Promise<ServiceWorkerRegistration> | null;
+      /** Re-registers the push subscription silently on every load once notification permission is granted. Never prompts. (default: true) */
+      push_auto_register?: boolean;
+      /**
+       * Milliseconds to wait for the browser to create the push subscription before enable_push_notifications gives up on
+       * that attempt with reason "timeout". (default: 30000)
+       */
+      push_subscribe_timeout?: number;
+      /** Called with a PushNotificationEvent when a notification is received, clicked or closed. Same as set_push_notification_listener. */
+      push_notification_listener?: ((event: PushNotificationEvent) => void) | null;
+
+      /** Functions the SDK calls once init is done. (default: []) */
+      onload?: (() => void)[];
+      /** Name the SDK reports, for an SDK built on this one. */
+      sdk_name?: string;
+      /** Version the SDK reports, for an SDK built on this one. */
+      sdk_version?: string;
+
+      /** For the SDK's own tests: keeps the requests instead of sending them. (default: false) */
+      test_mode?: boolean;
+      /** For the SDK's own tests: keeps the events in their queue. (default: false) */
+      test_mode_eq?: boolean;
+      /** For the SDK's own tests: the time the requests carry. */
+      test_mode_time?: number;
+      /** For the SDK's own tests: answers the requests instead of the server. */
+      fake_request_handler?: ((request: { functionName: string; url: string; params: Record<string, unknown> }) => { status: number; responseText: string } | false | undefined) | null;
+    }
+
+    /**
+     * Initializes the SDK and exposes it to the window object. In a page or a web worker, the calls made before it wait
+     * and run once it is done.
+     * @param {InitConfig} config - the options; only app_key and url are required. For more about them, see
+     * https://support.count.ly/hc/en-us/articles/360037441932-Web-analytics-JavaScript#h_01HABTQ439HZN7Y6A6F07Y6G0K
+     */
+    function init(config: InitConfig): void;
 
     /**
      * Modify feature groups for consent management. Allows you to group multiple features under one feature group
@@ -273,9 +467,9 @@ declare module "countly-sdk-web" {
      * USING set_id INSTEAD IS RECOMMENDED
      * Change current user/device id (use set_id instead if you are not sure about the merge operation)
      * @param {string} newId - new user/device ID to use. Must be a non-empty string value. Invalid values (like null, empty string or undefined) will be rejected
-     * @param {boolean} merge - move data from old ID to new ID on server
+     * @param {boolean} [merge] - move data from old ID to new ID on server (default: false)
      */
-    function change_id(newId: string, merge: boolean): void;
+    function change_id(newId: string, merge?: boolean): void;
 
     /**
      * Changes the current device ID according to the device ID type (the preffered method)

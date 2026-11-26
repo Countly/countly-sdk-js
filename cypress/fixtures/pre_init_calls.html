@@ -1,0 +1,37 @@
+<!-- Used in pre-init tests: the page calls the SDK before init, as an app that bundles the SDK can, and records what those calls returned.
+     It starts the SDK a moment later and records an event right after init -->
+<html>
+<head>
+  <script type='module'>
+    import Countly from '../../Countly.js';
+
+    window.localStorage.clear();
+    window.beforeInit = {
+      addEvent: typeof Countly.add_event,
+      enterContentZone: typeof Countly.content.enterContentZone,
+      userDataSet: typeof Countly.userData.set,
+      deviceId: Countly.get_device_id(),
+      consent: Countly.check_consent("events"),
+      sdkVersion: Countly.sdk_version()
+    };
+    window.calledAt = Date.now();
+    Countly.add_event({ key: "early_1", count: 1 });
+    Countly.userData.set("plan", "pro");
+    Countly.userData.save();
+    Countly.add_event({ key: "early_2", count: 1 });
+    setTimeout(function () {
+      window.initAt = Date.now();
+      Countly.init({
+        app_key: "PRE_INIT_APP_KEY",
+        url: "https://your.domain.count.ly",
+        debug: true,
+        test_mode: true
+      });
+      Countly.add_event({ key: "after_init", count: 1 });
+    }, 300);
+  </script>
+</head>
+<body>
+  <h1>Calls before init</h1>
+</body>
+</html>
