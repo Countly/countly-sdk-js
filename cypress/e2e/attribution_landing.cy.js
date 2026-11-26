@@ -190,6 +190,59 @@ describe("Landing attribution tests", () => {
             });
         });
     });
+    it("Does not send an earlier landing of this tab again after another one", () => {
+        hp.haltAndClearStorage(() => {
+            initLanding("?utm_source=first");
+            cy.fetch_local_request_queue().then((rq) => {
+                expect(attributionRequests(rq).length).to.equal(1);
+                Countly.halt();
+                initLanding("?utm_source=second");
+                cy.fetch_local_request_queue().then((rq2) => {
+                    expect(attributionRequests(rq2).length).to.equal(2);
+                    // back to the first landing in the same tab
+                    Countly.halt();
+                    initLanding("?utm_source=first");
+                    cy.fetch_local_request_queue().then((rq3) => {
+                        const sent = attributionRequests(rq3);
+                        expect(sent.length).to.equal(2);
+                        expectLanding(sent[0], "utm_source=first");
+                        expectLanding(sent[1], "utm_source=second");
+                    });
+                });
+            });
+        });
+    });
+    describe("in a tab another page opened", () => {
+        afterEach(() => {
+            window.opener = null;
+        });
+        // window.open gives the new tab a copy of the opener's sessionStorage, with the landing the opener sent
+        function openedWithOpenersLanding(navigationType, query) {
+            window.sessionStorage.setItem(hp.appKey + "/cly_landing", landingOf(query));
+            window.opener = {};
+            cy.stub(performance, "getEntriesByType").callThrough().withArgs("navigation").returns([{ type: navigationType }]);
+        }
+        it("Sends the landing address the opener already sent", () => {
+            hp.haltAndClearStorage(() => {
+                openedWithOpenersLanding("navigate", "utm_source=hehe");
+                initLanding("?utm_source=hehe");
+                cy.fetch_local_request_queue().then((rq) => {
+                    const sent = attributionRequests(rq);
+                    expect(sent.length).to.equal(1);
+                    expectLanding(sent[0], "utm_source=hehe");
+                });
+            });
+        });
+        it("Does not send it again when that tab is reloaded", () => {
+            hp.haltAndClearStorage(() => {
+                openedWithOpenersLanding("reload", "utm_source=hehe");
+                initLanding("?utm_source=hehe");
+                cy.fetch_local_request_queue().then((rq) => {
+                    expect(attributionRequests(rq).length).to.equal(0);
+                });
+            });
+        });
+    });
     it("Keeps the stored campaign ids for direct attribution", () => {
         hp.haltAndClearStorage(() => {
             initLanding("?cly_id=cmp&cly_uid=usr&utm_source=hehe");
