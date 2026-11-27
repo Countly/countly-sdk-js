@@ -134,7 +134,7 @@ declare module "countly-sdk-web" {
       enable_orientation_tracking?: boolean;
       /** Which UTM tags of the address the visitor arrived with the SDK records. (default: all of them) */
       utm?: { source?: boolean; medium?: boolean; campaign?: boolean; term?: boolean; content?: boolean };
-      /** More address parameters that mark a campaign landing, such as ["ref"], besides utm_*, cly_clk and ad click ids. (default: []) */
+      /** More address parameters Countly.attribution.appLink carries from this page, such as ["ref"], besides its utm_* tags; such a parameter alone does not send a landing. (default: []) */
       attribution_landing_params?: string[];
       /** Host of the smart links Countly.attribution.appLink builds, such as "https://go.example.com". (default: url) */
       attribution_link_host?: string;

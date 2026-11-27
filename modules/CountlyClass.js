@@ -1,4 +1,4 @@
-import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, landingsKeptPerTab, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, paidClickIdParams, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE } from "./Constants.js";
+import { DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, landingTriggerParams, landingsKeptPerTab, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE } from "./Constants.js";
 import { runConnectionTest, probeViaFetch, capReport } from "./ConnectionTest.js";
 import {
     isSafeActionUrl,
@@ -1372,13 +1372,22 @@ class CountlyClass {
             if (searchQuery.indexOf('?') === 0) {
                 searchQuery = searchQuery.substring(1);
             };
+            // only a parameter the server attributes a landing by (landingTriggerParams) sends it, when it has a value;
+            // read as the server reads it: the first of a name, a "+" as a space, the part after "#" left out
+            var landingPairs = parseQueryPairs(searchQuery.split("#")[0].replace(/\+/g, "%20"));
+            var landingNamesSeen = [];
+            for (var p = 0; p < landingPairs.length; p++) {
+                var landingName = landingPairs[p][0];
+                if (landingNamesSeen.indexOf(landingName) === -1) {
+                    landingNamesSeen.push(landingName);
+                    if (landingTriggerParams.indexOf(landingName) !== -1 && landingPairs[p].length === 2 && landingPairs[p][1].trim()) {
+                        hasLandingParam = true;
+                    }
+                }
+            }
             var queryPairs = parseQueryPairs(searchQuery);
             for (var i = 0; i < queryPairs.length; i++) {
                 var nv = queryPairs[i];
-                // an ad platform's click id counts when it has a value, as the server reads it
-                if ((nv[0] + "").indexOf("utm_") === 0 || nv[0] === "cly_clk" || this.#landingParams.indexOf(nv[0]) !== -1 || (paidClickIdParams.indexOf(nv[0]) !== -1 && nv[1])) {
-                    hasLandingParam = true;
-                }
                 if (nv[0] === "cly_id") {
                     this.#setValueInStorage("cly_cmp_id", nv[1]);
                 }

@@ -48,8 +48,14 @@ var internalEventKeyEnums = {
 
 var internalEventKeyEnumsArray = Object.values(internalEventKeyEnums);
 
-// click ids ad platforms add to a landing URL; the server reads which platform the click came from
+// The parameters the server attributes a landing by, mirroring the server's own lists: keep them identical to them.
+// A landing is sent only when one of them has a value, as the server stores nothing from a landing without one.
+// the UTM tags the server reads (utm_campaign names the campaign; another utm_* name is ignored there)
+var landingUtmTags = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id", "utm_source_platform", "utm_creative_format", "utm_marketing_tactic"];
+// the click ids ad platforms add to a landing URL; the server reads which platform the click came from
 var paidClickIdParams = ["gclid", "fbclid", "msclkid", "ttclid", "twclid", "li_fat_id"];
+// with a Countly link's campaign code (countly_cid, and cly_id of older links) and click id (cly_clk)
+var landingTriggerParams = landingUtmTags.concat(["countly_cid", "cly_id", "cly_clk"], paidClickIdParams);
 // the most landing addresses a tab remembers having sent, so that it does not send one of them again
 var landingsKeptPerTab = 20;
 
@@ -431,4 +437,4 @@ var preInitValueFunctions = {
     "attribution.appLink": null
 };
 
-export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, landingsKeptPerTab, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, logLineConsent, paidClickIdParams, preInitCallLimit, preInitQueuedFunctions, preInitValueFunctions, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE };
+export { CDN, DeviceIdTypeInternalEnums, SDK_NAME, SDK_VERSION, configurationDefaultValues, contentReservedSegmentationKeys, contentReservedSegmentationPrefix, contentTriggerGaps, contentTriggerKeys, featureEnums, featureList, healthCheckCounterEnum, internalEventKeyEnums, internalEventKeyEnumsArray, landingsKeptPerTab, logGatheringDefaultValues, logLevelEnums, logLevelToListenerName, logLevelToWireChar, landingTriggerParams, logLineConsent, preInitCallLimit, preInitQueuedFunctions, preInitValueFunctions, pushConstants, pushMessageTypes, pushStorageKeys, pushWorkerParams, requestCompressionValues, tabHandoverTimes, urlParseRE };
