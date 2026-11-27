@@ -134,6 +134,14 @@ declare module "countly-sdk-web" {
       enable_orientation_tracking?: boolean;
       /** Which UTM tags of the address the visitor arrived with the SDK records. (default: all of them) */
       utm?: { source?: boolean; medium?: boolean; campaign?: boolean; term?: boolean; content?: boolean };
+      /** More address parameters Countly.attribution.appLink carries from this page, such as ["ref"], besides its utm_* tags; such a parameter alone does not send a landing. (default: []) */
+      attribution_landing_params?: string[];
+      /** Host of the smart links Countly.attribution.appLink builds, such as "https://go.example.com". (default: url) */
+      attribution_link_host?: string;
+      /** Countly app id the smart links carry, so that they open the installed app. (default: none, a plain tracking link) */
+      attribution_app_id?: string;
+      /** Android package the intent:// form of the smart links names. (default: none) */
+      attribution_android_package?: string;
       /** Other Countly addresses this site may show heatmaps from; the server's is always allowed. (default: []) */
       heatmap_whitelist?: string[];
 
@@ -525,6 +533,52 @@ declare module "countly-sdk-web" {
       campaign_id?: string,
       campaign_user_id?: string
     ): void;
+
+    /**
+     * Record the revenue of one paid ad impression, as the ad network's callback gives it, as the [CLY]_ad_revenue event.
+     * Needs the "events" consent. The amount is sent as it is: give it in the currency the app uses for purchases.
+     * @param {number} amount - the impression's revenue (AdMob gives micros: divide them by 1000000 first)
+     * @param {Object} [details] - each optional, sent as a segment only when given
+     */
+    function recordAdRevenue(
+      amount: number,
+      details?: {
+        network?: string;
+        placement?: string;
+        format?: string;
+        currency?: string;
+        precision?: string;
+      }
+    ): void;
+
+    /**
+     * Smart links for a page on the app's own site, so that a visitor with the app installed opens it there
+     */
+    const attribution: Attribution;
+    interface AppLinkOptions {
+      /** the campaign's link code */
+      code: string;
+      /** the deep-link path in the app, such as "/product/42" */
+      path?: string;
+      /** more query parameters; they win over this page's ones of the same name */
+      params?: { [key: string]: string | number | boolean | null | undefined };
+      /** "intent" for the intent:// form, for Android browsers */
+      android?: "intent" | "https";
+      /** the link host, such as "https://go.example.com", in place of attribution_link_host */
+      host?: string;
+      /** the Countly app id, in place of attribution_app_id */
+      appId?: string;
+      /** the Android package, in place of attribution_android_package */
+      androidPackage?: string;
+    }
+    interface Attribution {
+      /**
+       * The smart link of a campaign, carrying this page's UTM tags and the parameters named in attribution_landing_params.
+       * Nothing is sent by this call: the server counts the click when the link is opened.
+       * @returns the link, or null when the code or the host cannot be used
+       */
+      appLink(options: AppLinkOptions): string | null;
+    }
 
     /**
      * Provide information about user

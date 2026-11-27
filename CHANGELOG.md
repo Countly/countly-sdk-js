@@ -17,6 +17,23 @@
 * Added `remove_different_app_keys_from_queue` to drop queued requests with another app key.
 * Added `enable_request_compression` init option. Request bodies between 1 KB and 1 MB are then sent gzip-compressed, once the server's SDK behavior settings answer says it reads them. Browsers without `CompressionStream` keep sending plain bodies.
 * Added `log_listener` init option, a function that receives every log message of the SDK and its level ("error", "warning", "info", "debug" or "verbose"), also while `debug` is off. It is called inside the SDK's own calls, so it should return quickly and must not call the SDK.
+* Added an automatic attribution signal for campaign landings, without any API call:
+  * when the page address has, with a value, a UTM tag the server reads, a Countly campaign code (`countly_cid`, or `cly_id` of older links), a Countly click id (`cly_clk`) or an ad click id, the SDK sends the landing address as `attribution={"type":"landing","value":"<address>"}`; without one the server stores nothing from a landing, so nothing is sent
+  * the UTM tags are `utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, `utm_content`, `utm_id`, `utm_source_platform`, `utm_creative_format` and `utm_marketing_tactic`; another `utm_*` name, or a parameter named in `attribution_landing_params`, does not send a landing on its own
+  * the ad click ids are `gclid`, `fbclid`, `msclkid`, `ttclid`, `twclid` and `li_fat_id`; the server reads which ad platform the click came from
+  * it needs the `attribution` consent, and waits until it is given on that page; a landing left before the consent is given is not sent
+  * with `require_consent`, the landing request also carries the consent state when the consent was just given, so a server that stores campaigns only with the `attribution` consent reads it before the consent request arrives
+  * a landing address a tab already sent is not sent again from that tab, on a reload or when the visitor goes back to it; a different landing address with campaign parameters is sent, also the first time in a tab another page opened
+  * servers that support it parse the campaign from it; older servers ignore it, and `utm_*` tags are still recorded as user properties as before
+* Added `attribution_landing_params` init option for naming additional landing parameters that `Countly.attribution.appLink` carries, such as `["ref"]` (default `[]`); such a parameter alone does not send a landing.
+* Added `recordAdRevenue(amount, {network, placement, format, currency, precision})` for recording the revenue of one paid ad impression as the `[CLY]_ad_revenue` event:
+  * call it from the ad network's paid-impression callback, with the amount in the currency the app uses for purchases; the SDK converts nothing
+  * each detail is optional and sent as a segment only when given; it needs the `events` consent
+* Added `Countly.attribution.appLink({code, path, params})`, which returns a campaign's smart link for the page to show, so that a visitor with the app installed opens it at `path`:
+  * the link carries the page's `utm_*` tags and the parameters named in `attribution_landing_params`, with a `+` in the page's address read as a space, as the server reads the landing; `params` adds more
+  * `android: "intent"` returns the `intent://` form, with the link as the browser fallback
+  * it sends nothing: the server counts the click when the link is opened
+* Added `attribution_link_host`, `attribution_app_id` and `attribution_android_package` init options for the smart links `Countly.attribution.appLink` builds (the link host defaults to `url`).
 * Added support for content triggers (`jt`), which the SDK asks for in its behavior settings request (`jt=1`) and the server fills from the app's journeys and campaigns, also while behavior settings are off: while the app is in the content zone (`enterContentZone` or the `ecz` setting), when the SDK records a listed event, the start or the end of a view with a listed name, a new session, a listed user property or any user property change (as the server lists them), an error or a consent change, it sends what it holds right away and asks for content, without waiting for the content zone timer.
 * Added support for the journey trigger views (`jtv`) of the behavior settings: while the server sends no content triggers, the start and the end of a view whose whole name the list has send the queue right away and ask for content, like the journey trigger events.
 * Added `disable_auto_content_triggers` init option, which stops the SDK from asking for the content triggers (`jt`) and ignores them (default `false`). The journey trigger events (`jte`) then apply.

@@ -75,10 +75,16 @@ function addPreInitFunctions(countly, keepsCalls) {
             countly.q.push(call);
         });
     });
-    Object.keys(preInitValueFunctions).forEach(function (name) {
-        if (typeof countly[name] !== "function") {
-            countly[name] = markPreInit(function () {
-                return preInitValueFunctions[name];
+    Object.keys(preInitValueFunctions).forEach(function (path) {
+        var parts = path.split(".");
+        var name = parts.pop();
+        var owner = countly;
+        if (parts[0]) {
+            owner = countly[parts[0]] = countly[parts[0]] || {};
+        }
+        if (typeof owner[name] !== "function") {
+            owner[name] = markPreInit(function () {
+                return preInitValueFunctions[path];
             });
         }
     });

@@ -1,6 +1,6 @@
 import CountlyClass from "./modules/CountlyClass.js";
 import { featureList, DeviceIdTypeInternalEnums, CDN, logLevelEnums, preInitCallLimit } from "./modules/Constants.js";
-import { add_event_listener, sdkClearInterval, sdkSetInterval, stripTrailingSlash } from "./modules/Utils.js";
+import { add_event_listener, defaultGetSearchQuery, sdkClearInterval, sdkSetInterval, stripTrailingSlash } from "./modules/Utils.js";
 import { isBrowser, Countly } from "./modules/Platform.js";
 import { addPreInitFunctions, preInitCalls } from "./modules/PreInit.js";
 
@@ -189,12 +189,7 @@ Object.defineProperty(Countly.getViewUrl, "clyDefault", { value: true });
 * Overwrite a way to get search query
 * @return {string} view url
 * */
-Countly.getSearchQuery = function () {
-    if (!isBrowser) {
-        return;
-    }
-    return window.location.search;
-};
+Countly.getSearchQuery = defaultGetSearchQuery;
 
 /**
 * Possible device Id types are: DEVELOPER_SUPPLIED, SDK_GENERATED, TEMPORARY_ID
